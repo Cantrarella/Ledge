@@ -5,12 +5,13 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
 from PySide6 import QtCore
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -37,7 +38,6 @@ DEFAULTS: dict = {
     "hotkeys": {
         "toggle": "Ctrl+Alt+I",
         "translate": "Ctrl+Alt+J",
-        "clipboard": "Ctrl+Alt+V",
     },
     "media": {
         "auto_show": True,           # 开始播放时收起态自动切到音乐（暂停 8 秒后切回）
@@ -65,13 +65,6 @@ DEFAULTS: dict = {
             "mail": "",        # 例：C:/Program Files/Mozilla Thunderbird/thunderbird.exe
         },
     },
-    "stocks": {
-        # 自选（腾讯财经代码：sh/sz/bj + 6 位，hk + 5 位，us + 代码）；也可在股票页点 + 搜索添加、右键删除
-        "watchlist": ["sh000001", "sz399001", "sz399006", "hk00700", "usAAPL", "usNVDA", "usQQQ"],
-        "interval": 5,
-        "pct_alert": 3.0,            # 涨跌幅绝对值超过它时提醒（每只每天每个方向一次）
-        "alerts": {},                # {"sh688256": {"above": 1500, "below": 1200}}
-    },
     "weather": {
         "api_key": "",         # 留空 = 使用 Open-Meteo（免费、无需 Key）；填 OpenWeather Key 则改用 OpenWeather
         "city": "上海",
@@ -81,12 +74,6 @@ DEFAULTS: dict = {
         "lang": "zh_cn",
         "interval_min": 15,
         "cities": [],          # [{"name": "上海", "lat": 31.23, "lon": 121.47}]，第一个显示在收起态
-    },
-    "brightness": {"twinkle": ""},   # 留空 = 直接用 DDC/CI / WMI（便携版 Twinkle 每次调用都会弹"安装中"）
-    "clash": {
-        "config_dir": "%APPDATA%/io.github.clash-verge-rev.clash-verge-rev",
-        "proxy_port": 7897,
-        "app": "",                   # clash-verge.exe 路径（「打开 Clash Verge」按钮用）
     },
     "translate": {
         "api_key": "",
@@ -123,7 +110,6 @@ DEFAULTS: dict = {
         "player_title": "",           # 播放器窗口标题关键字（截图用），如 "Kazumi"
         "source": "",
     },
-    "clipboard": {"max": 10},      # 只保留最近 10 条（置顶的不计）
     "launcher": [
         {"name": "文件资源管理器", "path": "C:/Windows/explorer.exe"},
     ],

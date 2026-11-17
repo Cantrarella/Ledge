@@ -1,191 +1,15 @@
 # -*- coding: utf-8 -*-
-"""系统服务：无线电（Wi-Fi / 蓝牙）、窗口列表与激活、性能监控（CPU/内存/GPU/网络/磁盘）。"""
+"""系统服务：窗口列表与激活、全屏检测。"""
 from __future__ import annotations
 
-import asyncio
 import ctypes
 import os
-import re
-import threading
-import time
 import traceback
-from collections import deque
 from ctypes import wintypes as W
 
 from PySide6 import QtCore, QtGui
 
-from wisland.core.bg import launch, run_hidden, ui
-
-
-def _decode(data: bytes) -> str:
-    """netsh 等命令输出：先试 UTF-8，再按 OEM 代码页（中文系统为 cp936）。"""
-    if not data:
-        return ""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    for enc in (f"cp{ctypes.windll.kernel32.GetOEMCP()}", "mbcs", "gbk"):
-        try:
-            return data.decode(enc)
-        except Exception:  # noqa: BLE001
-            continue
-    return data.decode("utf-8", "replace")
-
-
-# ======================================================================
-# 无线电
-# ======================================================================
-try:
-    from winrt.windows.devices.radios import Radio as _Radio, RadioAccessStatus as _RAS, \
-        RadioKind as _RK, RadioState as _RS
-except Exception:  # noqa: BLE001
-    traceback.print_exc()
-    _Radio = None
-try:
-    from winrt.windows.devices.bluetooth import BluetoothAdapter as _BtAdapter
-except Exception:  # noqa: BLE001
-    _BtAdapter = None
-
-
-class RadioService(QtCore.QObject):
-    """changed(dict): {wifi_on, wifi_ssid, wifi_signal(int % 或 None), bt_on,
-    wifi_available, bt_available}"""
-
-    changed = QtCore.Signal(dict)
-    # 只读开关状态（Radio API，开销很小）；控制页打开时会立即刷新一次
-    POLL_S = 30.0
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        ui(lambda: None)
-        self.state: dict = {"wifi_on": False, "wifi_ssid": "", "wifi_signal": None,
-                            "bt_on": False, "wifi_available": False, "bt_available": False}
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._wake: asyncio.Event | None = None
-        self._access = None
-        self._last_emit = None
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="wisland-radio", daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self.refresh()
-        if self._thread:
-            self._thread.join(timeout=2)
-        self._thread = None
-
-    def refresh(self):
-        loop, wake = self._loop, self._wake
-        if loop is not None and wake is not None:
-            try:
-                loop.call_soon_threadsafe(wake.set)
-            except RuntimeError:
-                pass
-
-    def _run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        try:
-            loop.run_until_complete(self._main())
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-        finally:
-            self._loop = None
-            loop.close()
-
-    async def _main(self):
-        self._wake = asyncio.Event()
-        while not self._stop.is_set():
-            try:
-                await self._poll()
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-            try:
-                await asyncio.wait_for(self._wake.wait(), self.POLL_S)
-            except asyncio.TimeoutError:
-                pass
-            self._wake.clear()
-
-    async def _radios(self):
-        if _Radio is None:
-            return []
-        if self._access is None:
-            try:
-                self._access = await _Radio.request_access_async()
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-                self._access = _RAS.UNSPECIFIED
-        radios = list(await _Radio.get_radios_async() or [])
-        # 部分电脑上 Radio.GetRadiosAsync 不返回蓝牙（驱动 / 权限原因），改从默认蓝牙适配器取
-        if _BtAdapter is not None and not any(int(r.kind) == int(_RK.BLUETOOTH) for r in radios):
-            try:
-                ad = await _BtAdapter.get_default_async()
-                r = await ad.get_radio_async() if ad is not None else None
-                if r is not None:
-                    radios.append(r)
-            except Exception:  # noqa: BLE001
-                pass
-        return radios
-
-    async def _poll(self):
-        st = dict(self.state)
-        st.update(wifi_on=False, bt_on=False, wifi_available=False, bt_available=False)
-        try:
-            for r in await self._radios():
-                kind = int(r.kind)
-                on = int(r.state) == int(_RS.ON)
-                if kind == int(_RK.WI_FI):
-                    st["wifi_available"] = True
-                    st["wifi_on"] = st["wifi_on"] or on
-                elif kind == int(_RK.BLUETOOTH):
-                    st["bt_available"] = True
-                    st["bt_on"] = st["bt_on"] or on
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-        # 不再调用 netsh wlan 读取 Wi-Fi 名称：Windows 11 24H2 起它算作「访问位置」，
-        # 每次轮询任务栏都会闪位置图标。
-        self.state = st
-        if st != self._last_emit:
-            self._last_emit = dict(st)
-            self.changed.emit(dict(st))
-
-    def _set(self, kind: int, on: bool):
-        loop = self._loop
-        if loop is None:
-            return
-
-        async def go():
-            try:
-                for r in await self._radios():
-                    if int(r.kind) == kind:
-                        await r.set_state_async(_RS.ON if on else _RS.OFF)
-                await asyncio.sleep(0.5)
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-            if self._wake:
-                self._wake.set()
-        try:
-            asyncio.run_coroutine_threadsafe(go(), loop)
-        except RuntimeError:
-            pass
-
-    def set_wifi(self, on: bool):
-        if _Radio is not None:
-            self._set(int(_RK.WI_FI), bool(on))
-
-    def set_bluetooth(self, on: bool):
-        if _Radio is not None:
-            self._set(int(_RK.BLUETOOTH), bool(on))
-
+from wisland.core.bg import launch
 
 # ======================================================================
 # 窗口
@@ -232,6 +56,8 @@ def send_hotkey(spec: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
 MONITOR_DEFAULTTONEAREST = 2
 
 _WNDENUMPROC = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
@@ -486,8 +312,6 @@ class WindowService(QtCore.QObject):
                 return False
             if _u32.IsIconic(hwnd):
                 _u32.ShowWindow(hwnd, SW_RESTORE)
-            # 不再模拟按 Alt（会让 QQ / 微信 进入菜单模式）。用户刚点击过灵动岛，本进程通常
-            # 有权设置前台窗口；不行时再临时挂接前台线程的输入队列。
             ok = bool(_u32.SetForegroundWindow(hwnd))
             if not ok or _u32.GetForegroundWindow() != hwnd:
                 fg = _u32.GetForegroundWindow()
@@ -608,8 +432,6 @@ class WindowService(QtCore.QObject):
             h = self.find_app_window(exe)
             if h and self.activate(h):
                 return "focused"
-            # 最小化到托盘（窗口被隐藏）：用应用自己的"显示窗口"热键让它自己恢复，
-            # 不强行 ShowWindow（会和应用内部状态不一致），也不重新启动 exe（微信会开新实例）
             from wisland.core.config import cfg
             hk = (cfg.get("apps.restore_hotkey") or {}).get(exe.lower())
             if hk and self._process_running(exe):
@@ -638,7 +460,6 @@ class WindowService(QtCore.QObject):
             if _class(fg) in _SHELL_CLASSES:
                 return False
             style = _u32.GetWindowLongPtrW(fg, GWL_STYLE)
-            # 普通的最大化窗口（带标题栏）不算全屏；任务栏自动隐藏时它也会铺满整个显示器
             if style & WS_MAXIMIZE and (style & WS_CAPTION) == WS_CAPTION:
                 return False
             r = W.RECT()
@@ -653,240 +474,3 @@ class WindowService(QtCore.QObject):
             return r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom
         except Exception:  # noqa: BLE001
             return False
-
-
-# ======================================================================
-# 性能
-# ======================================================================
-_PDH_FMT_DOUBLE = 0x00000200
-_PDH_MORE_DATA = 0x800007D2
-_PDH_CSTATUS_VALID_DATA, _PDH_CSTATUS_NEW_DATA = 0, 1
-
-
-class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
-    _fields_ = [("CStatus", W.DWORD), ("doubleValue", ctypes.c_double)]
-
-
-class _PDH_FMT_COUNTERVALUE_ITEM_W(ctypes.Structure):
-    _fields_ = [("szName", W.LPWSTR), ("FmtValue", _PDH_FMT_COUNTERVALUE)]
-
-
-class _Pdh:
-    """GPU 计数器（PDH 通配实例）。只在性能线程里使用。"""
-
-    PATHS = {
-        "gpu": r"\GPU Engine(*engtype_3D)\Utilization Percentage",
-        "gpu_mem": r"\GPU Adapter Memory(*)\Dedicated Usage",
-    }
-    READD_S = 30.0
-
-    def __init__(self):
-        try:
-            self.pdh = ctypes.windll.pdh
-        except OSError:
-            self.pdh = None
-        self.query = None
-        self.counters: dict[str, ctypes.c_void_p] = {}
-        self.added_at = 0.0
-        self.primed = False
-
-    def _open(self):
-        p = self.pdh
-        self.close()
-        q = ctypes.c_void_p()
-        if p.PdhOpenQueryW(None, None, ctypes.byref(q)) != 0:
-            return False
-        self.query = q
-        for k, path in self.PATHS.items():
-            c = ctypes.c_void_p()
-            if p.PdhAddEnglishCounterW(q, ctypes.c_wchar_p(path), None, ctypes.byref(c)) == 0:
-                self.counters[k] = c
-        self.added_at = time.monotonic()
-        self.primed = False
-        p.PdhCollectQueryData(q)
-        return bool(self.counters)
-
-    def close(self):
-        if self.query is not None and self.pdh is not None:
-            try:
-                self.pdh.PdhCloseQuery(self.query)
-            except Exception:  # noqa: BLE001
-                pass
-        self.query = None
-        self.counters = {}
-
-    def _array(self, c) -> list[tuple[str, float]]:
-        p = self.pdh
-        size, count = W.DWORD(0), W.DWORD(0)
-        r = p.PdhGetFormattedCounterArrayW(c, _PDH_FMT_DOUBLE, ctypes.byref(size), ctypes.byref(count), None)
-        if (r & 0xFFFFFFFF) != _PDH_MORE_DATA or size.value == 0:
-            return []
-        buf = (ctypes.c_byte * size.value)()
-        r = p.PdhGetFormattedCounterArrayW(c, _PDH_FMT_DOUBLE, ctypes.byref(size), ctypes.byref(count), buf)
-        if r != 0:
-            return []
-        items = ctypes.cast(buf, ctypes.POINTER(_PDH_FMT_COUNTERVALUE_ITEM_W))
-        out = []
-        for i in range(count.value):
-            it = items[i]
-            if it.FmtValue.CStatus in (_PDH_CSTATUS_VALID_DATA, _PDH_CSTATUS_NEW_DATA):
-                out.append((it.szName or "", it.FmtValue.doubleValue))
-        return out
-
-    def sample(self) -> tuple[float | None, float | None]:
-        """-> (gpu_3d_percent, gpu_dedicated_bytes)"""
-        if self.pdh is None:
-            return None, None
-        try:
-            if self.query is None or time.monotonic() - self.added_at > self.READD_S:
-                if not self._open():
-                    return None, None
-                return None, None   # 刚添加的速率计数器需要两次采集
-            if self.pdh.PdhCollectQueryData(self.query) != 0:
-                return None, None
-            gpu = mem = None
-            c = self.counters.get("gpu")
-            if c is not None:
-                per_adapter: dict[str, float] = {}
-                for name, v in self._array(c):
-                    m = re.search(r"luid_(0x[0-9a-fA-F]+_0x[0-9a-fA-F]+)", name)
-                    key = m.group(1) if m else ""
-                    per_adapter[key] = per_adapter.get(key, 0.0) + v
-                gpu = max(0.0, min(100.0, max(per_adapter.values()))) if per_adapter else 0.0
-            c = self.counters.get("gpu_mem")
-            if c is not None:
-                vals = self._array(c)
-                mem = sum(v for _, v in vals) if vals else None
-            return gpu, mem
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-            self.close()
-            return None, None
-
-
-class PerfService(QtCore.QObject):
-    """updated(dict): {cpu, cpu_per_core:[...], mem_pct, mem_used, mem_total, gpu(None 可),
-    gpu_mem(bytes|None), net_up, net_down, disk_r, disk_w (bytes/s),
-    history: {cpu, mem, gpu, net_up, net_down}（各最近 60 个）}"""
-
-    updated = QtCore.Signal(dict)
-    INTERVAL = 1.0
-    HISTORY = 60
-
-    def __init__(self, parent=None, per_core: bool = True):
-        super().__init__(parent)
-        ui(lambda: None)   # 确保 bg 的 _Invoker 在主线程创建（run_bg 回调依赖它）
-        self.per_core = per_core
-        self.state: dict = {}
-        self.history = {k: deque(maxlen=self.HISTORY) for k in ("cpu", "mem", "gpu", "net_up", "net_down")}
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._procs: dict[int, object] = {}
-        self._proc_lock = threading.Lock()
-        self._last_gpu = None
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="wisland-perf", daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=2)
-        self._thread = None
-
-    def _run(self):
-        import psutil
-        pdh = _Pdh()
-        psutil.cpu_percent(None)
-        if self.per_core:
-            psutil.cpu_percent(None, percpu=True)
-        last_t = time.monotonic()
-        net0 = psutil.net_io_counters()
-        try:
-            disk0 = psutil.disk_io_counters()
-        except Exception:  # noqa: BLE001
-            disk0 = None
-        pdh.sample()
-        while not self._stop.wait(self.INTERVAL):
-            try:
-                now = time.monotonic()
-                dt = max(1e-3, now - last_t)
-                last_t = now
-                cpu = psutil.cpu_percent(None)
-                cores = psutil.cpu_percent(None, percpu=True) if self.per_core else []
-                vm = psutil.virtual_memory()
-                net = psutil.net_io_counters()
-                up = max(0.0, (net.bytes_sent - net0.bytes_sent) / dt)
-                down = max(0.0, (net.bytes_recv - net0.bytes_recv) / dt)
-                net0 = net
-                dr = dw = 0.0
-                try:
-                    disk = psutil.disk_io_counters()
-                    if disk and disk0:
-                        dr = max(0.0, (disk.read_bytes - disk0.read_bytes) / dt)
-                        dw = max(0.0, (disk.write_bytes - disk0.write_bytes) / dt)
-                    disk0 = disk
-                except Exception:  # noqa: BLE001
-                    pass
-                gpu, gpu_mem = pdh.sample()
-                if gpu is None:
-                    gpu = self._last_gpu   # 重新添加计数器的那一拍沿用上次
-                else:
-                    self._last_gpu = gpu
-                h = self.history
-                h["cpu"].append(cpu)
-                h["mem"].append(vm.percent)
-                h["gpu"].append(gpu if gpu is not None else 0.0)
-                h["net_up"].append(up)
-                h["net_down"].append(down)
-                st = {"cpu": cpu, "cpu_per_core": cores, "mem_pct": vm.percent,
-                      "mem_used": vm.total - vm.available, "mem_total": vm.total,
-                      "gpu": gpu, "gpu_mem": gpu_mem, "net_up": up, "net_down": down,
-                      "disk_r": dr, "disk_w": dw,
-                      "history": {k: list(v) for k, v in h.items()}}
-                self.state = st
-                self.updated.emit(st)
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-        pdh.close()
-
-    def top_processes(self, n: int = 5, by: str = "cpu") -> list[dict]:
-        """[{name, pid, cpu(占总 CPU 的 %), mem(bytes)}]；后台线程调用。
-        首次调用时 CPU 值为 0（需要两次采样），之后为两次调用间的平均值。"""
-        import psutil
-        ncpu = psutil.cpu_count() or 1
-        rows = []
-        with self._proc_lock:
-            seen = set()
-            for p in psutil.process_iter():
-                pid = p.pid
-                if pid == 0:
-                    continue
-                seen.add(pid)
-                proc = self._procs.get(pid)
-                if proc is None:
-                    proc = p
-                    self._procs[pid] = proc
-                    try:
-                        proc.cpu_percent(None)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    continue
-                try:
-                    with proc.oneshot():
-                        c = proc.cpu_percent(None) / ncpu
-                        mem = proc.memory_info().rss
-                        name = proc.name()
-                    rows.append({"name": name, "pid": pid, "cpu": c, "mem": mem})
-                except Exception:  # noqa: BLE001
-                    continue
-            for pid in list(self._procs):
-                if pid not in seen:
-                    del self._procs[pid]
-        key = "mem" if by == "mem" else "cpu"
-        rows.sort(key=lambda r: r[key], reverse=True)
-        return rows[:n]

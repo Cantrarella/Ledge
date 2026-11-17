@@ -17,3 +17,9 @@ models/
 
 # 宣传视频素材与输出
 promo/
+
+# 打包产物
+dist/
+build/
+_internal/
+WIsland.exe

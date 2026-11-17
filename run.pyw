@@ -4,14 +4,14 @@ import os
 import sys
 import traceback
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 
 
 def _relaunch_windowless():
     """uv 创建的 .venv 里 Scripts\\pythonw.exe 其实是控制台程序，直接用它启动（例如旧的开机自启项、
     电脑管家恢复的启动项）会弹出终端窗口，关掉窗口灵动岛也会退出。
     检测到自己挂在控制台上时，改用基础解释器的 pythonw.exe 重新启动自己并立即退出。"""
-    if os.environ.get("WISLAND_CONSOLE") or os.environ.get("WISLAND_RELAUNCHED"):
+    if getattr(sys, "frozen", False) or os.environ.get("WISLAND_CONSOLE") or os.environ.get("WISLAND_RELAUNCHED"):
         return
     try:
         import ctypes
@@ -71,9 +71,13 @@ except SystemExit:
 except ImportError as e:
     traceback.print_exc()
     import ctypes
+    if getattr(sys, "frozen", False):
+        help_text = "请确认 WIsland.exe 和随附的 _internal 文件夹仍在同一目录。"
+    else:
+        help_text = "请双击项目文件夹里的 setup.bat，它会把依赖安装进 .venv。"
     ctypes.windll.user32.MessageBoxW(
-        None, f"缺少依赖：{e}\n\n当前 Python：{sys.executable}\n\n请双击项目文件夹里的 setup.bat，"
-              "它会把依赖安装进 .venv；装完后再双击 wisland.vbs 启动。", "wisland 启动失败", 0x10)
+        None, f"缺少依赖：{e}\n\n{help_text}\n\n日志：{os.path.join(ROOT, 'data', 'wisland.log')}",
+        "WIsland 启动失败", 0x10)
     sys.exit(1)
 except Exception:
     traceback.print_exc()

@@ -34,7 +34,7 @@ user32 = ctypes.WinDLL("user32")
 WIN_W, WIN_H = 900, 680          # 窗口（逻辑像素），需容纳展开尺寸 + 液桥 + 阴影
 EXP_W = 640
 PAD = 12
-NAV_H = 36
+NAV_H = 18
 FILLET = 13.0                    # 贴边两侧内凹圆角
 BREAK = 64.0                     # 液桥拉断距离
 JOIN = 30.0                      # 靠近到这个距离时液桥伸出
@@ -166,13 +166,22 @@ class _Veil(QtWidgets.QWidget):
 
 
 class _BlankDoubleClick(QtCore.QObject):
-    """灵动岛展开后，双击空白区域（不是按钮 / 输入框等控件）也切换 悬停展开 ↔ 长关。"""
+    """灵动岛展开后，双击空白区域切换 悬停展开 ↔ 长关；滚轮切换页面（内部滚动区有可滚余量时优先滚内容）。"""
 
     def __init__(self, island):
         super().__init__(island)
         self.island = island
 
     def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.Type.Wheel and isinstance(obj, QtWidgets.QWidget):
+            isl = self.island
+            if isl.expanded and obj.window() is isl and not self._can_scroll(obj, ev):
+                dy = ev.angleDelta().y() or ev.angleDelta().x()
+                if dy:
+                    isl.nav.step_wheel(dy)
+                    ev.accept()
+                    return True
+            return False
         if ev.type() != QtCore.QEvent.Type.MouseButtonDblClick or not isinstance(obj, QtWidgets.QWidget):
             return False
         isl = self.island
@@ -181,6 +190,26 @@ class _BlankDoubleClick(QtCore.QObject):
         if self._blank(obj, ev):
             isl.toggle_long_off()
             return True
+        return False
+
+    def _can_scroll(self, w: QtWidgets.QWidget, ev) -> bool:
+        dy = ev.angleDelta().y() or ev.angleDelta().x() or ev.pixelDelta().y()
+        if not dy:
+            return False
+        cur = w
+        while cur is not None and cur is not self.island:
+            if hasattr(cur, "_max_scroll"):
+                mx = cur._max_scroll()
+                if mx > 0 and ((dy > 0 and cur.scroll < mx) or (dy < 0 and cur.scroll > 0)):
+                    return True
+            if isinstance(cur, QtWidgets.QAbstractScrollArea):
+                vb = cur.verticalScrollBar()
+                if vb and vb.maximum() > 0 and ((dy > 0 and vb.value() > vb.minimum()) or (dy < 0 and vb.value() < vb.maximum())):
+                    return True
+                hb = cur.horizontalScrollBar()
+                if hb and hb.maximum() > 0 and ((dy > 0 and hb.value() > hb.minimum()) or (dy < 0 and hb.value() < hb.maximum())):
+                    return True
+            cur = cur.parentWidget()
         return False
 
     @staticmethod
@@ -358,12 +387,12 @@ class Island(QtWidgets.QWidget):
     def expanded_size(self) -> tuple[float, float]:
         """打开时的尺寸（按上次停留的页面的高度）。"""
         pg = self.pages[self.stack.currentIndex()]
-        return EXP_W, PAD - 2 + NAV_H + 8 + pg.preferred_height() + PAD
+        return EXP_W, PAD + pg.preferred_height() + 6 + NAV_H + 6
 
     def target_size(self) -> tuple[float, float]:
         if self.expanded:
             pg = self.pages[self.stack.currentIndex()]
-            h = PAD - 2 + NAV_H + 8 + pg.preferred_height() + PAD
+            h = PAD + pg.preferred_height() + 6 + NAV_H + 6
             return EXP_W, h
         return self.compact.size_hint()
 
@@ -674,13 +703,6 @@ class Island(QtWidgets.QWidget):
         vx = vy = 0.0
         squash = 0.0
         if self.mode == "anchored":
-            pk = clamp(self.poke.x, -0.5, 1.2)
-            if abs(pk) > 0.002 and not self.expanded:
-                # 可穿透时被鼠标"按住"：整颗水滴朝屏幕边压扁、略微变宽，松开后带回弹
-                if self.edge in ("top", "bottom"):
-                    h, w = h * (1 - 0.16 * pk), w * (1 + 0.05 * pk)
-                else:
-                    w, h = w * (1 - 0.16 * pk), h * (1 + 0.05 * pk)
             a = self._anchor_along(w, h)
             c = self._center_on_edge(self.edge, a, 0, w, h)
             self.neck_edge = self.edge
@@ -786,18 +808,18 @@ class Island(QtWidgets.QWidget):
             wave = None
             poke_params = None
             if poking:
-                # 按压：沿"远离屏幕边"的方向整体位移（不是沿中心放射方向），外侧半边（含两端圆角）都参与
+                # 岛外悬停吸附：面向鼠标的外侧边缘朝光标位置温和拉出液态微凸（控制最大幅度约 3px）
                 ppt = self._poke_sm - QtCore.QPointF(wx, wy)
-                amp = clamp(self.poke.x, -0.6, 1.2) * 8.0
+                amp = clamp(self.poke.x, -0.25, 1.0) * 3.0
                 farv = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}[self.edge]
                 horiz = farv[0] == 0
                 c_u = lbody.center().x() if horiz else lbody.center().y()
                 half = max(20.0, (lbody.width() if horiz else lbody.height()) / 2)
                 depth = lbody.height() if horiz else lbody.width()
                 u0 = clamp((ppt.x() if horiz else ppt.y()), c_u - half, c_u + half)
-                sig = half * 0.5
+                sig = max(22.0, min(42.0, half * 0.45))
                 near_line = {"top": lbody.top(), "bottom": lbody.bottom(), "left": lbody.left(), "right": lbody.right()}[self.edge]
-                poke_params = (amp, farv, horiz, u0, sig, near_line, depth)
+                poke_params = (amp, farv, horiz, u0, sig, near_line, depth, ppt, lbody.center(), half)
             else:
                 poke_params = None
             if playing_wave:
@@ -817,17 +839,29 @@ class Island(QtWidgets.QWidget):
             pts = deform(pts, lbody.center().x(), lbody.center().y(), vx, vy,
                          min(w, h) / 2 + 12, wave)
             if poke_params is not None:
-                amp, farv, horiz, u0, sig, near_line, depth = poke_params
+                amp, farv, horiz, u0, sig, near_line, depth, ppt, bc, half = poke_params
+                mvx, mvy = ppt.x() - bc.x(), ppt.y() - bc.y()
+                md = math.hypot(mvx, mvy) or 1.0
+                mdx, mdy = mvx / md, mvy / md
                 out = []
                 for px, py in pts:
                     v = abs((py if horiz else px) - near_line)          # 离屏幕边的距离
-                    wgt = clamp((v - depth * 0.3) / (depth * 0.7), 0.0, 1.0)
+                    wgt = clamp((v - depth * 0.25) / (depth * 0.75), 0.0, 1.0)
                     if wgt > 0:
                         d = ((px if horiz else py) - u0) / sig
                         g = math.exp(-0.5 * d * d)
-                        disp = amp * wgt * wgt * (-g + 0.35 * (1.0 - g))   # 光标处凹进，其余略鼓（体积守恒）
+                        disp = amp * wgt * wgt * (g - 0.14 * (1.0 - g))   # 光标处朝外微凸吸附，两侧轻微内收
                         px += farv[0] * disp
                         py += farv[1] * disp
+                    end_u = abs((px - bc.x()) if horiz else (py - bc.y()))
+                    if v > depth * 0.15 and end_u > half * 0.65:
+                        dist_pt = math.hypot(ppt.x() - px, ppt.y() - py)
+                        g_end = math.exp(-0.5 * (dist_pt / 32.0) ** 2)
+                        pull = amp * 0.35 * g_end * clamp((end_u - half * 0.65) / (half * 0.35), 0.0, 1.0)
+                        if horiz:
+                            px += mdx * pull
+                        else:
+                            py += mdy * pull
                     out.append((px, py))
                 pts = out
             body_p = poly_path(pts)
@@ -882,22 +916,17 @@ class Island(QtWidgets.QWidget):
         return cr
 
     def _place_nav(self):
-        """吸附在屏幕底边时，导航栏放到面板最下方（靠近吸附边），其余位置放在最上方。"""
-        bottom = self.edge == "bottom"
-        if bottom == self._nav_bottom:
+        """底部页码圆点始终放在面板最下方居中。"""
+        if self._nav_bottom is True:
             return
-        self._nav_bottom = bottom
+        self._nav_bottom = True
         lay = self._content_lay
         lay.removeWidget(self.nav)
         lay.removeWidget(self.stack)
-        if bottom:
-            lay.setContentsMargins(PAD, PAD, PAD, PAD - 2)
-            lay.addWidget(self.stack, 1)
-            lay.addWidget(self.nav)
-        else:
-            lay.setContentsMargins(PAD, PAD - 2, PAD, PAD)
-            lay.addWidget(self.nav)
-            lay.addWidget(self.stack, 1)
+        lay.setSpacing(6)
+        lay.setContentsMargins(PAD, PAD, PAD, 6)
+        lay.addWidget(self.stack, 1)
+        lay.addWidget(self.nav)
 
     def _request_backdrop(self):
         moving = self.mode != "anchored" or not (self.sw.rest and self.sh.rest)
@@ -1012,15 +1041,8 @@ class Island(QtWidgets.QWidget):
             p.strokePath(path, QtGui.QPen(QtGui.QBrush(rad), 1.0))
         # 6) 收起状态内容
         if self.compact_a.x > 0.01:
-            pk = clamp(self.poke.x, -0.5, 1.2) if (self.mode == "anchored" and not self.expanded) else 0.0
-            _horiz = self.edge in ("top", "bottom")
-            _cu = bb.center().x() if _horiz else bb.center().y()
-            _half = max(1.0, (bb.width() if _horiz else bb.height()) / 2)
-            _pp = self._poke_sm - QtCore.QPointF(self._win_origin)
-            _rel = clamp(((_pp.x() if _horiz else _pp.y()) - _cu) / _half, -1.0, 1.0) if pk > 0.005 else 0.0
-            self.compact.press = (max(0.0, pk), _rel)
-            horiz = self.edge in ("top", "bottom")
-            self.compact.squash = ((1 + 0.05 * pk, 1 - 0.16 * pk) if horiz else (1 - 0.16 * pk, 1 + 0.05 * pk))
+            self.compact.press = (0.0, 0.0)
+            self.compact.squash = (1.0, 1.0)
             p.save()
             p.setClipPath(path)               # 内容（含表情）不超出灵动岛
             self.compact.paint(p, bb, self.compact_a.x, self.peak_fn() if self.compact.mode() == "media" else 0.0)
@@ -1030,9 +1052,9 @@ class Island(QtWidgets.QWidget):
     # ================================================================ 鼠标
     def _inside(self, gp: QtCore.QPoint) -> bool:
         lp = QtCore.QPointF(gp - self._win_origin)
-        if self.path.contains(lp):
+        if self.expanded and self.path.contains(lp):
             return True
-        return self.body.adjusted(-4, -4, 4, 4).contains(lp)
+        return self.body.adjusted(-2, -2, 2, 2).contains(lp)
 
     def _poll_hover(self):
         # 输入框的键盘焦点：切到别的窗口后立即释放，否则会一直保持展开
@@ -1045,23 +1067,31 @@ class Island(QtWidgets.QWidget):
         inside = self._inside(QtGui.QCursor.pos())
         now = time.monotonic()
         if not self.expanded and self.mode == "anchored" and not self._fs_hidden:
-            # 收起时（任何展开方式）：鼠标靠近就把水滴"挤"一下，离开后带回弹地恢复
-            # 只有鼠标进入灵动岛范围才挤压；越靠近中心挤压越强（边缘处几乎不变形）。
-            # 靠近但没碰到时只有表情变化（由小形象自己处理），不挤压。
+            # 岛外悬停吸附：鼠标在灵动岛外围附近时，边缘朝鼠标温和凸起；移远后平滑复位
             gp = QtCore.QPointF(QtGui.QCursor.pos())
             lp = gp - QtCore.QPointF(self._win_origin)
             b = self.body
-            if b.contains(lp):
-                nx = (lp.x() - b.center().x()) / max(1.0, b.width() / 2)
-                ny = (lp.y() - b.center().y()) / max(1.0, b.height() / 2)
-                depth = 1.0 - min(1.0, math.hypot(nx, ny))           # 0 = 边缘，1 = 中心
-                target = depth ** 1.4
+            dx = max(b.left() - lp.x(), 0.0, lp.x() - b.right())
+            dy = max(b.top() - lp.y(), 0.0, lp.y() - b.bottom())
+            dist_out = math.hypot(dx, dy)
+            hover_range = 42.0
+            if 0.0 < dist_out < hover_range:
+                target = smooth(1.0 - dist_out / hover_range)
                 self._poke_pt = gp
                 if abs(self.poke.target - target) > 0.01:
-                    self.poke.to(target, 260, 0.75)
+                    self.poke.to(target, 280, 0.78)
+                    self._kick()
+            elif dist_out == 0.0:
+                nx = (lp.x() - b.center().x()) / max(1.0, b.width() / 2)
+                ny = (lp.y() - b.center().y()) / max(1.0, b.height() / 2)
+                edge_w = min(1.0, math.hypot(nx, ny))
+                target = 0.35 + 0.65 * edge_w
+                self._poke_pt = gp
+                if abs(self.poke.target - target) > 0.01:
+                    self.poke.to(target, 280, 0.78)
                     self._kick()
             elif self.poke.target != 0.0:
-                self.poke.to(0.0, 300, 0.22)          # 欠阻尼：弹回时会外鼓几下
+                self.poke.to(0.0, 260, 0.72)
                 self._kick()
         on_btn = inside and self._on_play_button(QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin))
         hv = 1.0 if on_btn and not self.passthrough() else 0.0
@@ -1234,8 +1264,14 @@ class Island(QtWidgets.QWidget):
         self.pin_changed.emit(bool(on))
 
     def wheelEvent(self, e):
+        dy = e.angleDelta().y() or e.angleDelta().x()
+        if not dy:
+            return
         if not self.expanded:
-            self.wheel_compact.emit(1 if e.angleDelta().y() > 0 else -1)
+            self.wheel_compact.emit(1 if dy > 0 else -1)
+        else:
+            self.nav.step_wheel(dy)
+            e.accept()
 
     # ================================================================ 焦点（输入框需要键盘）
     def request_focus(self):

@@ -77,6 +77,8 @@ def autostart_enabled() -> bool:
 
 
 def _autostart_cmd() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
     """开机自启命令：通过 wisland.vbs 启动（它会选用不带控制台的 pythonw，不会弹出终端窗口）。"""
     wscript = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wscript.exe")
     return f'"{wscript}" "{ROOT / "wisland.vbs"}"'
@@ -122,22 +124,19 @@ def main():
         return 0
     fix_autostart()
 
-    from .services.audio import AudioService, BrightnessService
-    from .services.clash import ClashService
-    from .services.clipboard import ClipboardService
+    from .services.audio import AudioService
     from .services.mailcheck import MailCheckService
     from .services.media import MediaService
     from .services.notify import NotifyService
-    from .services.stocks import StockService
-    from .services.system import RadioService, WindowService
+    from .services.system import WindowService
     from .services.lyrics import LyricsService
     from .services.translate import TranslateService
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
     from .ui.pages.home import HomePage, MessagesPage
-    from .ui.pages.info import StocksPage, WeatherPage
-    from .ui.pages.system import ControlsPage, styled_menu
-    from .ui.pages.tools import ClipboardPage, TranslatePage
+    from .ui.pages.info import WeatherPage
+    from .ui.pages.system import styled_menu
+    from .ui.pages.tools import TranslatePage
     from .ui.theme import KIND_COLORS, THEME_NAMES, G, theme
     from .ui.widgets import glyph_pixmap
 
@@ -145,16 +144,11 @@ def main():
     ctx = SimpleNamespace()
     ctx.media = MediaService()
     ctx.audio = AudioService()
-    ctx.brightness = BrightnessService()
-    ctx.radio = RadioService()
     ctx.windows = WindowService()
     ctx.notify = NotifyService()
-    ctx.stocks = StockService()
     ctx.weather = WeatherService()
-    ctx.clash = ClashService()
     ctx.translate = TranslateService()
     ctx.lyrics = LyricsService()
-    ctx.clipboard = ClipboardService()
     ctx.mailcheck = MailCheckService()
     from .live.service import LiveService
     ctx.live = LiveService()
@@ -165,8 +159,7 @@ def main():
     ctx.windows.notice.connect(lambda t: ctx.island and ctx.island.activity({"glyph": _G().MESSAGE, "title": t}, 5.0))
     ctx.island = None
 
-    pages = [HomePage(ctx), MessagesPage(ctx), StocksPage(ctx), WeatherPage(ctx), ControlsPage(ctx),
-             ClipboardPage(ctx), TranslatePage(ctx)]
+    pages = [HomePage(ctx), MessagesPage(ctx), WeatherPage(ctx), TranslatePage(ctx)]
     ctx.pages = {p.key: p for p in pages}
     P = ctx.pages
 
@@ -236,7 +229,6 @@ def main():
     vol_state = {"init": True, "last": None}
 
     def on_volume(v, muted):
-        P["ctl"].set_volume(v, muted)
         P["home"].set_muted(muted)
         key = (round(v, 3), muted)
         if vol_state["init"]:
@@ -257,22 +249,6 @@ def main():
         cfg.set("island.compact_view", v)
         island._kick()
     island.wheel_compact.connect(on_wheel)
-    ctx.brightness.changed.connect(P["ctl"].set_brightness)
-    ctx.radio.changed.connect(P["ctl"].set_radio)
-
-    # ---------------- Clash ----------------
-    clash_state = {"mode": None}
-
-    def on_clash(d):
-        P["ctl"].set_clash(d)
-        m = d.get("mode")
-        if d.get("ok") and clash_state["mode"] and m != clash_state["mode"] and not island.expanded:
-            names = {"rule": "规则模式", "global": "全局模式", "direct": "直连模式"}
-            island.activity({"glyph": G.GLOBE, "title": "Clash", "sub": names.get(m, m)}, 2.2)
-        if d.get("ok"):
-            clash_state["mode"] = m
-    ctx.clash.updated.connect(on_clash)
-
 
     # ---------------- 消息提醒 ----------------
     def on_notified(n):
@@ -297,16 +273,6 @@ def main():
     island.flash.connect(ctx.notify.on_flash)
     ctx.mailcheck.new_mail.connect(lambda user, n: ctx.notify._emit(
         {"kind": "mail", "name": "邮件", "source": "imap", "time": time.time()}))
-
-    # ---------------- 股票 ----------------
-    ctx.stocks.updated.connect(P["stock"].set_data)
-
-    def on_stock_alert(a):
-        pct = a.get("pct") or 0
-        col = theme.up() if pct > 0 else theme.down()
-        island.activity({"glyph": G.STOCK, "color": col, "title": a.get("name", a.get("code", "")),
-                         "sub": a.get("text", ""), "sub_color": col}, 5.0)
-    ctx.stocks.alert.connect(on_stock_alert)
 
     # ---------------- 天气 ----------------
     def on_weather(d):
@@ -359,8 +325,6 @@ def main():
             island.toggle()
         elif name == "translate":
             ctx.actions.translate_clipboard()
-        elif name == "clipboard":
-            island.toggle("clip")
     island.hotkey.connect(on_hotkey)
 
     # ---------------- 菜单 / 托盘 ----------------
@@ -400,14 +364,6 @@ def main():
         m.aboutToHide.connect(lambda: island.locks.discard("menu"))
         m.popup(pos)
     island.menu_requested.connect(show_menu)
-    # 导航：「主页」标签放在播放器封面正上方
-    def nav_anchor():
-        m = P["home"].media
-        if m.width() < 10:
-            return None
-        g = m.mapToGlobal(QtCore.QPoint(m.width() // 2, 0))
-        return island.nav.mapFromGlobal(g).x()
-    island.nav.anchor_fn = nav_anchor
 
     # 主页的「保持展开」「可穿透」按钮
     home = P["home"]
@@ -435,7 +391,6 @@ def main():
     home.a_pt.set_on(island.passthrough(), None, "可穿透")
     if island.passthrough():
         compact.set_view("pet")
-    island.nav.add_right_button(G.GEAR, "设置", lambda: show_menu(QtGui.QCursor.pos()))
 
     tray = QtWidgets.QSystemTrayIcon(QtGui.QIcon(glyph_pixmap(G.APPS, 32, QtGui.QColor("#4f8cff"))), app)
     tray.setToolTip("wisland 灵动岛")
@@ -469,8 +424,8 @@ def main():
 
     # ---------------- 启动 ----------------
     island.show()
-    for s in (ctx.media, ctx.audio, ctx.brightness, ctx.radio, ctx.windows, ctx.notify, ctx.stocks,
-              ctx.weather, ctx.clash, ctx.translate, ctx.clipboard, ctx.mailcheck, ctx.learn):
+    for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
+              ctx.weather, ctx.translate, ctx.mailcheck, ctx.learn):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -480,8 +435,8 @@ def main():
 
     def shutdown():
         ctx.live.stop(wait=True)
-        for s in (ctx.media, ctx.audio, ctx.brightness, ctx.radio, ctx.notify, ctx.stocks,
-                  ctx.weather, ctx.clash, ctx.translate, ctx.clipboard, ctx.mailcheck, ctx.learn):
+        for s in (ctx.media, ctx.audio, ctx.notify,
+                  ctx.weather, ctx.translate, ctx.mailcheck, ctx.learn):
             try:
                 s.stop()
             except Exception:  # noqa: BLE001

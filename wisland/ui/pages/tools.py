@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""剪贴板历史与日语翻译。"""
+"""日语翻译与实时字幕。"""
 from __future__ import annotations
 
 import time
@@ -14,191 +14,6 @@ from ..widgets import (Segmented, Card, Hoverable, IconButton, Label, LineEdit, 
 from .base import Page
 
 Qt = QtCore.Qt
-
-
-class ClipRow(Hoverable):
-    """一条剪贴板记录：点击复制；右侧图钉（置顶）和 X（删除）。"""
-    pin_toggled = QtCore.Signal()
-    delete_clicked = QtCore.Signal()
-
-    def __init__(self, item: dict, parent=None):
-        super().__init__(parent)
-        self.item = item
-        self.flash = 0.0
-        th = item.get("thumb")
-        self.pm = QtGui.QPixmap.fromImage(th) if isinstance(th, QtGui.QImage) and not th.isNull() else None
-        self.setMinimumHeight(150)
-
-    def resizeEvent(self, e):
-        # 接近正方形：高度跟随宽度
-        h = max(150, round(self.width() * 0.82))
-        if self.height() != h:
-            self.setFixedHeight(h)
-        self.setMouseTracking(True)
-        self._hot = None
-
-    def _pin_rect(self):
-        return QtCore.QRectF(self.width() - 66, self.height() - 34, 26, 26)
-
-    def _del_rect(self):
-        return QtCore.QRectF(self.width() - 36, self.height() - 34, 26, 26)
-
-    def mouseMoveEvent(self, e):
-        hot = "pin" if self._pin_rect().contains(e.position()) else "del" if self._del_rect().contains(e.position()) else None
-        if hot != self._hot:
-            self._hot = hot
-            self.update()
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            if self._pin_rect().contains(e.position()):
-                self.pin_toggled.emit()
-                return
-            if self._del_rect().contains(e.position()):
-                self.delete_clicked.emit()
-                return
-        super().mouseReleaseEvent(e)
-
-    def mark_copied(self):
-        self.flash = 1.0
-        self.update()
-        def off():
-            try:
-                self.flash = 0.0
-                self.update()
-            except RuntimeError:      # 行已被重建删除
-                pass
-        QtCore.QTimer.singleShot(900, off)
-
-    def paintEvent(self, e):
-        p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        sc = self.press_scale()
-        p.translate(r.center())
-        p.scale(sc, sc)
-        p.translate(-r.center())
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.active_pill() if self.flash else theme.card(0.75 + 0.8 * self._hover.x))
-        p.drawRoundedRect(r, 18, 18)
-        body = QtCore.QRectF(r.x() + 12, r.y() + 12, r.width() - 24, r.height() - 48)
-        if self.flash:
-            p.setFont(ui_font(14, W.DemiBold))
-            p.setPen(theme.pill_text())
-            p.drawText(body, Qt.AlignmentFlag.AlignCenter, "已复制")
-        elif self.pm is not None:
-            path = QtGui.QPainterPath()
-            path.addRoundedRect(body, 10, 10)
-            p.save()
-            p.setClipPath(path)
-            p.setBrush(theme.track())
-            p.drawRoundedRect(body, 10, 10)
-            img = self.pm.scaled(body.size().toSize() * 2, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-            img.setDevicePixelRatio(2)
-            off = QtCore.QPointF((body.width() - img.width() / 2) / 2, (body.height() - img.height() / 2) / 2)
-            p.drawPixmap(body.topLeft() + off, img)
-            p.restore()
-        else:
-            txt = " ".join((self.item.get("text") or "").split())
-            p.setFont(ui_font(12.5))
-            p.setPen(theme.text())
-            fm = QtGui.QFontMetrics(p.font())
-            lines = max(1, int(body.height() // fm.lineSpacing()))
-            # 手动按宽度断行，最多 lines 行，末行省略
-            out, cur = [], ""
-            for ch in txt:
-                if fm.horizontalAdvance(cur + ch) > body.width():
-                    out.append(cur)
-                    cur = ch
-                    if len(out) >= lines:
-                        break
-                else:
-                    cur += ch
-            if len(out) < lines and cur:
-                out.append(cur)
-            if len(out) == lines and (len("".join(out)) < len(txt)):
-                out[-1] = fm.elidedText(out[-1] + "…", Qt.TextElideMode.ElideRight, int(body.width()))
-            for i, line in enumerate(out[:lines]):
-                p.drawText(QtCore.QRectF(body.x(), body.y() + i * fm.lineSpacing(), body.width(), fm.lineSpacing()),
-                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, line)
-        # 底栏：时间 · 置顶 · 删除
-        p.setFont(ui_font(10.5, num=True))
-        p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(r.x() + 14, r.bottom() - 34, 80, 30), Qt.AlignmentFlag.AlignVCenter,
-                   time.strftime("%H:%M", time.localtime(self.item.get("time", 0))))
-        pinned = self.item.get("pinned")
-        for rect, glyph, hot, base in ((self._pin_rect(), G.PIN if pinned else G.UNPIN, self._hot == "pin", 0.9 if pinned else 0.4),
-                                       (self._del_rect(), G.CLOSE, self._hot == "del", 0.4)):
-            if hot:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(theme.hover())
-                p.drawEllipse(rect)
-            p.setFont(icon_font(11))
-            p.setPen(theme.text(1.0 if hot else base))
-            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, glyph)
-
-
-class ClipboardPage(Page):
-    key, glyph, title, height = "clip", G.CLIP, "剪贴板", 400
-
-    def __init__(self, ctx):
-        super().__init__(ctx)
-        clear = PillButton("清空", G.TRASH, height=28)
-        self.clear_btn = clear
-        clear.clicked.connect(lambda: ctx.clipboard.clear())
-        self.sc = ScrollArea()
-        self.list = QtWidgets.QGridLayout(self.sc.inner)
-        self.list.setContentsMargins(36, 2, 40, 10)     # 与两侧边缘留出更大距离
-        self.list.setHorizontalSpacing(22)
-        self.list.setVerticalSpacing(20)
-        self.list.setColumnStretch(0, 1)
-        self.list.setColumnStretch(1, 1)
-        self.setLayout(vbox(hbox(None, clear, margins=(0, 0, 14, 0)), (self.sc, 1), spacing=6))
-        ctx.clipboard.changed.connect(self._changed)
-        self._dirty = True
-        self.height = 400 if ctx.clipboard.items() else 150      # 打开时直接用对的高度
-        self._just = None
-
-    def _changed(self):
-        self._dirty = True
-        if self.active:
-            self.refresh()
-
-    def refresh(self):
-        self._dirty = False
-        while self.list.count():
-            it = self.list.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
-        q = ""
-        n = 0
-        for item in self.ctx.clipboard.items():
-            if q and (item.get("kind") != "text" or q not in (item.get("text") or "").lower()):
-                continue
-            row = ClipRow(item)
-            iid = item["id"]
-            row.clicked.connect(lambda iid=iid, row=row: self._copy(iid, row))
-            row.pin_toggled.connect(lambda iid=iid, it=item: self.ctx.clipboard.pin(iid, not it.get("pinned")))
-            row.delete_clicked.connect(lambda iid=iid: self.ctx.clipboard.remove(iid))
-            self.list.addWidget(row, n // 2, n % 2)
-            if self._just and self._just[0] == iid and time.monotonic() - self._just[1] < 0.9:
-                row.mark_copied()
-            n += 1
-        self.list.setRowStretch(max(1, (n + 1) // 2), 1)
-        self.sc.setVisible(n > 0)
-        self.clear_btn.setVisible(n > 0)
-        self.set_height(400 if n > 0 else 150)        # 没有内容时回到默认高度
-
-    def _copy(self, iid, row):
-        """点击 = 复制到剪贴板（不粘贴）。"""
-        self._just = (iid, time.monotonic())
-        row.mark_copied()
-        self.ctx.clipboard.copy(iid)
-
-    def on_show(self):
-        super().on_show()
-        if self._dirty:
-            self.refresh()
 
 
 class LiveView(QtWidgets.QWidget):
@@ -278,10 +93,11 @@ class LiveView(QtWidgets.QWidget):
 
     def wheelEvent(self, e):
         d = e.angleDelta().y() or e.pixelDelta().y()
-        if not d:
+        mx = self._max_scroll()
+        if not d or mx <= 0:
             e.ignore()
             return
-        self.scroll = clamp(self.scroll + d / 120.0 * 52.0, 0.0, self._max_scroll())
+        self.scroll = clamp(self.scroll + d / 120.0 * 52.0, 0.0, mx)
         self.update()
         e.accept()
 
