@@ -283,7 +283,6 @@ class CompactView:
         self.activity: dict | None = None
         self.badges: dict[str, int] = {}
         self.weather: tuple | None = None   # (glyph, "18°", font_family)
-        self.ticker: list[tuple[str, float, float]] = []  # (name, price, pct)
         self._mode = "idle"
         self._mode_t = 0.0
         # 收起态视图（滚轮切换）：clock = 时间天气，pet = 可爱形象，music = 音乐
@@ -319,9 +318,9 @@ class CompactView:
         """设置当前歌曲的歌词；按最长一行确定胶囊宽度（避免每句都改变宽度）。"""
         self.lyrics = lyr if lyr else None
         self._lyr_idx, self._lyr_prev = -2, ""
-        if self.lyrics:
+        if self.lyrics and self.lyrics.lines:
             fm = QtGui.QFontMetrics(ui_font(13, W.Medium))
-            widest = max(fm.horizontalAdvance(x) for x in self.lyrics.lines)
+            widest = max((fm.horizontalAdvance(x) for x in self.lyrics.lines), default=0)
             self._lyr_w = clamp(widest + 160, W_TEXT, 760)      # 宽度按整首最长一句固定，不随每句变化
         else:
             self._lyr_w = 0.0
@@ -410,7 +409,7 @@ class CompactView:
         if m == "activity":
             a = self.activity
             t = a.get("type")
-            if t in ("volume", "brightness"):
+            if t == "volume":
                 return 280, H_ACT
             fm = QtGui.QFontMetrics(ui_font(13, W.DemiBold))
             w = 70 + fm.horizontalAdvance(a.get("title", "")) + QtGui.QFontMetrics(ui_font(12)).horizontalAdvance(a.get("sub", ""))
@@ -422,8 +421,8 @@ class CompactView:
                 return 190 + nb * 12, H_MEDIA
             return max(300, self._lyr_w) + 34 + nb * 12, H_MEDIA
         if m == "pet":
-            return 150 + nb * 14, H_IDLE
-        w = 150 + (64 if self.weather else 0) + nb * 14
+            return 134 + nb * 13, H_IDLE
+        w = (134 if self.weather else 96) + nb * 13
         return w, H_IDLE
 
     # --- 绘制 ---
@@ -452,26 +451,6 @@ class CompactView:
         else:
             self._paint_idle(p, r, a)
         p.restore()
-        if m != "activity":
-            self._paint_dots(p, r, alpha)
-
-    def _paint_dots(self, p, r, alpha):
-        """（已关闭）切换视图时不显示页码小圆点。"""
-        return
-        k = time.monotonic() - self._view_t
-        if k > 1.4:
-            return
-        a = alpha * (1.0 if k < 0.9 else max(0.0, 1 - (k - 0.9) / 0.5))
-        n = len(self.views)
-        cx = r.center().x()
-        y = r.bottom() - 4.5 if r.height() > 30 else r.bottom() - 3
-        for i, v in enumerate(self.views):
-            on = v == self.view
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.text((0.9 if on else 0.3) * a))
-            w = 9 if on else 3.4
-            x = cx + (i - (n - 1) / 2) * 9
-            p.drawRoundedRect(QtCore.QRectF(x - w / 2, y - 1.7, w, 3.4), 1.7, 1.7)
 
     def _paint_subtitle(self, p, r, a):
         """两行字幕：上面日语（小字，较淡），下面中文（大字）；太长时保留结尾（最新的话）。"""
@@ -548,25 +527,46 @@ class CompactView:
     def _paint_idle(self, p, r, a):
         cy = r.center().y()
         now = time.localtime()
-        p.setFont(ui_font(15, W.DemiBold, num=True))
-        p.setPen(theme.text(a))
+        ft = ui_font(15, W.DemiBold, num=True)
         txt = time.strftime("%H:%M", now)
-        p.drawText(QtCore.QRectF(r.x() + 18, r.y(), 80, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
-        x = r.right() - 16
-        x = self._badges(p, x, cy, a) - 4
+        fmt = QtGui.QFontMetrics(ft)
+        tw_time = fmt.horizontalAdvance(txt)
+        has_badges = any(self.badges.values())
+        if not self.weather and not has_badges:
+            p.setFont(ft)
+            p.setPen(theme.text(a))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+            return
+        right_edge = self._badges(p, r.right() - 14, cy, a) - 4 if has_badges else r.right()
+        avail = QtCore.QRectF(r.x(), r.y(), right_edge - r.x(), r.height())
         if self.weather:
             glyph, temp = self.weather[0], self.weather[1]
             fam = self.weather[2] if len(self.weather) > 2 else None
-            p.setFont(ui_font(13, W.Medium, num=True))
-            p.setPen(theme.text2(a))
-            fm = QtGui.QFontMetrics(p.font())
-            tw = fm.horizontalAdvance(temp)
-            p.drawText(QtCore.QRectF(x - tw, r.y(), tw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter, temp)
+            fw = ui_font(13, W.Medium, num=True)
+            fmw = QtGui.QFontMetrics(fw)
+            tw_temp = fmw.horizontalAdvance(temp)
+            icon_w = 18
+            mid_gap = 16
+            total_w = tw_time + mid_gap + icon_w + 3 + tw_temp
+            sx = avail.center().x() - total_w / 2
+            p.setFont(ft)
+            p.setPen(theme.text(a))
+            p.drawText(QtCore.QRectF(sx, r.y(), tw_time + 4, r.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
+            wx = sx + tw_time + mid_gap
             f = icon_font(13)
             if fam:
                 f.setFamilies([fam, "Segoe Fluent Icons", "Segoe UI Symbol"])
             p.setFont(f)
-            p.drawText(QtCore.QRectF(x - tw - 22, r.y(), 20, r.height()), Qt.AlignmentFlag.AlignCenter, glyph)
+            p.setPen(theme.text2(a))
+            p.drawText(QtCore.QRectF(wx, r.y(), icon_w, r.height()), Qt.AlignmentFlag.AlignCenter, glyph)
+            p.setFont(fw)
+            p.drawText(QtCore.QRectF(wx + icon_w + 3, r.y(), tw_temp + 4, r.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, temp)
+        else:
+            p.setFont(ft)
+            p.setPen(theme.text(a))
+            p.drawText(avail, Qt.AlignmentFlag.AlignCenter, txt)
 
     def _paint_media(self, p, r, a):
         cy = r.center().y()
@@ -684,7 +684,7 @@ class CompactView:
             p.setFont(icon_font(13 if color is not None else 16))
             p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
         x = cr.right() + 10
-        if t in ("volume", "brightness"):
+        if t == "volume":
             v = clamp(act.get("value", 0.0), 0, 1)
             bw = r.right() - 52 - x
             track = QtCore.QRectF(x, cy - 3, bw, 6)

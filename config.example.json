@@ -18,8 +18,7 @@
     "passthrough": false
   },
   "hotkeys": {
-    "toggle": "Ctrl+Alt+I",
-    "translate": "Ctrl+Alt+J"
+    "toggle": "Ctrl+Alt+I"
   },
   "media": {
     "auto_show": true,
@@ -129,19 +128,5 @@
       "live_min_new_chars": 4,
       "context_lines": 3
     }
-  },
-  "learn": {
-    "deck": "日语::生词",
-    "ankiconnect_url": "",
-    "auto_sync": false,
-    "screenshot": false,
-    "player_title": "",
-    "source": ""
-  },
-  "launcher": [
-    {
-      "name": "文件资源管理器",
-      "path": "C:/Windows/explorer.exe"
-    }
-  ]
+  }
 }

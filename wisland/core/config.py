@@ -37,7 +37,6 @@ DEFAULTS: dict = {
     },
     "hotkeys": {
         "toggle": "Ctrl+Alt+I",
-        "translate": "Ctrl+Alt+J",
     },
     "media": {
         "auto_show": True,           # 开始播放时收起态自动切到音乐（暂停 8 秒后切回）
@@ -102,17 +101,6 @@ DEFAULTS: dict = {
         "translate": {"enabled": True, "live": True, "live_min_interval_ms": 900, "live_min_new_chars": 4,
                       "context_lines": 3},
     },
-    "learn": {
-        "deck": "日语::生词",          # Anki 牌组
-        "ankiconnect_url": "",        # 留空 = 本机 127.0.0.1:8765；AnkiConnect Android 填 手机IP:8765
-        "auto_sync": False,           # 加词后 / 每 20 秒自动推送到 Anki（Anki 开着时）
-        "screenshot": False,          # 加词时截取播放器画面作为卡片配图
-        "player_title": "",           # 播放器窗口标题关键字（截图用），如 "Kazumi"
-        "source": "",
-    },
-    "launcher": [
-        {"name": "文件资源管理器", "path": "C:/Windows/explorer.exe"},
-    ],
 }
 
 
@@ -143,7 +131,7 @@ class Config(QtCore.QObject):
         user = {}
         if CONFIG_PATH.exists():
             try:
-                user = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                user = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
             except Exception as e:  # noqa: BLE001
                 print("config.json 解析失败，使用默认值：", e)
         with self._lock:

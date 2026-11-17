@@ -307,93 +307,6 @@ class Action(Hoverable):
         p.drawText(QtCore.QRectF(r.x(), r.y() + 32, r.width(), 18), Qt.AlignmentFlag.AlignCenter, self.title)
 
 
-_icon_provider = None
-
-
-def file_icon(path: str, size: int = 64) -> QtGui.QPixmap | None:
-    global _icon_provider
-    if _icon_provider is None:
-        _icon_provider = QtWidgets.QFileIconProvider()
-    if not path or not os.path.exists(path):
-        return None
-    ic = _icon_provider.icon(QtCore.QFileInfo(path))
-    pm = ic.pixmap(size, size)
-    return None if pm.isNull() else pm
-
-
-_appx_cache: dict[str, str] = {}
-
-
-def resolve_appx(spec: str, cb):
-    """"appx:包名/相对路径" -> 安装目录下的文件路径（后台查询，结果缓存）。"""
-    from ...core.bg import run_bg, run_hidden
-    name, _, rel = spec[5:].partition("/")
-    if name in _appx_cache:
-        cb(os.path.join(_appx_cache[name], rel))
-        return
-
-    def q():
-        r = run_hidden(["powershell", "-NoProfile", "-Command", f"(Get-AppxPackage -Name '{name}').InstallLocation"])
-        return (r.stdout or b"").decode("utf-8", "ignore").strip().splitlines()[0] if r.stdout else ""
-
-    def done(loc):
-        if loc:
-            _appx_cache[name] = loc
-            cb(os.path.join(loc, rel))
-    run_bg(q, on_done=done)
-
-
-class LaunchIcon(Hoverable):
-    def __init__(self, item: dict, opener=None, parent=None):
-        super().__init__(parent)
-        self.item = item
-        self.opener = opener
-        self.path = expand(item.get("path", ""))
-        icon_spec = item.get("icon", "")
-        self.pm = None
-        if str(icon_spec).startswith("appx:"):
-            resolve_appx(icon_spec, self._set_icon)
-        else:
-            self.pm = file_icon(expand(icon_spec) or self.path)
-        self.setFixedSize(44, 44)
-        self.setToolTip(item.get("name", os.path.basename(self.path)))
-        self.clicked.connect(self.run)
-
-    def _set_icon(self, path):
-        self.pm = file_icon(path)
-        self.update()
-
-    def run(self):
-        args = self.item.get("args") or []
-        if isinstance(args, str):
-            args = args.split()
-        if self.opener is not None:
-            self.opener(self.path, self.item.get("exe"), args)
-        else:
-            launch(self.path, args)
-
-    def paintEvent(self, e):
-        p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale() * (1 + 0.06 * self._hover.x)
-        p.translate(r.center())
-        p.scale(s, s)
-        p.translate(-r.center())
-        if self._hover.x > 0.01:
-            c = theme.hover()
-            c.setAlphaF(c.alphaF() * self._hover.x)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(c)
-            p.drawRoundedRect(r, 12, 12)
-        if self.pm is not None:
-            ir = QtCore.QRectF(r.center().x() - 14, r.center().y() - 14, 28, 28)
-            p.drawPixmap(ir.toRect(), self.pm)
-        else:
-            p.setFont(ui_font(15, W.Bold))
-            p.setPen(theme.text(0.8))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, (self.item.get("name") or "?")[:1])
-
-
 class PetWidget(QtWidgets.QWidget):
     """主页中间的大号小形象：眼睛跟随光标，鼠标靠近时开心。"""
     def __init__(self, parent=None, scale: float = 2.3):
@@ -421,47 +334,8 @@ class PetWidget(QtWidgets.QWidget):
         self.face.paint(p, c.x(), c.y() - 4, self.scale, 1.0, look, near)
 
 
-class LaunchStrip(QtWidgets.QScrollArea):
-    """启动器横条：应用多到放不下时，滚轮横向平滑滚动（不显示滚动条）。"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setWidgetResizable(True)
-        self.setFixedHeight(46)
-        self.viewport().setAutoFillBackground(False)
-        self.setStyleSheet("QScrollArea{background:transparent;border:none}")
-        self.viewport().setStyleSheet("background:transparent")
-        self.inner = QtWidgets.QWidget()
-        self.inner.setObjectName("stripInner")
-        self.inner.setStyleSheet("#stripInner{background:transparent}")
-        self.setWidget(self.inner)
-        self.inner.setAutoFillBackground(False)
-        self.row = QtWidgets.QHBoxLayout(self.inner)
-        self.row.setContentsMargins(0, 0, 0, 0)
-        self.row.setSpacing(2)
-        self._anim = QtCore.QPropertyAnimation(self.horizontalScrollBar(), b"value", self)
-        self._anim.setDuration(220)
-        self._anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-
-    def wheelEvent(self, e):
-        bar = self.horizontalScrollBar()
-        if bar.maximum() <= 0:
-            e.ignore()
-            return
-        d = e.angleDelta().y() or e.angleDelta().x()
-        start = self._anim.endValue() if self._anim.state() == QtCore.QAbstractAnimation.State.Running else bar.value()
-        target = max(0, min(bar.maximum(), int(start) - d))
-        self._anim.stop()
-        self._anim.setStartValue(bar.value())
-        self._anim.setEndValue(target)
-        self._anim.start()
-        e.accept()
-
-
 class HomePage(Page):
-    key, glyph, title, height = "home", G.HOME, "主页", 240
+    key, glyph, title, height = "home", G.HOME, "主页", 172
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -483,28 +357,11 @@ class HomePage(Page):
         gw = QtWidgets.QWidget()
         gw.setLayout(grid)
         gw.setFixedWidth(150)
-        self.strip = LaunchStrip()
-        self.launch_row = self.strip.row
-        self.build_launcher()
         self.pet = PetWidget()
         # 播放卡贴左、四个按钮贴右，各自收窄；中间整块留给小形象
         self.media.setFixedWidth(200)
-        lay = vbox(hbox(self.media, (self.pet, 1), gw, spacing=12), self.strip, spacing=8)
+        lay = vbox(hbox(self.media, (self.pet, 1), gw, spacing=12), spacing=0)
         self.setLayout(lay)
-
-    def build_launcher(self):
-        while self.launch_row.count():
-            it = self.launch_row.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
-        for item in cfg.get("launcher") or []:
-            self.launch_row.addWidget(LaunchIcon(item, self._open))
-        self.launch_row.addStretch(1)
-
-    def _open(self, path, exe=None, args=None):
-        res = self.ctx.windows.open_or_focus(path, exe, args)
-        if res == "focused" and self.island:
-            self.island.collapse()
 
     def _toggle_live(self):
         self.ctx.live.toggle()

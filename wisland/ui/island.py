@@ -175,7 +175,7 @@ class _BlankDoubleClick(QtCore.QObject):
     def eventFilter(self, obj, ev):
         if ev.type() == QtCore.QEvent.Type.Wheel and isinstance(obj, QtWidgets.QWidget):
             isl = self.island
-            if isl.expanded and obj.window() is isl and not self._can_scroll(obj, ev):
+            if isl.expanded and not isl.locks and obj.window() is isl and not self._can_scroll(obj, ev):
                 dy = ev.angleDelta().y() or ev.angleDelta().x()
                 if dy:
                     isl.nav.step_wheel(dy)
@@ -384,15 +384,18 @@ class Island(QtWidgets.QWidget):
         self._update_geometry(force=True)
 
     # ================================================================ 展开 / 收起
+    def _nav_bpad(self) -> int:
+        return 10 if self.edge == "bottom" else 6
+
     def expanded_size(self) -> tuple[float, float]:
         """打开时的尺寸（按上次停留的页面的高度）。"""
         pg = self.pages[self.stack.currentIndex()]
-        return EXP_W, PAD + pg.preferred_height() + 6 + NAV_H + 6
+        return EXP_W, PAD + pg.preferred_height() + 6 + NAV_H + self._nav_bpad()
 
     def target_size(self) -> tuple[float, float]:
         if self.expanded:
             pg = self.pages[self.stack.currentIndex()]
-            h = PAD + pg.preferred_height() + 6 + NAV_H + 6
+            h = PAD + pg.preferred_height() + 6 + NAV_H + self._nav_bpad()
             return EXP_W, h
         return self.compact.size_hint()
 
@@ -916,15 +919,16 @@ class Island(QtWidgets.QWidget):
         return cr
 
     def _place_nav(self):
-        """底部页码圆点始终放在面板最下方居中。"""
-        if self._nav_bottom is True:
+        """底部页码圆点始终放在面板最下方居中（底边停靠时底部多留 4px 边距）。"""
+        bpad = self._nav_bpad()
+        if self._nav_bottom == bpad:
             return
-        self._nav_bottom = True
+        self._nav_bottom = bpad
         lay = self._content_lay
         lay.removeWidget(self.nav)
         lay.removeWidget(self.stack)
         lay.setSpacing(6)
-        lay.setContentsMargins(PAD, PAD, PAD, 6)
+        lay.setContentsMargins(PAD, PAD, PAD, bpad)
         lay.addWidget(self.stack, 1)
         lay.addWidget(self.nav)
 
@@ -1067,32 +1071,37 @@ class Island(QtWidgets.QWidget):
         inside = self._inside(QtGui.QCursor.pos())
         now = time.monotonic()
         if not self.expanded and self.mode == "anchored" and not self._fs_hidden:
-            # 岛外悬停吸附：鼠标在灵动岛外围附近时，边缘朝鼠标温和凸起；移远后平滑复位
-            gp = QtCore.QPointF(QtGui.QCursor.pos())
-            lp = gp - QtCore.QPointF(self._win_origin)
-            b = self.body
-            dx = max(b.left() - lp.x(), 0.0, lp.x() - b.right())
-            dy = max(b.top() - lp.y(), 0.0, lp.y() - b.bottom())
-            dist_out = math.hypot(dx, dy)
-            hover_range = 42.0
-            if 0.0 < dist_out < hover_range:
-                target = smooth(1.0 - dist_out / hover_range)
-                self._poke_pt = gp
-                if abs(self.poke.target - target) > 0.01:
-                    self.poke.to(target, 280, 0.78)
+            if self.passthrough():
+                if self.poke.target != 0.0:
+                    self.poke.to(0.0, 260, 0.72)
                     self._kick()
-            elif dist_out == 0.0:
-                nx = (lp.x() - b.center().x()) / max(1.0, b.width() / 2)
-                ny = (lp.y() - b.center().y()) / max(1.0, b.height() / 2)
-                edge_w = min(1.0, math.hypot(nx, ny))
-                target = 0.35 + 0.65 * edge_w
-                self._poke_pt = gp
-                if abs(self.poke.target - target) > 0.01:
-                    self.poke.to(target, 280, 0.78)
+            else:
+                # 岛外悬停吸附：鼠标在灵动岛外围附近时，边缘朝鼠标温和凸起；移远后平滑复位
+                gp = QtCore.QPointF(QtGui.QCursor.pos())
+                lp = gp - QtCore.QPointF(self._win_origin)
+                b = self.body
+                dx = max(b.left() - lp.x(), 0.0, lp.x() - b.right())
+                dy = max(b.top() - lp.y(), 0.0, lp.y() - b.bottom())
+                dist_out = math.hypot(dx, dy)
+                hover_range = 42.0
+                if 0.0 < dist_out < hover_range:
+                    target = smooth(1.0 - dist_out / hover_range)
+                    self._poke_pt = gp
+                    if abs(self.poke.target - target) > 0.01:
+                        self.poke.to(target, 280, 0.78)
+                        self._kick()
+                elif dist_out == 0.0:
+                    nx = (lp.x() - b.center().x()) / max(1.0, b.width() / 2)
+                    ny = (lp.y() - b.center().y()) / max(1.0, b.height() / 2)
+                    edge_w = min(1.0, math.hypot(nx, ny))
+                    target = 0.35 + 0.65 * edge_w
+                    self._poke_pt = gp
+                    if abs(self.poke.target - target) > 0.01:
+                        self.poke.to(target, 280, 0.78)
+                        self._kick()
+                elif self.poke.target != 0.0:
+                    self.poke.to(0.0, 260, 0.72)
                     self._kick()
-            elif self.poke.target != 0.0:
-                self.poke.to(0.0, 260, 0.72)
-                self._kick()
         on_btn = inside and self._on_play_button(QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin))
         hv = 1.0 if on_btn and not self.passthrough() else 0.0
         if abs(self.compact.play_hover - hv) > 0.01:
@@ -1109,10 +1118,11 @@ class Island(QtWidgets.QWidget):
         if inside:
             self._out_since = None
             if not self.expanded and self.expand_mode() != "never":
-                if self._hover_since is None:
+                if self._press is not None or self._click_timer.isActive() or (user32.GetAsyncKeyState(0x01) & 0x8000):
+                    self._hover_since = now       # 鼠标按下或等待双击期间不自动展开，防止打断双击长关
+                elif self._hover_since is None:
                     self._hover_since = now
-                elif (now - self._hover_since) * 1000 >= cfg.get("island.hover_expand_ms", 220) \
-                        and not (user32.GetAsyncKeyState(0x01) & 0x8000):
+                elif (now - self._hover_since) * 1000 >= cfg.get("island.hover_expand_ms", 220):
                     self._hover_since = None
                     self.expand()
         else:
@@ -1133,6 +1143,7 @@ class Island(QtWidgets.QWidget):
             return
         if e.button() == Qt.MouseButton.LeftButton:
             self._press = e.position()
+            self._hover_since = time.monotonic()
         elif e.button() == Qt.MouseButton.RightButton:
             self.menu_requested.emit(e.globalPosition().toPoint())
 
@@ -1269,7 +1280,7 @@ class Island(QtWidgets.QWidget):
             return
         if not self.expanded:
             self.wheel_compact.emit(1 if dy > 0 else -1)
-        else:
+        elif not self.locks:
             self.nav.step_wheel(dy)
             e.accept()
 

@@ -7,6 +7,7 @@ import sys
 import time
 import traceback
 import winreg
+from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -15,51 +16,6 @@ from .core import bg
 from .core.config import CONFIG_PATH, DATA_DIR, ROOT, cfg, expand
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-
-
-class Actions(QtCore.QObject):
-    """跨页面的动作（热键 / 快捷按钮共用）。"""
-
-    def __init__(self, ctx):
-        super().__init__()
-        self.ctx = ctx
-        self._trans_req = -1
-        self._trans_show_page = False
-
-    def translate_clipboard(self, show_page: bool = False):
-        text = QtGui.QGuiApplication.clipboard().text().strip()
-        if not text:
-            self.ctx.island.activity({"glyph": _G().TRANSLATE, "title": "剪贴板里没有文字"}, 2.0)
-            return
-        self.translate_text(text, show_page)
-
-    def translate_text(self, text: str, show_page: bool = False):
-        from .ui.theme import G
-        text = text.strip()[:4000]
-        if not text:
-            return
-        rid = self.ctx.translate.translate(text)
-        self._trans_req = rid
-        self._trans_show_page = show_page
-        self.ctx.pages["trans"].start(text, rid)
-        isl = self.ctx.island
-        if show_page:
-            isl.expand("trans")
-        elif not isl.expanded:
-            isl.activity({"glyph": G.TRANSLATE, "title": "翻译中…", "sub": text[:30]}, 20)
-
-    def on_translated(self, rid: int, out: str):
-        from .ui.theme import G
-        isl = self.ctx.island
-        if rid != self._trans_req or isl.expanded:
-            return
-        first = " ".join(out.split())
-        isl.activity({"glyph": G.TRANSLATE, "title": first[:60], "sub": ""}, min(12.0, 3.5 + len(first) * 0.12))
-
-    def on_trans_failed(self, rid: int, err: str):
-        from .ui.theme import G
-        if rid == self._trans_req and not self.ctx.island.expanded:
-            self.ctx.island.activity({"glyph": G.TRANSLATE, "title": "翻译失败", "sub": err}, 4)
 
 
 def _G():
@@ -130,7 +86,6 @@ def main():
     from .services.notify import NotifyService
     from .services.system import WindowService
     from .services.lyrics import LyricsService
-    from .services.translate import TranslateService
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
     from .ui.pages.home import HomePage, MessagesPage
@@ -147,14 +102,10 @@ def main():
     ctx.windows = WindowService()
     ctx.notify = NotifyService()
     ctx.weather = WeatherService()
-    ctx.translate = TranslateService()
     ctx.lyrics = LyricsService()
     ctx.mailcheck = MailCheckService()
     from .live.service import LiveService
     ctx.live = LiveService()
-    from .learn.service import LearnService
-    ctx.learn = LearnService()
-    ctx.actions = Actions(ctx)
     ctx.notify.opener = lambda path: ctx.windows.open_or_focus(path)
     ctx.windows.notice.connect(lambda t: ctx.island and ctx.island.activity({"glyph": _G().MESSAGE, "title": t}, 5.0))
     ctx.island = None
@@ -283,10 +234,6 @@ def main():
         island._kick()
     ctx.weather.updated.connect(on_weather)
 
-    # ---------------- 翻译 ----------------
-    ctx.translate.finished.connect(ctx.actions.on_translated)
-    ctx.translate.failed.connect(ctx.actions.on_trans_failed)
-
     # ---------------- 实时字幕：收起态显示最新一句 ----------------
     # 收起态两行显示：上面日语、下面中文；有人说话时优先显示，安静几秒后回到原视图（不打断音乐）
     sub_st = {"sid": None}
@@ -316,15 +263,12 @@ def main():
     ctx.live.final_zh.connect(on_zh)
     ctx.live.running_changed.connect(on_running)
     island.play_pause_requested.connect(lambda: ctx.media.play_pause())
-    ctx.learn.notice.connect(lambda t: island.activity({"glyph": _G().CHECK, "title": t}, 2.6))
     ctx.live.error.connect(lambda m: island.activity({"glyph": G.LIVE, "title": "实时字幕", "sub": m}, 4))
 
     # ---------------- 热键 ----------------
     def on_hotkey(name):
         if name == "toggle":
             island.toggle()
-        elif name == "translate":
-            ctx.actions.translate_clipboard()
     island.hotkey.connect(on_hotkey)
 
     # ---------------- 菜单 / 托盘 ----------------
@@ -332,7 +276,6 @@ def main():
         cfg.load()
         theme.set_mode(cfg.get("island.theme", "auto"))
         island.register_hotkeys()
-        P["home"].build_launcher()
         ctx.weather.refresh()
         island.activity({"glyph": G.CHECK, "title": "配置已重新加载"}, 1.8)
 
@@ -392,7 +335,13 @@ def main():
     if island.passthrough():
         compact.set_view("pet")
 
-    tray = QtWidgets.QSystemTrayIcon(QtGui.QIcon(glyph_pixmap(G.APPS, 32, QtGui.QColor("#4f8cff"))), app)
+    icon_path = Path(__file__).resolve().parent / "icon.png"
+    if icon_path.exists():
+        app_icon = QtGui.QIcon(str(icon_path))
+    else:
+        app_icon = QtGui.QIcon(glyph_pixmap(G.APPS, 32, QtGui.QColor("#4f8cff")))
+    app.setWindowIcon(app_icon)
+    tray = QtWidgets.QSystemTrayIcon(app_icon, app)
     tray.setToolTip("wisland 灵动岛")
     tmenu = QtWidgets.QMenu()
     tmenu.aboutToShow.connect(lambda: (tmenu.clear(), tmenu.addAction("展开 / 收起").triggered.connect(island.toggle),
@@ -425,7 +374,7 @@ def main():
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.translate, ctx.mailcheck, ctx.learn):
+              ctx.weather, ctx.mailcheck):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -436,7 +385,7 @@ def main():
     def shutdown():
         ctx.live.stop(wait=True)
         for s in (ctx.media, ctx.audio, ctx.notify,
-                  ctx.weather, ctx.translate, ctx.mailcheck, ctx.learn):
+                  ctx.weather, ctx.mailcheck):
             try:
                 s.stop()
             except Exception:  # noqa: BLE001

@@ -308,6 +308,10 @@ class WeatherService(QtCore.QObject):
 
     def stop(self):
         self._timer.stop()
+        try:
+            self._client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def refresh(self):
         if self._busy:

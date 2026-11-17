@@ -85,9 +85,6 @@ class Pipeline(QtCore.QThread):
         self._vad_pending = np.zeros(0, dtype=np.float32)
         self._vad_window = 512
         self._queue_warned = False
-        # 最近若干句的原始音频（sid → 16k float32），供单词本制作例句音频
-        self.clips: collections.OrderedDict = collections.OrderedDict()
-        self._clips_lock = threading.Lock()
 
     # ------------------------------------------------------------- 生命周期
     def _submit(self, pool, fn, *args):
@@ -348,10 +345,6 @@ class Pipeline(QtCore.QThread):
         finally:
             self._final_busy -= 1
 
-    def get_clip(self, sid: str):
-        with self._clips_lock:
-            return self.clips.get(sid)
-
     def _emit_final(self, seg: Segment, result, audio: np.ndarray | None = None) -> None:
         text = result.text.strip()
         if self._stop.is_set():
@@ -361,11 +354,6 @@ class Pipeline(QtCore.QThread):
             return
         seg.jp = text
         seg.asr_seconds = result.seconds
-        if audio is not None:
-            with self._clips_lock:
-                self.clips[seg.sid] = audio
-                while len(self.clips) > 80:
-                    self.clips.popitem(last=False)
         seg.rtf = result.rtf
         context = self._context_lines()
         self._last_final_jp.append(text)

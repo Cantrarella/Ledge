@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""系统服务：窗口列表与激活、全屏检测。"""
+"""系统服务：窗口查找与激活、全屏检测。"""
 from __future__ import annotations
 
 import ctypes
@@ -7,7 +7,7 @@ import os
 import traceback
 from ctypes import wintypes as W
 
-from PySide6 import QtCore, QtGui
+from PySide6 import QtCore
 
 from wisland.core.bg import launch
 
@@ -17,21 +17,15 @@ from wisland.core.bg import launch
 _u32 = ctypes.WinDLL("user32")
 _k32 = ctypes.windll.kernel32
 _dwm = ctypes.windll.dwmapi
-_shell32 = ctypes.windll.shell32
 
 GWL_STYLE, GWL_EXSTYLE = -16, -20
-WS_VISIBLE = 0x10000000
 WS_MAXIMIZE, WS_CAPTION = 0x01000000, 0x00C00000
 WS_EX_TOOLWINDOW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE = 0x80, 0x40000, 0x08000000
 GW_OWNER = 4
 DWMWA_CLOAKED = 14
-WM_GETICON, WM_CLOSE = 0x007F, 0x0010
-ICON_SMALL, ICON_BIG, ICON_SMALL2 = 0, 1, 2
-GCLP_HICON, GCLP_HICONSM = -14, -34
-SMTO_ABORTIFHUNG = 0x0002
 SW_RESTORE, SW_SHOW = 9, 5
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-VK_MENU, KEYEVENTF_KEYUP = 0x12, 0x0002
+KEYEVENTF_KEYUP = 0x0002
 _VK = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B}
 
 
@@ -65,8 +59,6 @@ _u32.EnumWindows.argtypes = [_WNDENUMPROC, W.LPARAM]
 _u32.EnumChildWindows.argtypes = [W.HWND, _WNDENUMPROC, W.LPARAM]
 _u32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
 _u32.GetWindowLongPtrW.argtypes = [W.HWND, ctypes.c_int]
-_u32.GetClassLongPtrW.restype = ctypes.c_size_t
-_u32.GetClassLongPtrW.argtypes = [W.HWND, ctypes.c_int]
 _u32.GetWindow.restype = W.HWND
 _u32.GetWindow.argtypes = [W.HWND, W.UINT]
 _u32.GetWindowTextLengthW.argtypes = [W.HWND]
@@ -74,10 +66,6 @@ _u32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
 _u32.GetClassNameW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
 _u32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
 _u32.GetWindowThreadProcessId.restype = W.DWORD
-_u32.SendMessageTimeoutW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM, W.UINT, W.UINT,
-                                     ctypes.POINTER(ctypes.c_size_t)]
-_u32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
-_u32.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
 _u32.IsWindowVisible.argtypes = [W.HWND]
 _u32.IsWindow.argtypes = [W.HWND]
 _u32.IsIconic.argtypes = [W.HWND]
@@ -90,17 +78,12 @@ _u32.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
 _u32.MonitorFromWindow.argtypes = [W.HWND, W.DWORD]
 _u32.MonitorFromWindow.restype = W.HMONITOR
 _u32.GetShellWindow.restype = W.HWND
-_u32.GetAncestor.argtypes = [W.HWND, W.UINT]
-_u32.GetAncestor.restype = W.HWND
 _u32.keybd_event.argtypes = [W.BYTE, W.BYTE, W.DWORD, ctypes.c_size_t]
-_u32.DestroyIcon.argtypes = [W.HICON]
 _dwm.DwmGetWindowAttribute.argtypes = [W.HWND, W.DWORD, ctypes.c_void_p, W.DWORD]
 _k32.OpenProcess.restype = W.HANDLE
 _k32.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
 _k32.QueryFullProcessImageNameW.argtypes = [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]
 _k32.CloseHandle.argtypes = [W.HANDLE]
-_shell32.ExtractIconExW.argtypes = [W.LPCWSTR, ctypes.c_int, ctypes.POINTER(W.HICON),
-                                    ctypes.POINTER(W.HICON), W.UINT]
 
 
 class _MONITORINFO(ctypes.Structure):
@@ -154,25 +137,13 @@ def _cloaked(hwnd) -> bool:
     return False
 
 
-def _hicon_to_image(hicon) -> QtGui.QImage | None:
-    if not hicon:
-        return None
-    try:
-        img = QtGui.QImage.fromHICON(int(hicon))
-        return None if img.isNull() else img
-    except Exception:  # noqa: BLE001
-        return None
-
-
 class WindowService(QtCore.QObject):
     notice = QtCore.Signal(str)
-    """Alt-Tab 风格窗口列表、激活、关闭、全屏检测。全部是同步的快速 Win32 调用（主线程可用）。"""
+    """窗口查找、激活与全屏检测。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._own_pid = os.getpid()
-        self._icons: dict[int, QtGui.QImage | None] = {}
-        self._exe_icons: dict[str, QtGui.QImage | None] = {}
         self._exe_cache: dict[int, str] = {}
 
     def start(self):
@@ -181,7 +152,6 @@ class WindowService(QtCore.QObject):
     def stop(self):
         pass
 
-    # ---------------- 列表 ----------------
     def _is_alt_tab(self, hwnd) -> bool:
         if not _u32.IsWindowVisible(hwnd):
             return False
@@ -219,90 +189,6 @@ class WindowService(QtCore.QObject):
                 self._exe_cache.clear()
             self._exe_cache[pid] = p
         return p
-
-    def list_windows(self) -> list[dict]:
-        hwnds: list[int] = []
-
-        def cb(h, lp):
-            hwnds.append(h)
-            return True
-        try:
-            _u32.EnumWindows(_WNDENUMPROC(cb), 0)
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-            return []
-        fg = _u32.GetForegroundWindow() or 0
-        fg_root = _u32.GetAncestor(fg, 3) if fg else 0   # GA_ROOTOWNER
-        out = []
-        alive = set()
-        for h in hwnds:
-            try:
-                if not self._is_alt_tab(h):
-                    continue
-                title = _title(h)
-                if not title.strip():
-                    continue
-                pid = _pid(h)
-                if pid == self._own_pid:
-                    continue
-                path = self._exe_for(pid)
-                exe = os.path.basename(path)
-                rpid = self._real_pid(h, pid, exe)
-                if rpid != pid:
-                    pid = rpid
-                    path = self._exe_for(pid) or path
-                    exe = os.path.basename(path)
-                alive.add(h)
-                out.append({"hwnd": int(h), "title": title, "exe": exe, "pid": pid,
-                            "icon": self._icon(h, path),
-                            "active": h == fg or h == fg_root})
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-        for h in list(self._icons):
-            if h not in alive:
-                del self._icons[h]
-        return out
-
-    def _icon(self, hwnd, path: str):
-        if hwnd in self._icons and self._icons[hwnd] is not None:
-            return self._icons[hwnd]
-        img = None
-        for wp in (ICON_BIG, ICON_SMALL2, ICON_SMALL):
-            res = ctypes.c_size_t(0)
-            if _u32.SendMessageTimeoutW(hwnd, WM_GETICON, wp, 0, SMTO_ABORTIFHUNG, 50,
-                                        ctypes.byref(res)) and res.value:
-                img = _hicon_to_image(res.value)
-                if img is not None:
-                    break
-        if img is None:
-            for idx in (GCLP_HICON, GCLP_HICONSM):
-                hi = _u32.GetClassLongPtrW(hwnd, idx)
-                if hi:
-                    img = _hicon_to_image(hi)
-                    if img is not None:
-                        break
-        if img is None and path:
-            img = self._exe_icon(path)
-        self._icons[hwnd] = img
-        return img
-
-    def _exe_icon(self, path: str):
-        key = path.lower()
-        if key in self._exe_icons:
-            return self._exe_icons[key]
-        img = None
-        large, small = W.HICON(), W.HICON()
-        try:
-            if _shell32.ExtractIconExW(path, 0, ctypes.byref(large), ctypes.byref(small), 1) > 0:
-                img = _hicon_to_image(large.value) or _hicon_to_image(small.value)
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            for h in (large, small):
-                if h.value:
-                    _u32.DestroyIcon(h)
-        self._exe_icons[key] = img
-        return img
 
     # ---------------- 操作 ----------------
     def activate(self, hwnd: int) -> bool:
@@ -441,12 +327,6 @@ class WindowService(QtCore.QObject):
         if args and isinstance(args, str):
             args = args.split()
         return "launched" if launch(path, list(args or [])) else "failed"
-
-    def close(self, hwnd: int) -> bool:
-        try:
-            return bool(_u32.PostMessageW(int(hwnd), WM_CLOSE, 0, 0))
-        except Exception:  # noqa: BLE001
-            return False
 
     def foreground_is_fullscreen(self, own_hwnd=None) -> bool:
         try:
