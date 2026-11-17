@@ -66,6 +66,47 @@ def set_autostart(on: bool):
                 pass
 
 
+def populate_tray_menu(menu: QtWidgets.QMenu, island, open_settings_fn, quit_fn):
+    """构建原生系统托盘与右键菜单（每次展开前动态刷新文案与勾选状态）。"""
+    menu.clear()
+    toggle_label = "收起 Wisland" if island.expanded else "展开 Wisland"
+    act_toggle = menu.addAction(toggle_label)
+    act_toggle.triggered.connect(island.toggle)
+
+    act_settings = menu.addAction("打开 Wisland 设置…")
+    act_settings.triggered.connect(lambda: open_settings_fn())
+
+    menu.addSeparator()
+
+    act_pt = menu.addAction("可穿透")
+    act_pt.setCheckable(True)
+    act_pt.setChecked(island.passthrough())
+    act_pt.triggered.connect(lambda checked=False: (
+        island.set_passthrough(bool(checked)),
+        act_pt.setChecked(island.passthrough()),
+    ))
+
+    act_cap = menu.addAction("在截图中显示")
+    act_cap.setCheckable(True)
+    act_cap.setChecked(island.capture_visible())
+    act_cap.triggered.connect(lambda checked=False: (
+        island.set_capture_visible(bool(checked)),
+        act_cap.setChecked(island.capture_visible()),
+    ))
+
+    act_auto = menu.addAction("开机启动")
+    act_auto.setCheckable(True)
+    act_auto.setChecked(autostart_enabled())
+    act_auto.triggered.connect(lambda checked=False: (
+        set_autostart(bool(checked)),
+        act_auto.setChecked(autostart_enabled()),
+    ))
+
+    menu.addSeparator()
+    act_quit = menu.addAction("退出 Wisland")
+    act_quit.triggered.connect(quit_fn)
+
+
 def main():
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
     app = QtWidgets.QApplication(sys.argv)
@@ -90,9 +131,9 @@ def main():
     from .ui.island import Island
     from .ui.pages.home import HomePage, MessagesPage
     from .ui.pages.info import WeatherPage
-    from .ui.pages.system import styled_menu
     from .ui.pages.tools import TranslatePage
-    from .ui.theme import KIND_COLORS, THEME_NAMES, G, theme
+    from .ui.settings_window import SettingsWindow
+    from .ui.theme import KIND_COLORS, G, theme
     from .ui.widgets import glyph_pixmap
 
     theme.set_mode(cfg.get("island.theme", "auto"))
@@ -271,41 +312,53 @@ def main():
             island.toggle()
     island.hotkey.connect(on_hotkey)
 
-    # ---------------- 菜单 / 托盘 ----------------
+    # ---------------- 菜单 / 托盘 / 设置窗口 ----------------
+    def open_settings(category: str | None = None):
+        SettingsWindow.open_instance(ctx, category=category)
+    ctx.open_settings = open_settings
+
+    cycle_timer = QtCore.QTimer(app)
+
+    def apply_runtime_config(show_toast: bool = False):
+        theme.set_mode(cfg.get("island.theme", "auto"))
+        island.apply_config()
+        if not island.expanded and compact.view in ("clock", "pet", "music"):
+            want_view = cfg.get("island.compact_view", "clock")
+            if want_view in ("clock", "pet", "music") and not compact.playing():
+                compact.set_view(want_view)
+        cyc_s = int(cfg.get("island.auto_cycle_s", 30) or 0)
+        if cyc_s > 0:
+            cycle_timer.setInterval(cyc_s * 1000)
+            if not cycle_timer.isActive():
+                cycle_timer.start()
+        else:
+            cycle_timer.stop()
+        ctx.weather.refresh()
+        if show_toast:
+            island.activity({"glyph": G.CHECK, "title": "设置已生效"}, 1.8)
+
+    cfg.changed.connect(lambda: apply_runtime_config(show_toast=True))
+
     def reload_cfg():
         cfg.load()
-        theme.set_mode(cfg.get("island.theme", "auto"))
-        island.register_hotkeys()
-        ctx.weather.refresh()
+        apply_runtime_config(show_toast=False)
         island.activity({"glyph": G.CHECK, "title": "配置已重新加载"}, 1.8)
+    ctx.reload_cfg = reload_cfg
 
     def build_menu(menu: QtWidgets.QMenu):
-        menu.addAction("编辑配置 config.json").triggered.connect(lambda: os.startfile(str(CONFIG_PATH)))  # noqa: S606
-        menu.addAction("重新加载配置").triggered.connect(reload_cfg)
-        tm = menu.addMenu("主题")
-        for mode, label in THEME_NAMES:
-            a = tm.addAction(("✓  " if cfg.get("island.theme") == mode else "    ") + label)
-            a.triggered.connect(lambda _=False, m=mode: (cfg.set("island.theme", m), theme.set_mode(m)))
-        em = menu.addMenu("展开方式")
-        for mode, label in (("hover", "悬停展开"), ("always", "常驻展开"), ("never", "长关")):
-            a = em.addAction(("✓  " if island.expand_mode() == mode else "    ") + label)
-            a.triggered.connect(lambda _=False, m=mode: island.set_expand_mode(m))
-        a = menu.addAction(("✓  " if island.passthrough() else "    ") + "可穿透")
-        a.triggered.connect(lambda: island.set_passthrough(not island.passthrough()))
-        a = menu.addAction(("✓  " if island.capture_visible() else "    ") + "参与截图")
-        a.triggered.connect(lambda: island.set_capture_visible(not island.capture_visible()))
-        a = menu.addAction(("✓  " if autostart_enabled() else "    ") + "开机自启")
-        a.triggered.connect(lambda: set_autostart(not autostart_enabled()))
-        menu.addAction("打开数据目录").triggered.connect(lambda: os.startfile(str(DATA_DIR)))  # noqa: S606
-        menu.addSeparator()
-        menu.addAction("退出 wisland").triggered.connect(app.quit)
+        populate_tray_menu(menu, island, open_settings, app.quit)
 
     def show_menu(pos):
-        m = styled_menu(island)
+        import ctypes
+        m = QtWidgets.QMenu()
         build_menu(m)
         island.locks.add("menu")
         m.aboutToHide.connect(lambda: island.locks.discard("menu"))
+        m.aboutToHide.connect(m.deleteLater)
         m.popup(pos)
+        ctypes.windll.user32.SetForegroundWindow(int(m.winId()))
+        m.activateWindow()
+        m.setFocus(QtCore.Qt.FocusReason.PopupFocusReason)
     island.menu_requested.connect(show_menu)
 
     # 主页的「保持展开」「可穿透」按钮
@@ -342,10 +395,9 @@ def main():
         app_icon = QtGui.QIcon(glyph_pixmap(G.APPS, 32, QtGui.QColor("#4f8cff")))
     app.setWindowIcon(app_icon)
     tray = QtWidgets.QSystemTrayIcon(app_icon, app)
-    tray.setToolTip("wisland 灵动岛")
+    tray.setToolTip("Wisland")
     tmenu = QtWidgets.QMenu()
-    tmenu.aboutToShow.connect(lambda: (tmenu.clear(), tmenu.addAction("展开 / 收起").triggered.connect(island.toggle),
-                                       build_menu(tmenu)))
+    tmenu.aboutToShow.connect(lambda: build_menu(tmenu))
     tray.setContextMenu(tmenu)
     tray.activated.connect(lambda r: island.toggle() if r == QtWidgets.QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
@@ -356,9 +408,11 @@ def main():
             return
         compact.set_view("pet" if compact.view == "clock" else "clock")
         island._kick()
+    cycle_timer.timeout.connect(auto_cycle)
     cyc = int(cfg.get("island.auto_cycle_s", 30) or 0)
     if cyc > 0:
-        QtCore.QTimer(app, interval=cyc * 1000, timeout=auto_cycle).start()
+        cycle_timer.setInterval(cyc * 1000)
+        cycle_timer.start()
 
     # ---------------- 全屏时隐藏 ----------------
     def check_fullscreen():

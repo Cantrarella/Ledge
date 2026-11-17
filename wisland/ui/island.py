@@ -1350,6 +1350,28 @@ class Island(QtWidgets.QWidget):
             else:
                 print(f"热键注册失败（可能被占用）：{name} = {spec}")
 
+    def apply_config(self):
+        """设置窗口保存或重新加载配置后，动态应用位置、停靠边、屏幕、穿透、截图与热键。"""
+        new_edge = cfg.get("island.edge", "top")
+        if new_edge not in ("top", "bottom", "left", "right"):
+            new_edge = "top"
+        new_pos = clamp(float(cfg.get("island.pos", 0.5) or 0.5), 0.0, 1.0)
+        new_scr = self._pick_screen()
+        geom_changed = (new_edge != self.edge or abs(new_pos - self.pos_frac) > 1e-4 or new_scr != self.scr)
+        self.edge = new_edge
+        self.pos_frac = new_pos
+        self.scr = new_scr
+        if geom_changed:
+            self.neck_edge = self.edge
+            self._place_nav()
+            self._update_geometry(force=True)
+        self.set_expand_mode(self.expand_mode())
+        self._apply_passthrough()
+        self.passthrough_changed.emit(self.passthrough())
+        self.apply_capture_mode()
+        self.register_hotkeys()
+        self._kick()
+
     def nativeEvent(self, etype, message):
         try:
             msg = wintypes.MSG.from_address(int(message))
