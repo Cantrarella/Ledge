@@ -19,6 +19,21 @@ DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 DEFAULTS: dict = {
+    "schema_version": 2,
+    "pages": {
+        "order": ["home", "msg", "weather", "trans", "tools"],
+        "visible": {
+            "home": True,
+            "msg": True,
+            "weather": True,
+            "trans": True,
+            "tools": True,
+        },
+    },
+    "tools": {
+        "shelf_enabled": True,
+        "clipboard_enabled": True,
+    },
     "island": {
         "edge": "top",              # top / bottom / left / right
         "pos": 0.5,                 # 沿边位置 0..1
@@ -110,6 +125,7 @@ VALID_THEMES = ("auto", "light", "dark", "rouge", "sky")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
+REGISTERED_PAGE_KEYS = ("home", "msg", "weather", "trans", "tools")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
 
@@ -165,6 +181,54 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
 
     def _err(msg: str):
         errors.append(msg)
+
+    # schema_version
+    sv = merged.get("schema_version", 2)
+    if not isinstance(sv, int) or isinstance(sv, bool) or sv < 1:
+        if strict:
+            _err(f"无效的 schema_version: {sv}")
+        else:
+            merged["schema_version"] = 2
+
+    # pages (order & visible，保留未注册页面的配置项，但要求已注册页面至少保留一个可见)
+    pgs = merged.get("pages")
+    if not isinstance(pgs, dict):
+        _err("pages 配置必须是对象")
+        merged["pages"] = copy.deepcopy(DEFAULTS["pages"])
+        pgs = merged["pages"]
+    else:
+        raw_order = pgs.get("order")
+        if not isinstance(raw_order, list) or not all(isinstance(x, str) and x.strip() for x in raw_order):
+            _err("pages.order 必须是非空字符串列表")
+            if not strict:
+                raw_order = list(DEFAULTS["pages"]["order"])
+        if isinstance(raw_order, list):
+            seen: list[str] = []
+            for k in raw_order:
+                if isinstance(k, str) and k not in seen:
+                    seen.append(k)
+            pgs["order"] = seen
+
+        raw_vis = pgs.get("visible")
+        if not isinstance(raw_vis, dict):
+            _err("pages.visible 必须是对象")
+            if not strict:
+                raw_vis = copy.deepcopy(DEFAULTS["pages"]["visible"])
+                pgs["visible"] = raw_vis
+        if isinstance(raw_vis, dict):
+            raw_user_vis = (raw.get("pages") or {}).get("visible") if isinstance(raw.get("pages"), dict) else None
+            vis_out = copy.deepcopy(raw_user_vis) if isinstance(raw_user_vis, dict) else copy.deepcopy(raw_vis)
+            for k, v in list(vis_out.items()):
+                if not isinstance(v, bool):
+                    _err(f"pages.visible.{k} 必须是布尔值")
+                    if not strict:
+                        vis_out[k] = bool(v)
+            if not any(vis_out.get(rk, True) is True for rk in REGISTERED_PAGE_KEYS):
+                _err("至少需要保留一个可见页面")
+                if not strict:
+                    first_reg = next((k for k in pgs.get("order", REGISTERED_PAGE_KEYS) if k in REGISTERED_PAGE_KEYS), "home")
+                    vis_out[first_reg] = True
+            pgs["visible"] = vis_out
 
     isl = merged.get("island")
     if not isinstance(isl, dict):

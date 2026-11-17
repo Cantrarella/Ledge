@@ -116,18 +116,36 @@ class IconButton(Hoverable):
             self.active = on
             self.update()
 
+    def enterEvent(self, e):
+        if not self.isEnabled():
+            return
+        super().enterEvent(e)
+
+    def mousePressEvent(self, e):
+        if not self.isEnabled():
+            e.ignore()
+            return
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if not self.isEnabled():
+            e.ignore()
+            return
+        super().mouseReleaseEvent(e)
+
     def paintEvent(self, e):
         p = painter(self)
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale()
+        enabled = self.isEnabled()
+        s = self.press_scale() if enabled else 1.0
         p.translate(r.center())
         p.scale(s, s)
         p.translate(-r.center())
-        if self.active:
+        if self.active and enabled:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self.color or theme.fill())
             p.drawEllipse(r)
-        elif self.filled or self._hover.x > 0.01:
+        elif (self.filled or self._hover.x > 0.01) and enabled:
             bg = QtGui.QColor(theme.card() if self.filled else theme.hover())
             if not self.filled:
                 bg.setAlphaF(bg.alphaF() * self._hover.x)
@@ -135,9 +153,12 @@ class IconButton(Hoverable):
             p.setBrush(bg)
             p.drawEllipse(r)
         p.setFont(icon_font(self.icon_px))
-        fg = QtGui.QColor(20, 20, 24) if self.active else (self.color or theme.text(0.9))
-        if self.active and self.color is not None:
-            fg = QtGui.QColor("white")
+        if not enabled:
+            fg = theme.text3(0.35)
+        else:
+            fg = QtGui.QColor(20, 20, 24) if self.active else (self.color or theme.text(0.9))
+            if self.active and self.color is not None:
+                fg = QtGui.QColor("white")
         p.setPen(fg)
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.glyph)
 

@@ -13,7 +13,9 @@ from .settings import (
     GeneralSettingsPage,
     IslandPetSettingsPage,
     NotifySettingsPage,
+    PagesNavSettingsPage,
     SubtitlesSettingsPage,
+    ToolsLifeSettingsPage,
     WeatherSettingsPage,
 )
 from .theme import G, W, icon_font, theme, ui_font
@@ -119,9 +121,11 @@ class SettingsWindow(QtWidgets.QWidget):
         self.pages = [
             GeneralSettingsPage(ctx, self),
             IslandPetSettingsPage(ctx, self),
+            PagesNavSettingsPage(ctx, self),
             WeatherSettingsPage(ctx, self),
             NotifySettingsPage(ctx, self),
             SubtitlesSettingsPage(ctx, self),
+            ToolsLifeSettingsPage(ctx, self),
             DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft),
             AboutSettingsPage(ctx, self),
         ]
@@ -273,12 +277,17 @@ class SettingsWindow(QtWidgets.QWidget):
     def _route_field_errors(self, errors: list[str]):
         for pg in self.pages:
             pg.clear_errors()
-        gen_pg: GeneralSettingsPage = self.pages[0]  # type: ignore[assignment]
-        wth_pg: WeatherSettingsPage = self.pages[2]  # type: ignore[assignment]
+        pg_map = {pg.key: pg for pg in self.pages}
+        gen_pg: GeneralSettingsPage = pg_map["general"]  # type: ignore[assignment]
+        wth_pg: WeatherSettingsPage = pg_map["weather"]  # type: ignore[assignment]
+        nav_pg: PagesNavSettingsPage = pg_map["pages_nav"]  # type: ignore[assignment]
         for err in errors:
             if "热键" in err:
                 gen_pg.row_hotkey.set_error(err)
                 self.switch_category("general")
+            elif "可见页面" in err:
+                nav_pg._show_tip(err)
+                self.switch_category("pages_nav")
             elif "城市" in err:
                 wth_pg.row_city.set_error(err)
                 self.switch_category("weather")
@@ -287,7 +296,7 @@ class SettingsWindow(QtWidgets.QWidget):
                 self.switch_category("weather")
 
     def save_settings(self) -> bool:
-        """收集草稿 -> 显示保存中禁止重复点击 -> 严格校验 -> 原子写入 -> 通知主程序动态应用。"""
+        """收集草稿 -> 显示保存中禁止重复点击 -> 严格校验 -> 原子写入 -> 平滑重建导航（不关闭设置窗口）。"""
         if self._saving:
             return False
         self._saving = True
@@ -312,11 +321,11 @@ class SettingsWindow(QtWidgets.QWidget):
             if isinstance(gen_page, GeneralSettingsPage):
                 gen_page.apply_autostart_if_changed()
 
-            self._baseline_dict = self.cfg_obj.create_draft().to_dict()
+            self.draft = self.cfg_obj.create_draft()
+            self._baseline_dict = self.collect_to_draft().to_dict()
             self.status_lbl.set_color(theme.down())
             self.status_lbl.setText("✓ 设置已保存并生效")
             self.saved.emit()
-            self.close()
             return True
         finally:
             self._saving = False

@@ -44,6 +44,34 @@ class NavBar(QtWidgets.QWidget):
     def keys(self) -> list[str]:
         return [k for k, _, _ in self.items]
 
+    def set_items(self, items: list[tuple[str, str, str]], current_key: str | None = None):
+        """动态更新可见导航项与圆点弹簧，不丢失平滑过渡。"""
+        items = list(items)
+        old_widths = {k: self.w[idx].x for idx, (k, _, _) in enumerate(self.items) if idx < len(self.w)}
+        self.items = items
+        keys = self.keys()
+        if not keys:
+            self.index = 0
+            self.w = []
+            self.hover = []
+            self._hover_i = -1
+            self.update()
+            return
+        target_key = current_key if current_key in keys else keys[min(self.index, len(keys) - 1)]
+        self.index = keys.index(target_key)
+        new_w: list[Spring] = []
+        for i, (k, _, _) in enumerate(items):
+            target_w = ACTIVE_W if i == self.index else DOT_W
+            init_w = old_widths.get(k, target_w)
+            sp = Spring(init_w, 380, 0.86, 0.02)
+            sp.to(target_w)
+            new_w.append(sp)
+        self.w = new_w
+        self.hover = [Spring(0, 400, 1.0, 0.01) for _ in items]
+        self._hover_i = -1
+        self._kick()
+        self.update()
+
     def set_current(self, key: str, emit: bool = False):
         keys = self.keys()
         if key not in keys:

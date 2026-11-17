@@ -122,16 +122,16 @@ def main():
     fix_autostart()
 
     from .services.audio import AudioService
+    from .services.clipboard_history import ClipboardHistoryService
     from .services.mailcheck import MailCheckService
     from .services.media import MediaService
     from .services.notify import NotifyService
+    from .services.shelf import ShelfService
     from .services.system import WindowService
     from .services.lyrics import LyricsService
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
-    from .ui.pages.home import HomePage, MessagesPage
-    from .ui.pages.info import WeatherPage
-    from .ui.pages.tools import TranslatePage
+    from .ui.page_registry import PageRegistry
     from .ui.settings_window import SettingsWindow
     from .ui.theme import KIND_COLORS, G, theme
     from .ui.widgets import glyph_pixmap
@@ -145,14 +145,17 @@ def main():
     ctx.weather = WeatherService()
     ctx.lyrics = LyricsService()
     ctx.mailcheck = MailCheckService()
+    ctx.shelf = ShelfService()
+    ctx.clipboard = ClipboardHistoryService()
     from .live.service import LiveService
     ctx.live = LiveService()
     ctx.notify.opener = lambda path: ctx.windows.open_or_focus(path)
     ctx.windows.notice.connect(lambda t: ctx.island and ctx.island.activity({"glyph": _G().MESSAGE, "title": t}, 5.0))
     ctx.island = None
 
-    pages = [HomePage(ctx), MessagesPage(ctx), WeatherPage(ctx), TranslatePage(ctx)]
-    ctx.pages = {p.key: p for p in pages}
+    registry = PageRegistry.create_default(ctx)
+    ctx.registry = registry
+    ctx.pages = registry.pages_dict()
     P = ctx.pages
 
     def peak():
@@ -161,7 +164,7 @@ def main():
         except Exception:  # noqa: BLE001
             return 0.0
 
-    island = Island(pages, peak_fn=peak)
+    island = Island(registry.visible_pages(), peak_fn=peak, registry=registry)
     ctx.island = island
     compact = island.compact
 
@@ -334,6 +337,13 @@ def main():
         else:
             cycle_timer.stop()
         ctx.weather.refresh()
+        if cfg.get("tools.clipboard_enabled", True):
+            ctx.clipboard.start()
+        else:
+            ctx.clipboard.stop()
+        if "tools" in P:
+            P["tools"].refresh_shelf()
+            P["tools"].refresh_clipboard()
         if show_toast:
             island.activity({"glyph": G.CHECK, "title": "设置已生效"}, 1.8)
 
@@ -428,7 +438,7 @@ def main():
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.mailcheck):
+              ctx.weather, ctx.mailcheck, ctx.clipboard):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -439,7 +449,7 @@ def main():
     def shutdown():
         ctx.live.stop(wait=True)
         for s in (ctx.media, ctx.audio, ctx.notify,
-                  ctx.weather, ctx.mailcheck):
+                  ctx.weather, ctx.mailcheck, ctx.clipboard):
             try:
                 s.stop()
             except Exception:  # noqa: BLE001

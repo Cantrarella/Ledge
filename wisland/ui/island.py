@@ -242,19 +242,21 @@ class Island(QtWidgets.QWidget):
 
     play_pause_requested = QtCore.Signal()      # 收起态音乐视图的播放 / 暂停键
 
-    def __init__(self, pages: list, peak_fn=None):
+    def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setWindowTitle("wisland")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
         self.resize(WIN_W, WIN_H)
         self.peak_fn = peak_fn or (lambda: 0.0)
 
         self.backdrop = Backdrop()
         self.compact = CompactView()
-        self.pages = pages
+        self.registry = registry
+        self.pages = list(pages)
 
         # ---- 几何状态 ----
         self.edge: str = cfg.get("island.edge", "top")
@@ -458,7 +460,7 @@ class Island(QtWidgets.QWidget):
         self._page_key = key
         self.nav.set_current(key)
         if i != old:
-            if self.expanded:
+            if self.expanded and 0 <= old < len(self.pages):
                 self.pages[old].on_hide()
             self.stack.setCurrentIndex(i)
             if self.expanded:
@@ -467,6 +469,78 @@ class Island(QtWidgets.QWidget):
             w, h = self.target_size()
             self.sw.to(w, 440, 0.6)
             self.sh.to(h, 440, 0.6)
+        self._kick()
+
+    def rebuild_pages(self, visible_pages: list | None = None):
+        """根据可见且已排序的页面列表动态重建 QStackedWidget 与底部圆点导航，复用原 Page 实例。
+        若当前页被隐藏，平滑切换到最近的可见页面；首页隐藏时默认进入第一个可见页面。
+        """
+        if visible_pages is None:
+            if self.registry is not None:
+                self.registry.sync_from_config(cfg)
+                visible_pages = self.registry.visible_pages()
+            else:
+                visible_pages = self.pages
+        visible_pages = list(visible_pages)
+        if not visible_pages:
+            return
+
+        old_pages = list(self.pages)
+        old_keys = [p.key for p in old_pages]
+        new_keys = [p.key for p in visible_pages]
+        cur_key = self._page_key
+
+        # 若当前页被隐藏：首页隐藏时默认进入第一个可见页面；其它页面隐藏时切换到最近的可见页面
+        if cur_key in new_keys:
+            target_key = cur_key
+        elif cur_key == "home":
+            target_key = new_keys[0]
+        else:
+            if cur_key in old_keys:
+                old_idx = old_keys.index(cur_key)
+                # 寻找旧列表中距离 old_idx 最近的仍在 new_keys 中的页面
+                best_key = new_keys[0]
+                best_dist = 999
+                for dist in range(1, len(old_keys) + 1):
+                    for cand_i in (old_idx - dist, old_idx + dist):
+                        if 0 <= cand_i < len(old_keys) and old_keys[cand_i] in new_keys:
+                            best_key = old_keys[cand_i]
+                            best_dist = dist
+                            break
+                    if best_dist < 999:
+                        break
+                target_key = best_key
+            else:
+                target_key = new_keys[0]
+
+        if old_keys == new_keys and target_key == cur_key:
+            return
+
+        if self.expanded and cur_key != target_key and cur_key in old_keys:
+            old_pages[old_keys.index(cur_key)].on_hide()
+
+        self.pages = visible_pages
+        while self.stack.count():
+            w = self.stack.widget(0)
+            self.stack.removeWidget(w)
+        for pg in self.pages:
+            pg.island = self
+            self.stack.addWidget(pg)
+
+        self._page_key = target_key
+        target_idx = new_keys.index(target_key)
+        self.stack.setCurrentIndex(target_idx)
+        self.nav.set_items([(pg.key, pg.glyph, pg.title) for pg in self.pages], current_key=target_key)
+
+        if cfg.get("island.last_tab") != target_key:
+            cfg.set("island.last_tab", target_key, save=False)
+
+        if self.expanded:
+            if cur_key != target_key:
+                self._defer_show(self.pages[target_idx])
+            w, h = self.target_size()
+            self.sw.to(w, 440, 0.62)
+            self.sh.to(h, 440, 0.62)
         self._kick()
 
     def _defer_show(self, pg):
@@ -1284,6 +1358,69 @@ class Island(QtWidgets.QWidget):
             self.nav.step_wheel(dy)
             e.accept()
 
+    # ================================================================ 本地文件拖放（置物架）
+    def _tools_page(self):
+        for pg in self.pages:
+            if pg.key == "tools":
+                return pg
+        if self.registry is not None:
+            e = self.registry.get_entry("tools")
+            if e is not None and e.visible:
+                return e.page
+        return None
+
+    def dragEnterEvent(self, e):
+        if self.passthrough() or self.mode != "anchored" or not cfg.get("tools.shelf_enabled", True):
+            e.ignore()
+            return
+        from .pages.tools import extract_local_files
+        files = extract_local_files(e.mimeData())
+        tpg = self._tools_page()
+        if not files or tpg is None:
+            e.ignore()
+            return
+        self.locks.add("drop")
+        if not self.expanded:
+            self.expand("tools")
+        elif self._page_key != "tools":
+            self.show_page("tools")
+        if hasattr(tpg, "set_drop_hover"):
+            tpg.set_drop_hover(True)
+        e.setDropAction(Qt.DropAction.CopyAction)
+        e.accept()
+
+    def dragMoveEvent(self, e):
+        from .pages.tools import extract_local_files
+        files = extract_local_files(e.mimeData())
+        tpg = self._tools_page()
+        if files and tpg is not None and cfg.get("tools.shelf_enabled", True):
+            e.setDropAction(Qt.DropAction.CopyAction)
+            e.accept()
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e):
+        self.locks.discard("drop")
+        tpg = self._tools_page()
+        if tpg is not None and hasattr(tpg, "set_drop_hover"):
+            tpg.set_drop_hover(False)
+        super().dragLeaveEvent(e)
+
+    def dropEvent(self, e):
+        self.locks.discard("drop")
+        tpg = self._tools_page()
+        if tpg is not None and hasattr(tpg, "set_drop_hover"):
+            tpg.set_drop_hover(False)
+        from .pages.tools import extract_local_files
+        files = extract_local_files(e.mimeData())
+        if files and tpg is not None and cfg.get("tools.shelf_enabled", True):
+            e.setDropAction(Qt.DropAction.CopyAction)
+            e.accept()
+            if hasattr(tpg, "_on_files_dropped"):
+                tpg._on_files_dropped(files)
+        else:
+            e.ignore()
+
     # ================================================================ 焦点（输入框需要键盘）
     def request_focus(self):
         hwnd = int(self.winId())
@@ -1365,6 +1502,7 @@ class Island(QtWidgets.QWidget):
             self.neck_edge = self.edge
             self._place_nav()
             self._update_geometry(force=True)
+        self.rebuild_pages()
         self.set_expand_mode(self.expand_mode())
         self._apply_passthrough()
         self.passthrough_changed.emit(self.passthrough())
