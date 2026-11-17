@@ -90,9 +90,8 @@ class NavBar(QtWidgets.QWidget):
         return self.items[self.index][0]
 
     def set_badge(self, key: str, n: int):
-        if self.badges.get(key, 0) != n:
-            self.badges[key] = n
-            self.update()
+        """保留接口兼容，但底部圆点导航不再绘制任何红点。"""
+        return
 
     def _kick(self):
         if not self._t.isActive():
@@ -229,7 +228,3 @@ class NavBar(QtWidgets.QWidget):
             p.setBrush(col)
             rad = r.height() / 2.0
             p.drawRoundedRect(r, rad, rad)
-
-            if self.badges.get(key, 0) > 0 and i != self.index:
-                p.setBrush(QtGui.QColor("#ff453a"))
-                p.drawEllipse(QtCore.QPointF(r.right() + 1.2, r.top() - 0.5), 2.0, 2.0)

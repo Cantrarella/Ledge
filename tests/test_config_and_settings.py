@@ -538,6 +538,363 @@ class TestConfigAndSettings(unittest.TestCase):
         finally:
             tpage.close()
 
+    def test_14_header_centering_panel_sizes_and_no_nav_badge(self):
+        """测试统一顶部栏日期时间严格居中、页面自定义尺寸策略以及底部导航不再绘制红点。"""
+        from types import SimpleNamespace
+        from PySide6 import QtCore
+        from wisland.services.clipboard_history import ClipboardHistoryService
+        from wisland.services.shelf import ShelfService
+        from wisland.ui.header import PageHeader
+        from wisland.ui.island import EXP_W, Island
+        from wisland.ui.nav import NavBar
+        from wisland.ui.pages.info import WeatherPage
+        from wisland.ui.pages.subtitle import SubtitlePage
+        from wisland.ui.pages.tools import ToolsPage
+        from wisland.ui.widgets import PillButton
+
+        # 1) 顶部栏严格居中测试（左右控件宽度不等时中心位置不偏移）
+        hdr = PageHeader(ctx=None)
+        hdr.resize(419, 30)
+        hdr.add_left(PillButton("非常长的左侧按钮文案", height=24))
+        hdr.add_right(PillButton("短", height=24))
+        hdr._layout_parts()
+        c_rect = hdr.center_lbl.geometry()
+        self.assertLessEqual(abs((c_rect.x() + c_rect.width() / 2.0) - (hdr.width() / 2.0)), 1.0)
+
+        # 2) 页面尺寸接口与 Island.expanded_size() 测试
+        dummy_weather = SimpleNamespace(cities_updated=QtCore.QObject().destroyed, city_added=QtCore.QObject().destroyed, refresh=lambda: None)
+        # 用真实 Signal 对象
+        class _SigObj(QtCore.QObject):
+            cities_updated = QtCore.Signal(list)
+            city_added = QtCore.Signal(bool, str)
+            segment = QtCore.Signal(int, str)
+            live_zh = QtCore.Signal(int, str)
+            final_zh = QtCore.Signal(int, str)
+            partial = QtCore.Signal(str)
+            level = QtCore.Signal(float)
+            status = QtCore.Signal(str)
+            error = QtCore.Signal(str)
+            running_changed = QtCore.Signal(bool)
+            downloading_changed = QtCore.Signal(bool)
+            def refresh(self): pass
+            def available(self): return (True, "")
+            def toggle(self): pass
+
+        sig = _SigObj()
+        ctx = SimpleNamespace(
+            weather=sig,
+            live=sig,
+            shelf=ShelfService(path=Path(self.tmpdir.name) / "s14.json"),
+            clipboard=ClipboardHistoryService(path=Path(self.tmpdir.name) / "c14.json", start_watcher=False),
+        )
+        p_weather = WeatherPage(ctx)
+        p_sub = SubtitlePage(ctx)
+        p_tools = ToolsPage(ctx)
+
+        self.assertEqual((p_weather.preferred_panel_width(), p_weather.preferred_panel_height()), (419, 232))
+        self.assertEqual((p_sub.preferred_panel_width(), p_sub.preferred_panel_height()), (419, 185))
+        self.assertEqual((p_tools.preferred_panel_width(), p_tools.preferred_panel_height()), (419, 140))
+
+        isl = Island([p_weather, p_sub, p_tools])
+        try:
+            isl.show_page("weather")
+            self.assertEqual(isl.expanded_size(), (419.0, 232.0))
+            isl.show_page("trans")
+            self.assertEqual(isl.expanded_size(), (419.0, 185.0))
+            isl.show_page("tools")
+            self.assertEqual(isl.expanded_size(), (419.0, 140.0))
+            self.assertNotEqual(EXP_W, 419)
+        finally:
+            isl.close()
+
+        # 3) 底部导航不再保存或绘制红点
+        nav = NavBar([("home", "", "主页"), ("msg", "", "消息")])
+        nav.set_badge("msg", 99)
+        self.assertEqual(nav.badges, {})
+
+    def test_15_life_todo_water_sit_and_reminders(self):
+        """测试生活页三视图（待办、喝水、久坐）业务逻辑、跨天重置、重复规则、免打扰与损坏恢复。"""
+        import datetime as dt
+        from types import SimpleNamespace
+        from wisland.core.config import cfg
+        from wisland.services.health_reminders import HealthReminderService
+        from wisland.services.todo import REPEAT_WORKDAYS, TodoService, done_for, reminder_due
+        from wisland.services.water import WaterService
+        from wisland.ui.pages.life import LifePage
+
+        # 1) TodoService：排序、重复第二天自动恢复未完成、一次性/重复提醒只触发一次、损坏备份
+        todo_path = Path(self.tmpdir.name) / "todo.json"
+        todo = TodoService(path=todo_path)
+        t_once = todo.add("买牛奶", due="2026-11-18 09:00", repeat=0)
+        # 周一=0x01..周五=0x1F (工作日)
+        t_rep = todo.add("写日报", due="2026-11-18 18:00", repeat=REPEAT_WORKDAYS)
+
+        # 周三(2026-11-18) 勾选重复待办 -> 当天已完成，周四(2026-11-19) 自动恢复未完成；周六(2026-11-21) 不在计划内
+        todo.toggle(t_rep["id"], day="2026-11-18")
+        self.assertTrue(done_for(todo.get_by_id(t_rep["id"])[1], "2026-11-18"))
+        self.assertFalse(done_for(todo.get_by_id(t_rep["id"])[1], "2026-11-19"))
+        self.assertEqual(todo.progress("2026-11-18"), (1, 2))
+        self.assertEqual(todo.progress("2026-11-21"), (0, 1))  # 周六只有一次性待办在计划中
+
+        # 排序规则：今天未完成 -> 其他日期未完成 -> 已完成沉底
+        order_wed = [it["id"] for _, it in todo.list_ordered("2026-11-18")]
+        self.assertEqual(order_wed, [t_once["id"], t_rep["id"]])
+
+        # 到点提醒只触发一次
+        due1 = todo.pop_due_reminders(dt.datetime(2026, 11, 18, 9, 5))
+        self.assertEqual([x["id"] for x in due1], [t_once["id"]])
+        due2 = todo.pop_due_reminders(dt.datetime(2026, 11, 18, 9, 10))
+        self.assertEqual(due2, [])
+        # 重复待办 18:00 触发（即使当天已勾选完成则不再触发）
+        self.assertFalse(reminder_due(todo.get_by_id(t_rep["id"])[1], "2026-11-18 18:05"))
+
+        # 重启恢复与损坏备份
+        todo2 = TodoService(path=todo_path)
+        self.assertEqual(len(todo2.items), 2)
+        todo_path.write_text("{corrupt todo", encoding="utf-8")
+        todo3 = TodoService(path=todo_path)
+        self.assertEqual(todo3.items, [])
+        self.assertTrue(todo_path.with_suffix(".corrupt.bak").exists())
+
+        # 2) WaterService：饮水累加、撤销、达标、跨天清零与损坏备份
+        water_path = Path(self.tmpdir.name) / "water.json"
+        water = WaterService(path=water_path)
+        water.drink(250, hour=10)
+        water.drink(250, hour=10)
+        self.assertEqual(water.drunk_ml, 500)
+        self.assertEqual(water.hours[10], 500)
+        self.assertTrue(water.undo_last())
+        self.assertEqual(water.drunk_ml, 250)
+        self.assertTrue(water.ensure_today("2099-01-01"))
+        self.assertEqual(water.drunk_ml, 0)
+        water_path.write_text("{corrupt water", encoding="utf-8")
+        water2 = WaterService(path=water_path)
+        self.assertEqual(water2.drunk_ml, 0)
+        self.assertTrue(water_path.with_suffix(".corrupt.bak").exists())
+
+        # 3) HealthReminderService：提醒时段、午休免打扰、达标停止喝水提醒、久坐重置
+        health = HealthReminderService(water, todo3)
+        fired: list[tuple[str, str, str]] = []
+        health.reminder_triggered.connect(lambda k, t, s: fired.append((k, t, s)))
+
+        orig_lunch = cfg.get("life.lunch_rest")
+        orig_ls = cfg.get("life.lunch_start")
+        orig_le = cfg.get("life.lunch_end")
+        orig_sh = cfg.get("life.remind_start_hour")
+        orig_eh = cfg.get("life.remind_end_hour")
+        try:
+            cfg.set("life.lunch_rest", True, save=False)
+            cfg.set("life.lunch_start", "12:00", save=False)
+            cfg.set("life.lunch_end", "13:30", save=False)
+            cfg.set("life.remind_start_hour", 9, save=False)
+            cfg.set("life.remind_end_hour", 22, save=False)
+
+            base_mono = 10000.0
+            health.water_last_ts = base_mono
+            health.sit_start_ts = base_mono
+
+            # 午休时间 (12:30) 即使超过 60 分钟也不提醒
+            health.tick(dt.datetime(2026, 11, 18, 12, 30), now_mono=base_mono + 4000, check_lock=False)
+            self.assertEqual(fired, [])
+
+            # 时段外 (23:00) 不提醒
+            health.tick(dt.datetime(2026, 11, 18, 23, 0), now_mono=base_mono + 4000, check_lock=False)
+            self.assertEqual(fired, [])
+
+            # 正常时段 (14:00) 触发喝水与久坐提醒
+            health.tick(dt.datetime(2026, 11, 18, 14, 0), now_mono=base_mono + 4000, check_lock=False)
+            self.assertEqual({k for k, _, _ in fired}, {"water", "sit"})
+
+            # 点击“起身了”重置久坐计时
+            health.stood_up()
+            self.assertFalse(health.sit_overdue)
+
+            # 喝水达到每日目标后停止喝水提醒
+            fired.clear()
+            water.drink(2500, hour=14)
+            self.assertTrue(water.reached_goal())
+            health.tick(dt.datetime(2026, 11, 18, 15, 0), now_mono=base_mono + 8000, check_lock=False)
+            self.assertNotIn("water", [k for k, _, _ in fired])
+        finally:
+            cfg.set("life.lunch_rest", orig_lunch, save=False)
+            cfg.set("life.lunch_start", orig_ls, save=False)
+            cfg.set("life.lunch_end", orig_le, save=False)
+            cfg.set("life.remind_start_hour", orig_sh, save=False)
+            cfg.set("life.remind_end_hour", orig_eh, save=False)
+
+        # 4) LifePage UI 尺寸、动态标题、待办滚动条策略与久坐文案验证
+        from PySide6 import QtCore
+        ctx = SimpleNamespace(todo=todo3, water=water, health=health)
+        lp = LifePage(ctx)
+        self.assertEqual((lp.preferred_panel_width(), lp.preferred_panel_height()), (419, 140))
+        self.assertEqual((lp.title_w._head, lp.title_w._tail), ("待办", "清单"))
+        # 空待办时隐藏滚动条
+        self.assertEqual(lp.todo_view.scroll.verticalScrollBarPolicy(), QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 超过 3 条待办时开启极细滚动条
+        for idx in range(4):
+            todo3.add(f"测试待办_{idx}")
+        lp.todo_view.refresh()
+        self.assertEqual(lp.todo_view.scroll.verticalScrollBarPolicy(), QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        lp.switch_view("water", animate=False)
+        self.assertEqual(lp.tabs.current_key(), "water")
+        self.assertEqual((lp.title_w._head, lp.title_w._tail), ("喝水", "提醒"))
+        self.assertEqual(lp.water_view.btn_cfg.text, "设置")
+
+        lp.switch_view("sit", animate=False)
+        self.assertEqual(lp.tabs.current_key(), "sit")
+        self.assertEqual((lp.title_w._head, lp.title_w._tail), ("久坐", "提醒"))
+        # 关闭久坐提醒时显示“久坐提醒已关闭”
+        orig_sit_on = cfg.get("life.sit_remind")
+        cfg.set("life.sit_remind", False, save=False)
+        lp.sit_view.refresh()
+        self.assertEqual(lp.sit_view.lbl_sub.text(), "久坐提醒已关闭")
+        self.assertEqual(lp.sit_view.lbl_unit.text(), "分钟")
+        cfg.set("life.sit_remind", orig_sit_on, save=False)
+        lp.close()
+
+    def test_16_life_tools_polish_and_wheel_rule(self):
+        """测试生活页按钮坐标一致、工具页置物架/剪贴板精修、两步清空与统一滚轮事件规则。"""
+        from types import SimpleNamespace
+        from PySide6 import QtCore, QtGui
+        from wisland.services.clipboard_history import ClipboardHistoryService
+        from wisland.services.health_reminders import HealthReminderService
+        from wisland.services.shelf import ShelfService
+        from wisland.services.todo import TodoService
+        from wisland.services.water import WaterService
+        from wisland.ui.island import Island
+        from wisland.ui.page_registry import PageRegistry
+        from wisland.ui.pages.life import LifePage
+        from wisland.ui.pages.tools import ToolsPage
+        from wisland.ui.widgets import WheelScrollArea
+
+        # 1) 生活页按钮尺寸、撤销位置与喝水/久坐坐标一致性
+        todo = TodoService(path=Path(self.tmpdir.name) / "todo.json")
+        water = WaterService(path=Path(self.tmpdir.name) / "water.json")
+        health = HealthReminderService(water, todo)
+        lp = LifePage(SimpleNamespace(todo=todo, water=water, health=health))
+        lp.resize(395, 98)
+        lp.switch_view("water", animate=False)
+        self.app.processEvents()
+        self.assertGreaterEqual(lp.water_view.btn_main.minimumWidth(), 66)
+        self.assertGreaterEqual(lp.water_view.btn_cfg.minimumWidth(), 60)
+        self.assertEqual(lp.water_view.btn_row.height(), 22)
+        self.assertIs(lp.water_view.btn_undo.parentWidget(), lp.water_view.sub_row)
+        w_btn_y = lp.water_view.btn_row.y()
+        w_prog_y = lp.water_view.prog_bar.y()
+
+        lp.switch_view("sit", animate=False)
+        self.app.processEvents()
+        self.assertGreaterEqual(lp.sit_view.btn_main.minimumWidth(), 66)
+        self.assertGreaterEqual(lp.sit_view.btn_cfg.minimumWidth(), 60)
+        self.assertEqual(lp.sit_view.btn_row.y(), w_btn_y)
+        self.assertEqual(lp.sit_view.prog_bar.y(), w_prog_y)
+        lp.close()
+
+        # 2) 工具页标签、顶部提示、单层拖放、两步清空与剪贴板滚动条策略
+        shelf = ShelfService(path=Path(self.tmpdir.name) / "shelf.json")
+        clip = ClipboardHistoryService(path=Path(self.tmpdir.name) / "clip.json", start_watcher=False)
+        tp = ToolsPage(SimpleNamespace(shelf=shelf, clipboard=clip, open_settings_section=lambda _s: None))
+        tp.resize(395, 98)
+        tp.show()
+        self.app.processEvents()
+
+        self.assertEqual(tp.tab_bar.tabs[0], ("shelf", "置物架"))
+        self.assertFalse(tp.btn_clear_bottom.isVisible())
+
+        # 拖放层：隐藏主列表且不残留
+        tp.set_drop_hover(True)
+        self.app.processEvents()
+        self.assertTrue(tp.drop_overlay.isVisible())
+        self.assertTrue(tp.sub_stack.isHidden())
+        tp.set_drop_hover(False)
+        self.app.processEvents()
+        self.assertFalse(tp.drop_overlay.isVisible())
+        self.assertFalse(tp.sub_stack.isHidden())
+
+        # 添加文件：Header 左侧临时显示提示，且右下角出现两步清空按钮
+        sample = Path(self.tmpdir.name) / "demo.log"
+        sample.write_text("abc", encoding="utf-8")
+        shelf.add_files([str(sample)])
+        tp.refresh_shelf()
+        self.app.processEvents()
+        self.assertEqual(tp.left_stack.currentIndex(), 1)
+        self.assertIn("已添加", tp.header_notice_lbl.text())
+        self.assertTrue(tp.btn_clear_bottom.isVisible())
+
+        # 两步清空：第1次变为确认，第2次执行清空并隐藏按钮
+        tp.btn_clear_bottom.clicked.emit()
+        self.assertTrue(tp.btn_clear_bottom.confirming)
+        self.assertEqual(len(shelf.paths()), 1)
+        tp.btn_clear_bottom.clicked.emit()
+        self.app.processEvents()
+        self.assertEqual(len(shelf.paths()), 0)
+        self.assertFalse(tp.btn_clear_bottom.isVisible())
+
+        # 剪贴板：<=4 条隐藏滚动条，>4 条显示 2px 滚动条
+        tp.switch_sub_tab("clipboard")
+        for i in range(4):
+            clip.push(f"clip_row_{i}")
+        tp.refresh_clipboard()
+        self.assertEqual(tp.clip_scroll.verticalScrollBarPolicy(), QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.assertTrue(tp.btn_clear_clip.isVisible())
+        clip.push("clip_row_5")
+        tp.refresh_clipboard()
+        self.assertEqual(tp.clip_scroll.verticalScrollBarPolicy(), QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # 横向 WheelScrollArea 把垂直滚轮映射到横向滚动并始终消费事件
+        horiz = WheelScrollArea(orientation="horizontal")
+        horiz.resize(200, 70)
+        horiz.inner.setMinimumWidth(600)
+        horiz.show()
+        self.app.processEvents()
+        self.assertEqual(horiz.horizontalScrollBar().value(), 0)
+        ev_wheel = QtGui.QWheelEvent(
+            QtCore.QPointF(50, 30), QtCore.QPointF(50, 30),
+            QtCore.QPoint(0, 0), QtCore.QPoint(0, -120),
+            QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+            QtCore.Qt.ScrollPhase.NoScrollPhase, False,
+        )
+        horiz.wheelEvent(ev_wheel)
+        self.assertTrue(ev_wheel.isAccepted())
+        self.assertGreater(horiz.horizontalScrollBar().value(), 0)
+        horiz.close()
+
+        # 3) 统一滚轮规则：在岛内滚动区到顶/底时绝不触发页面切换，滚动区外才翻页
+        lp2 = LifePage(SimpleNamespace(todo=todo, water=water, health=health))
+        isl = Island([tp, lp2])
+        try:
+            isl.expand()
+            isl.show_page("tools")
+            tp.switch_sub_tab("clipboard")
+            tp.refresh_clipboard()
+            self.app.processEvents()
+            cur_before = isl.stack.currentIndex()
+
+            # 鼠标位于剪贴板内部滚动区（已在顶部），向上滚轮不应切换岛页面
+            ev_inside = QtGui.QWheelEvent(
+                QtCore.QPointF(20, 20), QtCore.QPointF(20, 20),
+                QtCore.QPoint(0, 0), QtCore.QPoint(0, 120),
+                QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+                QtCore.Qt.ScrollPhase.NoScrollPhase, False,
+            )
+            self.app.sendEvent(tp.clip_scroll.viewport(), ev_inside)
+            self.assertEqual(isl.stack.currentIndex(), cur_before)
+
+            # 鼠标位于 Header（滚动区外），滚轮允许切换页面
+            ev_header = QtGui.QWheelEvent(
+                QtCore.QPointF(100, 10), QtCore.QPointF(100, 10),
+                QtCore.QPoint(0, 0), QtCore.QPoint(0, -120),
+                QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+                QtCore.Qt.ScrollPhase.NoScrollPhase, False,
+            )
+            self.app.sendEvent(tp.header, ev_header)
+            self.assertNotEqual(isl.stack.currentIndex(), cur_before)
+        finally:
+            isl.close()
+        lp2.close()
+        tp.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

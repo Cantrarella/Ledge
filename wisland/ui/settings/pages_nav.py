@@ -6,7 +6,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ...core.config import ConfigDraft
 from ..theme import G, W, icon_font, theme, ui_font
-from ..widgets import Card, IconButton, Label, Switch, hbox, painter, vbox
+from ..widgets import Card, IconButton, Switch, hbox, painter, vbox
 from .base import SettingsPage
 
 Qt = QtCore.Qt
@@ -18,6 +18,7 @@ _FALLBACK_META = [
     ("weather", G.SUN, "天气"),
     ("trans", G.LIVE, "实时字幕"),
     ("tools", G.CLIP, "工具"),
+    ("life", G.CHECK, "生活"),
 ]
 
 

@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""实时字幕页（中日双语纯展示模式，key 保持为 "trans"）。"""
+"""实时字幕页（419×185 紧凑布局，中日双语纯展示模式，key 保持为 "trans"）。"""
 from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..anim import clamp
+from ..header import PageHeader
 from ..theme import G, W, theme, ui_font
 from ..widgets import Card, IconButton, Label, PillButton, hbox, painter, vbox
 from .base import Page
@@ -48,7 +49,7 @@ class LiveView(QtWidgets.QWidget):
         r = self._row(sid)
         r["jp"] = jp
         if not r["zh"] and self.partial_zh:
-            r["zh"] = self.partial_zh          # 草稿译文先挂到这一句，等最终译文覆盖
+            r["zh"] = self.partial_zh
         self.partial, self.partial_zh = "", ""
         self._grow(before)
         self.update()
@@ -56,7 +57,7 @@ class LiveView(QtWidgets.QWidget):
     def on_live(self, sid, zh):
         r = self._find(sid)
         if r is None:
-            self.partial_zh = zh               # 句子还没定稿：译文跟着草稿行显示，不单独成行
+            self.partial_zh = zh
         elif not r["final"]:
             r["zh"] = zh
         self.update()
@@ -77,9 +78,8 @@ class LiveView(QtWidgets.QWidget):
         self.scroll = 0.0
         self.update()
 
-    # ---------- 滚动：滚轮上翻看历史；有新内容时停在原处，点「回到最新」或滚到底恢复跟随 ----------
     def _max_scroll(self) -> float:
-        return max(0.0, self._content_h - self.height() + 8)
+        return max(0.0, self._content_h - self.height() + 6)
 
     def wheelEvent(self, e):
         d = e.angleDelta().y() or e.pixelDelta().y()
@@ -87,30 +87,29 @@ class LiveView(QtWidgets.QWidget):
         if not d or mx <= 0:
             e.ignore()
             return
-        self.scroll = clamp(self.scroll + d / 120.0 * 52.0, 0.0, mx)
+        self.scroll = clamp(self.scroll + d / 120.0 * 44.0, 0.0, mx)
         self.update()
         e.accept()
 
     def _grow(self, before: float):
-        """内容变高时：如果正在看历史，就把滚动量加上增量，保持画面不动。"""
         if self.scroll > 0:
             self._measure()
             self.scroll = clamp(self.scroll + (self._content_h - before), 0.0, self._max_scroll())
 
     def paintEvent(self, e):
         p = painter(self)
-        w = max(10, self.width() - 8)
+        w = max(10, self.width() - 6)
         self._measure()
         self.scroll = clamp(self.scroll, 0.0, self._max_scroll())
         y = self.height() - 4 + self.scroll
-        fj, fz = ui_font(12.5), ui_font(16, W.Medium)
+        fj, fz = ui_font(12), ui_font(14.5, W.Medium)
         fmj, fmz = QtGui.QFontMetrics(fj), QtGui.QFontMetrics(fz)
         flags = int(Qt.AlignmentFlag.AlignLeft) | int(Qt.TextFlag.TextWordWrap)
         items = list(self.rows)
         if self.partial or self.partial_zh:
             items.append({"jp": self.partial, "zh": self.partial_zh, "final": False, "draft": True})
         if not items:
-            p.setFont(ui_font(13))
+            p.setFont(ui_font(12))
             p.setPen(theme.text3())
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.hint)
             return
@@ -120,41 +119,39 @@ class LiveView(QtWidgets.QWidget):
             draft = bool(it.get("draft"))
             hz = fmz.boundingRect(QtCore.QRect(0, 0, w, 10000), flags, zh).height() if zh else 0
             hj = fmj.boundingRect(QtCore.QRect(0, 0, w, 10000), flags, jp).height() if jp else 0
-            if y - hz - hj - 2 > self.height():          # 整条都在可见区下方（正在看历史）：跳过
-                y -= hz + hj + 2 + 12
+            if y - hz - hj - 2 > self.height():
+                y -= hz + hj + 2 + 8
                 continue
             y -= hz
             if zh:
                 p.setFont(fz)
                 p.setPen(theme.text(1.0 if it.get("final") else 0.8))
-                p.drawText(QtCore.QRect(4, int(y), w, hz), flags, zh)
+                p.drawText(QtCore.QRect(3, int(y), w, hz), flags, zh)
             y -= hj + 2
             if jp:
                 p.setFont(fj)
                 p.setPen(theme.text3() if draft else theme.text2())
-                p.drawText(QtCore.QRect(4, int(y), w, hj), flags, jp)
-            y -= 12
+                p.drawText(QtCore.QRect(3, int(y), w, hj), flags, jp)
+            y -= 8
             if y < 0:
                 break
-        # 正在看历史：右下角「回到最新」
         self._latest_btn = None
         if self.scroll > 1:
-            f = ui_font(11.5, W.Medium)
-            txt = "↓ 回到最新"
-            bw = QtGui.QFontMetrics(f).horizontalAdvance(txt) + 22
-            br = QtCore.QRectF(self.width() - bw - 6, self.height() - 30, bw, 24)
+            f = ui_font(11, W.Medium)
+            txt = "↓ 最新"
+            bw = QtGui.QFontMetrics(f).horizontalAdvance(txt) + 18
+            br = QtCore.QRectF(self.width() - bw - 4, self.height() - 26, bw, 22)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(theme.card(1.8))
-            p.drawRoundedRect(br, 12, 12)
+            p.drawRoundedRect(br, 11, 11)
             p.setFont(f)
             p.setPen(theme.text())
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, txt)
             self._latest_btn = br
 
     def _measure(self):
-        """全部字幕的总高度（用于滚动范围）。"""
-        w = max(10, self.width() - 8)
-        fj, fz = ui_font(12.5), ui_font(16, W.Medium)
+        w = max(10, self.width() - 6)
+        fj, fz = ui_font(12), ui_font(14.5, W.Medium)
         fmj, fmz = QtGui.QFontMetrics(fj), QtGui.QFontMetrics(fz)
         flags = int(Qt.AlignmentFlag.AlignLeft) | int(Qt.TextFlag.TextWordWrap)
         items = list(self.rows)
@@ -166,7 +163,7 @@ class LiveView(QtWidgets.QWidget):
             zh = it.get("zh", "")
             hz = fmz.boundingRect(QtCore.QRect(0, 0, w, 10000), flags, zh).height() if zh else 0
             hj = fmj.boundingRect(QtCore.QRect(0, 0, w, 10000), flags, jp).height() if jp else 0
-            total += hz + hj + 2 + 12
+            total += hz + hj + 2 + 8
         self._content_h = total
 
     def mouseMoveEvent(self, e):
@@ -186,7 +183,7 @@ class LevelBar(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.v = 0.0
-        self.setFixedSize(46, 8)
+        self.setFixedSize(42, 6)
 
     def set_level(self, v):
         self.v = self.v * 0.6 + float(v) * 0.4
@@ -197,29 +194,43 @@ class LevelBar(QtWidgets.QWidget):
         r = QtCore.QRectF(self.rect())
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(theme.track())
-        p.drawRoundedRect(r, 4, 4)
+        p.drawRoundedRect(r, 3, 3)
         p.setBrush(theme.on_color())
-        p.drawRoundedRect(QtCore.QRectF(0, 0, max(8, r.width() * min(1.0, self.v * 1.6)), r.height()), 4, 4)
+        p.drawRoundedRect(QtCore.QRectF(0, 0, max(6, r.width() * min(1.0, self.v * 1.6)), r.height()), 3, 3)
 
 
 class SubtitlePage(Page):
-    key, glyph, title, height = "trans", G.LIVE, "实时字幕", 290
+    key, glyph, title, height, panel_width, panel_height = "trans", G.LIVE, "实时字幕", 143, 419, 185
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        # 实时字幕（系统声音 → 日语识别 → 翻译，中日双语纯展示）
-        self.live_btn = PillButton("开始聆听", G.LIVE, height=30, primary=True)
+        # ---- 统一 Header：左(开始/停止聆听) | 中(日期时间) | 右(清空+齿轮) ----
+        self.header = PageHeader(ctx, self, height=26)
+        self.live_btn = PillButton("开始聆听", G.LIVE, height=22, primary=True)
+        self.live_btn.setMaximumWidth(114)
         self.live_btn.clicked.connect(lambda: ctx.live.toggle())
-        self.live_status = Label("", 11.5, level=3)
+
+        self.clear_btn = IconButton(G.TRASH, 22, 10, "清空字幕")
+        self.header.add_left(self.live_btn)
+        self.header.add_right(self.clear_btn)
+
+        # ---- 紧凑状态条（“模型未下载”仅在此处保留一次，下载大小放悬停提示） ----
         self.level = LevelBar()
-        clear = IconButton(G.TRASH, 30, 12, "清空")
+        avail_ok = ctx.live.available()[0]
+        init_msg = "就绪" if avail_ok else "模型未下载"
+        init_tip = "就绪（点击「开始聆听」）" if avail_ok else "模型未下载（首次使用自动下载约 630MB 识别模型）"
+        self.live_status = Label(init_msg, 11, level=3)
+        self.live_status.setToolTip(init_tip)
+        status_bar = hbox(self.level, (self.live_status, 1), spacing=8, margins=(4, 0, 4, 0))
+
+        # ---- 紧凑中日双行字幕卡片（stretch=1 填满剩余空间，底部保留 6px 间距） ----
         self.view = LiveView()
-        self.view.hint = "播放日语视频后点「开始聆听」" + (
-            "" if ctx.live.available()[0] else "\n（第一次使用会先自动下载约 630MB 的识别模型）")
-        clear.clicked.connect(self.view.clear)
-        live_card = Card(radius=16)
-        live_card.setLayout(vbox((self.view, 1), margins=(10, 8, 10, 8)))
-        self.setLayout(vbox(hbox(self.live_btn, self.level, self.live_status, None, clear, spacing=8), (live_card, 1), spacing=8))
+        self.view.hint = "播放日语视频后点「开始聆听」"
+        self.clear_btn.clicked.connect(self.view.clear)
+        live_card = Card(radius=14)
+        live_card.setLayout(vbox((self.view, 1), margins=(8, 6, 8, 6)))
+
+        self.setLayout(vbox(self.header, status_bar, (live_card, 1), spacing=4, margins=(0, 0, 0, 2)))
 
         lv = ctx.live
         lv.segment.connect(self.view.on_segment)
@@ -227,10 +238,18 @@ class SubtitlePage(Page):
         lv.final_zh.connect(self.view.on_final)
         lv.partial.connect(self.view.on_partial)
         lv.level.connect(self.level.set_level)
-        lv.status.connect(self.live_status.setText)
-        lv.error.connect(lambda m: self.live_status.setText(m))
+        lv.status.connect(self._set_status)
+        lv.error.connect(self._set_status)
         lv.running_changed.connect(self._live_state)
         lv.downloading_changed.connect(self._dl_state)
+
+    def _set_status(self, m: str):
+        self.live_status.setText(m)
+        self.live_status.setToolTip(m)
+
+    def on_show(self):
+        super().on_show()
+        self.header.refresh_clock()
 
     def show_live(self):
         pass
@@ -245,10 +264,12 @@ class SubtitlePage(Page):
         self.live_btn.primary = not on
         self.live_btn.update()
         if on:
-            self.live_status.setText("正在聆听系统声音…")
+            self._set_status("正在聆听系统声音…")
         else:
             self.level.set_level(0)
-            self.live_status.setText("")
+            avail_ok = self.ctx.live.available()[0]
+            self.live_status.setText("已停止聆听" if avail_ok else "模型未下载")
+            self.live_status.setToolTip("已停止聆听" if avail_ok else "模型未下载（首次使用自动下载约 630MB 识别模型）")
 
 
 TranslatePage = SubtitlePage

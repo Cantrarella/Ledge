@@ -166,7 +166,7 @@ class _Veil(QtWidgets.QWidget):
 
 
 class _BlankDoubleClick(QtCore.QObject):
-    """灵动岛展开后，双击空白区域切换 悬停展开 ↔ 长关；滚轮切换页面（内部滚动区有可滚余量时优先滚内容）。"""
+    """灵动岛展开后，双击空白区域切换 悬停展开 ↔ 长关；滚轮在内部滚动区外才切换页面。"""
 
     def __init__(self, island):
         super().__init__(island)
@@ -175,8 +175,10 @@ class _BlankDoubleClick(QtCore.QObject):
     def eventFilter(self, obj, ev):
         if ev.type() == QtCore.QEvent.Type.Wheel and isinstance(obj, QtWidgets.QWidget):
             isl = self.island
-            if isl.expanded and not isl.locks and obj.window() is isl and not self._can_scroll(obj, ev):
-                dy = ev.angleDelta().y() or ev.angleDelta().x()
+            if isl.expanded and not isl.locks and obj.window() is isl:
+                if self._in_internal_scroll_or_input(obj):
+                    return False
+                dy = ev.angleDelta().y() or ev.angleDelta().x() or ev.pixelDelta().y() or ev.pixelDelta().x()
                 if dy:
                     isl.nav.step_wheel(dy)
                     ev.accept()
@@ -192,23 +194,25 @@ class _BlankDoubleClick(QtCore.QObject):
             return True
         return False
 
-    def _can_scroll(self, w: QtWidgets.QWidget, ev) -> bool:
-        dy = ev.angleDelta().y() or ev.angleDelta().x() or ev.pixelDelta().y()
-        if not dy:
-            return False
+    def _in_internal_scroll_or_input(self, w: QtWidgets.QWidget) -> bool:
+        """判断指针是否位于内部滚动区（含 viewport 及子控件）或输入/下拉等自带滚轮控件内。"""
         cur = w
         while cur is not None and cur is not self.island:
-            if hasattr(cur, "_max_scroll"):
-                mx = cur._max_scroll()
-                if mx > 0 and ((dy > 0 and cur.scroll < mx) or (dy < 0 and cur.scroll > 0)):
-                    return True
-            if isinstance(cur, QtWidgets.QAbstractScrollArea):
-                vb = cur.verticalScrollBar()
-                if vb and vb.maximum() > 0 and ((dy > 0 and vb.value() > vb.minimum()) or (dy < 0 and vb.value() < vb.maximum())):
-                    return True
-                hb = cur.horizontalScrollBar()
-                if hb and hb.maximum() > 0 and ((dy > 0 and hb.value() > hb.minimum()) or (dy < 0 and hb.value() < hb.maximum())):
-                    return True
+            if isinstance(
+                cur,
+                (
+                    QtWidgets.QAbstractScrollArea,
+                    QtWidgets.QLineEdit,
+                    QtWidgets.QTextEdit,
+                    QtWidgets.QPlainTextEdit,
+                    QtWidgets.QAbstractSpinBox,
+                    QtWidgets.QComboBox,
+                    QtWidgets.QSlider,
+                ),
+            ):
+                return True
+            if hasattr(cur, "_max_scroll") and cur._max_scroll() > 0:
+                return True
             cur = cur.parentWidget()
         return False
 
@@ -390,15 +394,18 @@ class Island(QtWidgets.QWidget):
         return 10 if self.edge == "bottom" else 6
 
     def expanded_size(self) -> tuple[float, float]:
-        """打开时的尺寸（按上次停留的页面的高度）。"""
+        """打开时的尺寸：优先直接使用页面声明的最终面板尺寸 (panel_width × panel_height)。"""
         pg = self.pages[self.stack.currentIndex()]
-        return EXP_W, PAD + pg.preferred_height() + 6 + NAV_H + self._nav_bpad()
+        pw = pg.preferred_panel_width()
+        ph = pg.preferred_panel_height()
+        w = float(pw) if pw is not None else float(EXP_W)
+        if ph is not None:
+            return w, float(ph)
+        return w, PAD + pg.preferred_height() + 6 + NAV_H + self._nav_bpad()
 
     def target_size(self) -> tuple[float, float]:
         if self.expanded:
-            pg = self.pages[self.stack.currentIndex()]
-            h = PAD + pg.preferred_height() + 6 + NAV_H + self._nav_bpad()
-            return EXP_W, h
+            return self.expanded_size()
         return self.compact.size_hint()
 
     def expand(self, page: str | None = None):

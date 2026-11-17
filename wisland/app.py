@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .core import bg
-from .core.config import CONFIG_PATH, DATA_DIR, ROOT, cfg, expand
+from .core.config import DATA_DIR, ROOT, cfg
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -123,11 +123,14 @@ def main():
 
     from .services.audio import AudioService
     from .services.clipboard_history import ClipboardHistoryService
+    from .services.health_reminders import HealthReminderService
     from .services.mailcheck import MailCheckService
     from .services.media import MediaService
     from .services.notify import NotifyService
     from .services.shelf import ShelfService
     from .services.system import WindowService
+    from .services.todo import TodoService
+    from .services.water import WaterService
     from .services.lyrics import LyricsService
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
@@ -147,6 +150,9 @@ def main():
     ctx.mailcheck = MailCheckService()
     ctx.shelf = ShelfService()
     ctx.clipboard = ClipboardHistoryService()
+    ctx.todo = TodoService()
+    ctx.water = WaterService()
+    ctx.health = HealthReminderService(ctx.water, ctx.todo)
     from .live.service import LiveService
     ctx.live = LiveService()
     ctx.notify.opener = lambda path: ctx.windows.open_or_focus(path)
@@ -259,7 +265,6 @@ def main():
 
     def on_counts(c):
         compact.badges = dict(c)
-        island.nav.set_badge("msg", sum(c.values()))
         if P["msg"].active:
             P["msg"].refresh()
         island._kick()
@@ -309,6 +314,22 @@ def main():
     island.play_pause_requested.connect(lambda: ctx.media.play_pause())
     ctx.live.error.connect(lambda m: island.activity({"glyph": G.LIVE, "title": "实时字幕", "sub": m}, 4))
 
+    # ---------------- 生活提醒事件（通用岛内活动提示，后续可接入通知队列） ----------------
+    def on_life_reminder(kind: str, title: str, sub: str):
+        col_map = {
+            "water": QtGui.QColor("#3b82f6"),
+            "sit": QtGui.QColor("#22c55e"),
+            "todo": QtGui.QColor("#ff9f0a"),
+        }
+        glyph_map = {"water": G.BOLT, "sit": G.PULSE, "todo": G.CHECK}
+        island.activity({
+            "glyph": glyph_map.get(kind, G.BELL),
+            "color": col_map.get(kind, KIND_COLORS["other"]),
+            "title": title,
+            "sub": sub,
+        }, 5.0)
+    ctx.health.reminder_triggered.connect(on_life_reminder)
+
     # ---------------- 热键 ----------------
     def on_hotkey(name):
         if name == "toggle":
@@ -344,6 +365,8 @@ def main():
         if "tools" in P:
             P["tools"].refresh_shelf()
             P["tools"].refresh_clipboard()
+        if "life" in P:
+            P["life"].refresh_all()
         if show_toast:
             island.activity({"glyph": G.CHECK, "title": "设置已生效"}, 1.8)
 
@@ -438,7 +461,7 @@ def main():
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.mailcheck, ctx.clipboard):
+              ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -447,9 +470,11 @@ def main():
     fs_timer.start()
 
     def shutdown():
+        fs_timer.stop()
+        cycle_timer.stop()
         ctx.live.stop(wait=True)
         for s in (ctx.media, ctx.audio, ctx.notify,
-                  ctx.weather, ctx.mailcheck, ctx.clipboard):
+                  ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
             try:
                 s.stop()
             except Exception:  # noqa: BLE001

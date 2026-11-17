@@ -2,14 +2,13 @@
 """主页（正在播放 + 快捷操作 + 自定义启动器）与消息页（QQ / 微信 / 邮件提醒）。"""
 from __future__ import annotations
 
-import os
 import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ...core.bg import launch
 from ...core.config import cfg, expand
 from ..anim import Spring, clamp
+from ..header import PageHeader
 from ..theme import KIND_COLORS, G, W, icon_font, theme, ui_font
 from ..widgets import (Card, Hoverable, IconButton, Label, PillButton, ScrollArea, Themed, fmt_time, hbox,
                        painter, rounded_pixmap, vbox)
@@ -335,10 +334,13 @@ class PetWidget(QtWidgets.QWidget):
 
 
 class HomePage(Page):
-    key, glyph, title, height = "home", G.HOME, "主页", 172
+    key, glyph, title, height = "home", G.HOME, "主页", 204
 
     def __init__(self, ctx):
         super().__init__(ctx)
+        self.header = PageHeader(ctx, self)
+        self.header.add_left(Label("主页", 12, W.DemiBold, 2))
+
         self.media = MediaCard(ctx)
         self.media.setFixedHeight(156)
         self.a_pin = Action(G.UNPIN, "保持展开")
@@ -360,8 +362,12 @@ class HomePage(Page):
         self.pet = PetWidget()
         # 播放卡贴左、四个按钮贴右，各自收窄；中间整块留给小形象
         self.media.setFixedWidth(200)
-        lay = vbox(hbox(self.media, (self.pet, 1), gw, spacing=12), spacing=0)
+        lay = vbox(self.header, hbox(self.media, (self.pet, 1), gw, spacing=12), spacing=6)
         self.setLayout(lay)
+
+    def on_show(self):
+        super().on_show()
+        self.header.refresh_clock()
 
     def _toggle_live(self):
         self.ctx.live.toggle()
@@ -462,10 +468,16 @@ class HistoryList(QtWidgets.QWidget, Themed):
 
 
 class MessagesPage(Page):
-    key, glyph, title, height = "msg", G.MESSAGE, "消息", 270
+    key, glyph, title, height = "msg", G.MESSAGE, "消息", 285
 
     def __init__(self, ctx):
         super().__init__(ctx)
+        self.header = PageHeader(ctx, self)
+        self.header.add_left(Label("消息", 12, W.DemiBold, 2))
+        clear = IconButton(G.CHECK, 24, 11, "全部已读")
+        clear.clicked.connect(self._clear_all)
+        self.header.add_right(clear)
+
         self.tiles = {
             "qq": AppTile("qq", "QQ", G.CHAT),
             "wechat": AppTile("wechat", "微信", G.MESSAGE),
@@ -479,10 +491,7 @@ class MessagesPage(Page):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.hist)
         lay.addStretch(1)
-        clear = PillButton("全部已读", G.CHECK, height=26)
-        clear.clicked.connect(self._clear_all)
-        head = hbox(None, clear)
-        self.setLayout(vbox(hbox(*self.tiles.values(), spacing=8), head, (sc, 1), spacing=8))
+        self.setLayout(vbox(self.header, hbox(*self.tiles.values(), spacing=8), (sc, 1), spacing=8))
 
     def _open(self, kind):
         self.ctx.notify.open(kind)
@@ -503,4 +512,5 @@ class MessagesPage(Page):
 
     def on_show(self):
         super().on_show()
+        self.header.refresh_clock()
         self.refresh()

@@ -281,6 +281,7 @@ class SettingsWindow(QtWidgets.QWidget):
         gen_pg: GeneralSettingsPage = pg_map["general"]  # type: ignore[assignment]
         wth_pg: WeatherSettingsPage = pg_map["weather"]  # type: ignore[assignment]
         nav_pg: PagesNavSettingsPage = pg_map["pages_nav"]  # type: ignore[assignment]
+        tl_pg: ToolsLifeSettingsPage = pg_map["tools_life"]  # type: ignore[assignment]
         for err in errors:
             if "热键" in err:
                 gen_pg.row_hotkey.set_error(err)
@@ -288,6 +289,12 @@ class SettingsWindow(QtWidgets.QWidget):
             elif "可见页面" in err:
                 nav_pg._show_tip(err)
                 self.switch_category("pages_nav")
+            elif "提醒结束时间" in err or "提醒开始小时" in err or "提醒结束小时" in err:
+                tl_pg.row_window.set_error(err)
+                self.switch_category("tools_life")
+            elif "午休时间" in err:
+                tl_pg.row_lunch_time.set_error(err)
+                self.switch_category("tools_life")
             elif "城市" in err:
                 wth_pg.row_city.set_error(err)
                 self.switch_category("weather")

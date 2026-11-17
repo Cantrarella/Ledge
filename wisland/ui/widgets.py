@@ -336,13 +336,19 @@ class Card(QtWidgets.QFrame, Themed):
         p.drawRoundedRect(QtCore.QRectF(self.rect()), self.radius, self.radius)
 
 
-class ScrollArea(QtWidgets.QScrollArea):
-    """透明滚动区，细滚动条。"""
-    def __init__(self, parent=None):
+class WheelScrollArea(QtWidgets.QScrollArea):
+    """统一滚轮行为的透明滚动区：指针位于内部滚动区时始终消费滚轮事件，支持触控板与横向映射。"""
+
+    def __init__(self, parent=None, orientation: str = "vertical"):
         super().__init__(parent)
+        self.orientation = orientation if orientation in ("vertical", "horizontal") else "vertical"
         self.setWidgetResizable(True)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        if self.orientation == "horizontal":
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.viewport().setAutoFillBackground(False)
         self.setStyleSheet("QScrollArea{background:transparent;border:none}")
         self.viewport().setStyleSheet("background:transparent")
@@ -356,12 +362,53 @@ class ScrollArea(QtWidgets.QScrollArea):
         self._style_bar()
 
     def _style_bar(self):
-        c = theme.qss_color(theme.text(0.25))
-        self.verticalScrollBar().setStyleSheet(
-            "QScrollBar:vertical{background:transparent;width:6px;margin:4px 0 4px 0}"
-            f"QScrollBar::handle:vertical{{background:{c};border-radius:3px;min-height:24px}}"
-            "QScrollBar::add-line,QScrollBar::sub-line{height:0}"
-            "QScrollBar::add-page,QScrollBar::sub-page{background:transparent}")
+        c = theme.qss_color(theme.text(0.28))
+        if self.orientation == "horizontal":
+            self.horizontalScrollBar().setStyleSheet(
+                "QScrollBar:horizontal{background:transparent;height:2px;margin:0px}"
+                f"QScrollBar::handle:horizontal{{background:{c};border-radius:1px;min-width:18px}}"
+                "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;border:none;background:none}"
+                "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent}")
+        else:
+            self.verticalScrollBar().setStyleSheet(
+                "QScrollBar:vertical{background:transparent;width:2px;margin:2px 0 2px 0}"
+                f"QScrollBar::handle:vertical{{background:{c};border-radius:1px;min-height:14px}}"
+                "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;border:none;background:none}"
+                "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent}")
+
+    def clamp_scroll(self):
+        """清理或刷新后将滚动位置保持在有效范围内。"""
+        sb = self.horizontalScrollBar() if self.orientation == "horizontal" else self.verticalScrollBar()
+        sb.setValue(max(sb.minimum(), min(sb.maximum(), sb.value())))
+
+    def reset_scroll(self):
+        """切换页面或重置列表时回到起始位置。"""
+        sb = self.horizontalScrollBar() if self.orientation == "horizontal" else self.verticalScrollBar()
+        sb.setValue(sb.minimum())
+
+    def wheelEvent(self, e):
+        sb = self.horizontalScrollBar() if self.orientation == "horizontal" else self.verticalScrollBar()
+        px = e.pixelDelta()
+        ang = e.angleDelta()
+        if self.orientation == "horizontal":
+            delta = px.x() if abs(px.x()) >= abs(px.y()) else px.y()
+            if delta == 0:
+                ang_d = ang.x() if abs(ang.x()) >= abs(ang.y()) else ang.y()
+                delta = int(round(ang_d * 0.45)) if ang_d else 0
+        else:
+            delta = px.y()
+            if delta == 0 and ang.y():
+                delta = int(round(ang.y() * 0.45))
+        if delta and sb.maximum() > sb.minimum():
+            sb.setValue(max(sb.minimum(), min(sb.maximum(), sb.value() - delta)))
+        # 无论是否已到顶部/底部或无余量，内部滚动区一律消费滚轮，绝不触发岛体翻页
+        e.accept()
+
+
+class ScrollArea(WheelScrollArea):
+    """透明垂直滚动区，复用 WheelScrollArea 统一滚轮规则。"""
+    def __init__(self, parent=None):
+        super().__init__(parent, orientation="vertical")
 
 
 def hbox(*items, spacing: int = 8, margins=(0, 0, 0, 0)) -> QtWidgets.QHBoxLayout:

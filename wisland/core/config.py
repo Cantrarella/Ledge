@@ -21,18 +21,32 @@ DATA_DIR.mkdir(exist_ok=True)
 DEFAULTS: dict = {
     "schema_version": 2,
     "pages": {
-        "order": ["home", "msg", "weather", "trans", "tools"],
+        "order": ["home", "msg", "weather", "trans", "tools", "life"],
         "visible": {
             "home": True,
             "msg": True,
             "weather": True,
             "trans": True,
             "tools": True,
+            "life": True,
         },
     },
     "tools": {
         "shelf_enabled": True,
         "clipboard_enabled": True,
+    },
+    "life": {
+        "water_remind": True,
+        "water_goal_ml": 2000,
+        "water_serving_ml": 250,
+        "water_interval_min": 45,
+        "sit_remind": True,
+        "sit_interval_min": 60,
+        "remind_start_hour": 9,
+        "remind_end_hour": 22,
+        "lunch_rest": True,
+        "lunch_start": "12:00",
+        "lunch_end": "13:30",
     },
     "island": {
         "edge": "top",              # top / bottom / left / right
@@ -125,7 +139,7 @@ VALID_THEMES = ("auto", "light", "dark", "rouge", "sky")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
-REGISTERED_PAGE_KEYS = ("home", "msg", "weather", "trans", "tools")
+REGISTERED_PAGE_KEYS = ("home", "msg", "weather", "trans", "tools", "life")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
 
@@ -404,6 +418,45 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
                 vad["max_segment_s"] = int(ms)
             if isinstance(lv.get("asr"), dict):
                 lv["asr"]["max_segment_s"] = vad["max_segment_s"]
+
+    # life
+    lf = merged.get("life")
+    if not isinstance(lf, dict):
+        _err("life 配置必须是对象")
+        merged["life"] = copy.deepcopy(DEFAULTS["life"])
+    else:
+        def _chk_int(k: str, lo: int, hi: int, label: str, default_v: int):
+            v = lf.get(k, default_v)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= int(v) <= hi):
+                _err(f"{label}需在 {lo}~{hi} 之间: {v}")
+                if not strict:
+                    lf[k] = default_v
+            else:
+                lf[k] = int(v)
+
+        _chk_int("water_goal_ml", 500, 6000, "每日饮水目标(ml)", 2000)
+        _chk_int("water_serving_ml", 50, 1000, "每次饮水记录(ml)", 250)
+        _chk_int("water_interval_min", 5, 180, "喝水提醒间隔(分钟)", 45)
+        _chk_int("sit_interval_min", 15, 180, "久坐提醒间隔(分钟)", 60)
+        _chk_int("remind_start_hour", 0, 23, "提醒开始小时", 9)
+        _chk_int("remind_end_hour", 1, 24, "提醒结束小时", 22)
+        if lf.get("remind_start_hour", 9) >= lf.get("remind_end_hour", 22):
+            _err("提醒结束时间必须晚于开始时间")
+            if not strict:
+                lf["remind_start_hour"] = 9
+                lf["remind_end_hour"] = 22
+
+        for lk, ldef in (("lunch_start", "12:00"), ("lunch_end", "13:30")):
+            s = str(lf.get(lk, ldef) or "").strip()
+            parts = s.split(":")
+            ok_hm = (len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit()
+                     and 0 <= int(parts[0]) <= 23 and 0 <= int(parts[1]) <= 59)
+            if not ok_hm:
+                _err(f"午休时间格式应为 HH:MM: {s}")
+                if not strict:
+                    lf[lk] = ldef
+            else:
+                lf[lk] = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
 
     return (len(errors) == 0), errors, merged
 
