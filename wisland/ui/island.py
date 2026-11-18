@@ -26,6 +26,7 @@ from .compact import CompactView
 from .glass import Backdrop, exclude_from_capture
 from .nav import NavBar
 from .shape import body_path, body_points, deform, drip_path, edge_corners, neck_path, poly_path
+from .unread_dock import DOCK_WIDTH, UnreadDock
 from .theme import G, theme
 
 Qt = QtCore.Qt
@@ -327,6 +328,8 @@ class Island(QtWidgets.QWidget):
         self.nav.drag_requested.connect(self.begin_drag)
         self.content.hide()
         self.veil = _Veil(self)
+        self.unread_dock = UnreadDock(self)
+        self.unread_dock.layout_changed.connect(self._place_unread_dock)
         self._opacity: QtWidgets.QGraphicsOpacityEffect | None = None
         default = cfg.get("island.last_tab") or cfg.get("island.default_tab", "home")
         self._page_key = default if default in self.nav.keys() else self.nav.keys()[0]
@@ -431,6 +434,7 @@ class Island(QtWidgets.QWidget):
             if self.passthrough():
                 self._apply_passthrough()
             self._defer_show(self.pages[self.stack.currentIndex()])
+            self.unread_dock.set_island_state(True, 0.0)
             self.expanded_changed.emit(True)
         self._kick()
 
@@ -446,6 +450,7 @@ class Island(QtWidgets.QWidget):
             self._apply_passthrough()
         self.locks.discard("pin")
         self.pages[self.stack.currentIndex()].on_hide()
+        self.unread_dock.set_island_state(False, 0.0)
         if cfg.get("island.last_tab") != self._page_key:
             cfg.set("island.last_tab", self._page_key)          # 下次（包括重启后）打开仍是这一页
         self.expanded_changed.emit(False)
@@ -757,6 +762,14 @@ class Island(QtWidgets.QWidget):
                     self.veil.setGeometry(self.content.geometry())
                 self.veil.update()
 
+        if self.expanded:
+            cw, _ch = self.compact.size_hint()
+            tw, _th = self.target_size()
+            prog = clamp((self.sw.x - cw) / max(1.0, tw - cw), 0.0, 1.0)
+            self.unread_dock.set_island_state(True, prog)
+        else:
+            self.unread_dock.set_island_state(False, 0.0)
+
         self._update_geometry()
         if not self._needs_frames() and self.mode == "anchored":
             self.timer.stop()
@@ -988,8 +1001,44 @@ class Island(QtWidgets.QWidget):
                     self.content.setMask(QtGui.QRegion(want))
 
         # ---- 毛玻璃采样（后台线程）：覆盖当前形状 + 目标形状，一次截图够整段展开动画用 ----
+        self._place_unread_dock(lbody)
         self._request_backdrop()
         self.update(dirty)
+
+    def _place_unread_dock(self, lbody: QtCore.QRectF | None = None):
+        """将未读快捷区定位到主岛外侧（默认右侧 8px，放不下时自动翻到左侧，顶边停靠下移 8px）。"""
+        if not self.unread_dock.isVisible():
+            return
+        lb = lbody if lbody is not None else self.body
+        if lb.isEmpty():
+            return
+        avail = self._avail().translated(-self._win_origin.x(), -self._win_origin.y())
+        dock_h = self.unread_dock.height()
+        gap = 8.0
+
+        # 默认主岛右侧 8px；若右侧空间不足或右侧贴边则自动翻到主岛左侧
+        rx = round(lb.right() + gap)
+        lx = round(lb.left() - gap - DOCK_WIDTH)
+        if (self.edge == "right" and self.mode == "anchored") or (rx + DOCK_WIDTH > avail.right() and lx >= avail.left()):
+            x = lx
+            self.unread_dock.set_side("left")
+        else:
+            x = rx
+            self.unread_dock.set_side("right")
+        x = int(clamp(x, 0, WIN_W - DOCK_WIDTH))
+
+        if self.edge == "top" and self.mode == "anchored":
+            y = round(lb.top() + 8.0)
+        elif self.edge == "bottom" and self.mode == "anchored":
+            y = round(lb.bottom() - dock_h - 8.0)
+        else:
+            y = round(lb.top() + 8.0)
+            if y + dock_h > avail.bottom():
+                y = round(avail.bottom() - dock_h)
+        y = int(clamp(y, 0, max(0, WIN_H - dock_h)))
+        if self.unread_dock.pos() != QtCore.QPoint(x, y):
+            self.unread_dock.move(x, y)
+        self.unread_dock.raise_()
 
     def _content_rect(self, tw, th, lbody: QtCore.QRectF | None = None) -> QtCore.QRect:
         """内容区：贴着吸附边、沿边居中（窗口坐标）。"""
@@ -1138,6 +1187,8 @@ class Island(QtWidgets.QWidget):
 
     # ================================================================ 鼠标
     def _inside(self, gp: QtCore.QPoint) -> bool:
+        if self.unread_dock.hit_test_global(gp):
+            return True
         lp = QtCore.QPointF(gp - self._win_origin)
         if self.expanded and self.path.contains(lp):
             return True
@@ -1583,6 +1634,7 @@ class Island(QtWidgets.QWidget):
             user32.DeregisterShellHookWindow(hwnd)
         except Exception:  # noqa: BLE001
             pass
+        self.unread_dock._timer.stop()
         self.backdrop.stop()
         self._rhook.remove()
         cfg.save()

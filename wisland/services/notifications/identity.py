@@ -30,6 +30,14 @@ _user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 _user32.GetWindowTextW.restype = ctypes.c_int
 _user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
 _user32.EnumWindows.restype = wintypes.BOOL
+_user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.GetWindowLongW.restype = ctypes.c_long
+_user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
+_user32.GetWindow.restype = wintypes.HWND
+
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+GW_OWNER = 4
 
 _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 _kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -169,9 +177,25 @@ class WindowCandidate:
     title: str = ""
 
 
+def _source_exes(source_key: str) -> tuple[str, ...]:
+    base = list(_SOURCE_EXES.get(source_key, ()))
+    if source_key == "qq" and "qqnt.exe" not in base:
+        base.append("qqnt.exe")
+    try:
+        from ...core.config import cfg
+        custom = str(cfg.get(f"notify.open.{source_key}", "") or "").strip()
+        if custom:
+            exe_name = os.path.basename(custom).lower()
+            if exe_name.endswith(".exe") and exe_name not in base:
+                base.append(exe_name)
+    except Exception:
+        pass
+    return tuple(base)
+
+
 def enumerate_client_windows(source_key: str) -> list[WindowCandidate]:
-    """枚举指定来源（wechat/qq）当前运行中的主窗口候选列表。"""
-    target_exes = _SOURCE_EXES.get(source_key)
+    """枚举指定来源（wechat/qq）当前运行中的主窗口候选列表，过滤工具窗口与辅助进程。"""
+    target_exes = _source_exes(source_key)
     if not target_exes:
         return []
 
@@ -180,6 +204,15 @@ def enumerate_client_windows(source_key: str) -> list[WindowCandidate]:
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def _cb(hwnd, _lp):
+        if not _user32.IsWindow(hwnd):
+            return True
+        # 过滤工具窗口（WS_EX_TOOLWINDOW）和带 owner 的附属弹窗
+        ex_style = int(_user32.GetWindowLongW(hwnd, GWL_EXSTYLE) or 0)
+        if ex_style & WS_EX_TOOLWINDOW:
+            return True
+        if _user32.GetWindow(hwnd, GW_OWNER):
+            return True
+
         pid = wintypes.DWORD(0)
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         p = int(pid.value)
@@ -197,8 +230,8 @@ def enumerate_client_windows(source_key: str) -> list[WindowCandidate]:
             buf = ctypes.create_unicode_buffer(min(n_len + 1, 256))
             _user32.GetWindowTextW(hwnd, buf, len(buf))
             title = buf.value
-        # 只收集可见主窗口或有标题的顶层窗口（兼容托盘隐藏窗）
-        if vis or title:
+        # 只收集真实可见主窗，或有有效标题的托盘隐藏主窗（过滤无标题隐藏辅助窗口）
+        if title and title not in ("MSCTFIME UI", "Default IME") and (vis or title in ("微信", "WeChat", "QQ")):
             found.append(WindowCandidate(hwnd=int(hwnd), pid=p, exe=exe, started_at=started, visible=vis, title=title))
         return True
 
@@ -291,18 +324,19 @@ def focus_event_target(
     enumerator=None,
     focuser=None,
 ) -> tuple[bool, str]:
-    """点击通知时安全聚焦目标窗口。
+    """点击通知时安全聚焦目标窗口（实时重新检查当前主窗口，不复用旧歧义状态）。
     返回 (成功聚焦, 提示信息)。无法确认账号或客户端已退出时绝不乱开无关窗口。
     """
-    if event.account_ambiguous:
-        return False, "客户端已打开但无法识别账号"
-
     if event.source_key not in _SOURCE_EXES:
         return False, f"暂不支持直接打开 {event.app_name}"
 
     enum_fn = enumerator or enumerate_client_windows
     focus_fn = focuser or default_focus_hwnd
-    candidates: list[WindowCandidate] = enum_fn(event.source_key)
+    raw_candidates: list[WindowCandidate] = enum_fn(event.source_key) or []
+    candidates = [
+        c for c in raw_candidates
+        if getattr(c, "hwnd", 0) > 0 and (getattr(c, "visible", False) or bool(getattr(c, "title", "")))
+    ]
 
     if not candidates:
         return False, f"{event.app_name} 客户端已退出"

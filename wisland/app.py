@@ -284,7 +284,22 @@ def main():
 
     def on_counts(c):
         compact.badges = dict(c)
+        island.unread_dock.sync_counts(c)
+        fg_watcher.update_unread_counts(c)
         island._kick()
+
+    from .services.notifications.foreground import ForegroundClientWatcher
+    fg_watcher = ForegroundClientWatcher(
+        parent=app,
+        ambiguous_fn=ctx.notify.controller.is_source_ambiguous,
+    )
+    fg_watcher.foreground_matched.connect(ctx.notify.clear)
+
+    def on_unread_dock_clicked(source_key: str):
+        if not ctx.notify.open(source_key):
+            island.unread_dock.trigger_fail_shake(source_key)
+
+    island.unread_dock.item_clicked.connect(on_unread_dock_clicked)
     ctx.notify.notified.connect(on_notified)
     ctx.notify.banner_changed.connect(on_banner_changed)
     ctx.notify.counts_changed.connect(on_counts)
@@ -503,6 +518,7 @@ def main():
     def shutdown():
         fs_timer.stop()
         cycle_timer.stop()
+        fg_watcher.stop()
         ctx.live.stop(wait=True)
         ctx.mail_monitor.stop()
         ctx.mail.shutdown()

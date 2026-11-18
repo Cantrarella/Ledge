@@ -56,9 +56,11 @@ class PageHeader(QtWidgets.QWidget):
 
         self.gear_btn: IconButton | None = None
         if show_gear:
-            self.gear_btn = IconButton(G.GEAR, 26, 12, "打开 Wisland 设置", parent=self.right_wrap)
+            btn_sz = min(26, max(18, height - 2))
+            icon_px = 10 if btn_sz <= 21 else 11 if btn_sz <= 24 else 12
+            self.gear_btn = IconButton(G.GEAR, btn_sz, icon_px, "打开 Wisland 设置", parent=self.right_wrap)
             self.gear_btn.clicked.connect(self._open_settings)
-            self.right_lay.addWidget(self.gear_btn)
+            self.right_lay.addWidget(self.gear_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._last_text = ""
         self._timer = QtCore.QTimer(self, interval=30000, timeout=self.refresh_clock)
@@ -88,18 +90,18 @@ class PageHeader(QtWidgets.QWidget):
         if isinstance(item, QtWidgets.QLayout):
             self.left_lay.addLayout(item)
         else:
-            self.left_lay.addWidget(item)
+            self.left_lay.addWidget(item, 0, Qt.AlignmentFlag.AlignVCenter)
         self._layout_parts()
 
     def add_right(self, item):
-        # 始终保持设置齿轮在最右侧
+        # 始终保持设置齿轮在最右侧，并与右侧同列按钮垂直居中对齐
         idx = self.right_lay.count()
         if self.gear_btn is not None and idx > 0:
             idx -= 1
         if isinstance(item, QtWidgets.QLayout):
             self.right_lay.insertLayout(idx, item)
         else:
-            self.right_lay.insertWidget(idx, item)
+            self.right_lay.insertWidget(idx, item, 0, Qt.AlignmentFlag.AlignVCenter)
         self._layout_parts()
 
     def _layout_parts(self):

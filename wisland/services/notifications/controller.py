@@ -252,8 +252,16 @@ class NotificationController(QtCore.QObject):
                 self.banner_changed.emit(None)
 
     # ---------------- 未读清除与点击打开 ----------------
+    def is_source_ambiguous(self, source_key: str) -> bool:
+        ev = self._latest_by_source.get(source_key)
+        return bool(ev is not None and ev.account_ambiguous)
+
     def clear(self, source_key: str):
-        """只清除指定来源的未读计数。"""
+        """只清除指定来源的未读计数，并同步关闭该来源仍在显示的通知横幅与队列。"""
+        if self._queue:
+            self._queue = deque(qev for qev in self._queue if qev.source_key != source_key)
+        if self.current_banner is not None and self.current_banner.source_key == source_key:
+            self.dismiss_current_banner()
         if self.counts.get(source_key):
             self.counts[source_key] = 0
             self.counts_changed.emit(dict(self.counts))
