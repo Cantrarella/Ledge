@@ -246,18 +246,19 @@ class WeatherPage(Page):
         self.msg = Label("", 10.5, level=3)
         self.msg.hide()
 
-        # ---- 左栏：当前天气 ----
+        # ---- 左栏：当前天气（水平与垂直居中） ----
         self.icon = GlyphLabel(30)
         self.temp = Label("--°", 28, W.Light, num=True)
         self.temp.setFixedHeight(34)
-        self.desc = Label("", 11.5, W.Medium)
-        self.city_lbl = Label("", 10.5, level=2)
+        self.desc = Label("", 11.5, W.Medium, align=Qt.AlignmentFlag.AlignCenter)
+        self.city_lbl = Label("", 10.5, level=2, align=Qt.AlignmentFlag.AlignCenter)
         left_col = vbox(
-            hbox(self.icon, self.temp, None, spacing=4),
+            None,
+            hbox(None, self.icon, self.temp, None, spacing=6),
             self.desc,
             self.city_lbl,
             None,
-            spacing=1,
+            spacing=2,
         )
         left_wrap = QtWidgets.QWidget()
         left_wrap.setFixedWidth(154)
