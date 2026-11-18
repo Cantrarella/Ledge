@@ -223,16 +223,47 @@ def test_03_add_cancel_save_fail_and_delete_confirm_semantics(qt_app, tmp_path, 
     mgr.stop()
 
 
-def test_04_no_msg_or_quota_island_page_registered(qt_app):
+def test_04_quota_island_page_registered_and_msg_remains_removed(qt_app):
     reg = PageRegistry()
-    for k in ("home", "mail", "weather", "trans", "tools", "life"):
+    for k in ("home", "mail", "quota", "weather", "trans", "tools", "life"):
         pg = type(f"P_{k}", (Page,), {"key": k, "glyph": "", "title": k})()
         reg.register(pg)
     assert reg.get_entry("msg") is None
-    assert reg.get_entry("quota") is None
+    assert reg.get_entry("quota") is not None
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    reg_src = (root / "wisland" / "ui" / "page_registry.py").read_text(encoding="utf-8")
     app_src = (root / "wisland" / "app.py").read_text(encoding="utf-8")
-    assert '"quota"' not in reg_src
     assert 'P["msg"]' not in app_src
+
+
+def test_05_open_instance_focuses_quota_reconnect_account(qt_app, tmp_path, monkeypatch):
+    cm, _creds, _cache, mgr, _cfg_path = _make_quota_env(tmp_path)
+    acc = QuotaAccount(
+        id="reconnect-me",
+        provider=Provider.DEEPSEEK.value,
+        alias="待重连",
+        identity="deepseek-reconnect",
+    )
+    cm.set("quota.accounts", [acc.to_config_dict()])
+    mgr.load_from_config()
+    monkeypatch.setattr(SettingsWindow, "_instance", None)
+
+    ctx = type("Ctx", (), {"quota": mgr})()
+    SettingsWindow._instance = SettingsWindow(ctx=ctx, config_obj=cm)
+    win = SettingsWindow.open_instance(
+        ctx,
+        category="quota",
+        account_id=acc.id,
+    )
+    try:
+        qt_app.processEvents()
+        quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+        assert win.stack.currentWidget() is quota_pg
+        assert quota_pg._reconnect_target_acc is not None
+        assert quota_pg._reconnect_target_acc.id == acc.id
+        assert not quota_pg.add_card.isHidden()
+        assert quota_pg.ed_alias.text() == "待重连"
+    finally:
+        win.close()
+        SettingsWindow._instance = None
+        mgr.stop()

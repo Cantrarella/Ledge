@@ -15,6 +15,7 @@ Qt = QtCore.Qt
 _FALLBACK_META = [
     ("home", G.HOME, "主页"),
     ("mail", G.MAIL, "邮箱"),
+    ("quota", G.CPU, "AI 额度"),
     ("weather", G.SUN, "天气"),
     ("trans", G.LIVE, "实时字幕"),
     ("tools", G.CLIP, "工具"),

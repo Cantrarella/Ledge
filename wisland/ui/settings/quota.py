@@ -497,6 +497,12 @@ class QuotaSettingsPage(SettingsPage):
         if not self._loading:
             self.changed.emit()
 
+    def focus_account(self, account_id: str):
+        """从岛内“重新连接”跳转过来时定位到对应账号并打开重连表单。"""
+        target = next((a for a in self._draft_accounts if a.id == account_id), None)
+        if target is not None:
+            self.open_add_form(provider=target.provider, reconnect_acc=target)
+
     def open_add_form(self, provider: str = Provider.DEEPSEEK.value, reconnect_acc: QuotaAccount | None = None):
         self._reconnect_target_acc = reconnect_acc
         self.ed_api_key.setText("")

@@ -384,8 +384,8 @@ def main():
     island.hotkey.connect(on_hotkey)
 
     # ---------------- 菜单 / 托盘 / 设置窗口 ----------------
-    def open_settings(category: str | None = None):
-        SettingsWindow.open_instance(ctx, category=category)
+    def open_settings(category: str | None = None, account_id: str | None = None):
+        SettingsWindow.open_instance(ctx, category=category, account_id=account_id)
     ctx.open_settings = open_settings
 
     cycle_timer = QtCore.QTimer(app)

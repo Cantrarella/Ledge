@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """页面注册表：统一管理真实页面的实例（单例复用）、排序（order）与可见性（visible）。
-当前真实页面：home（主页）、mail（邮箱）、weather（天气）、trans（实时字幕）、tools（工具）、life（生活）。
+当前真实页面：home（主页）、mail（邮箱）、quota（AI 额度）、weather（天气）、trans（实时字幕）、tools（工具）、life（生活）。
 """
 from __future__ import annotations
 
@@ -48,16 +48,17 @@ class PageRegistry:
 
     @classmethod
     def create_default(cls, ctx) -> PageRegistry:
-        """创建并注册当前项目的真实页面（主页、邮箱、天气、实时字幕、工具、生活）。"""
+        """创建并注册当前项目的真实页面（主页、邮箱、AI 额度、天气、实时字幕、工具、生活）。"""
         from .pages.home import HomePage
         from .pages.info import WeatherPage
         from .pages.life import LifePage
         from .pages.mail import MailPage
+        from .pages.quota import QuotaPage
         from .pages.subtitle import SubtitlePage
         from .pages.tools import ToolsPage
 
         reg = cls()
-        for pg in (HomePage(ctx), MailPage(ctx), WeatherPage(ctx), SubtitlePage(ctx), ToolsPage(ctx), LifePage(ctx)):
+        for pg in (HomePage(ctx), MailPage(ctx), QuotaPage(ctx), WeatherPage(ctx), SubtitlePage(ctx), ToolsPage(ctx), LifePage(ctx)):
             reg.register(pg)
         reg.sync_from_config(cfg)
         return reg

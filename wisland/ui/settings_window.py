@@ -176,7 +176,12 @@ class SettingsWindow(QtWidgets.QWidget):
         self._load_all_from_draft()
 
     @classmethod
-    def open_instance(cls, ctx=None, category: str | None = None) -> SettingsWindow:
+    def open_instance(
+        cls,
+        ctx=None,
+        category: str | None = None,
+        account_id: str | None = None,
+    ) -> SettingsWindow:
         if cls._instance is None:
             cls._instance = cls(ctx=ctx)
         else:
@@ -184,6 +189,13 @@ class SettingsWindow(QtWidgets.QWidget):
             cls._instance.reload_draft_from_config()
         if category:
             cls._instance.switch_category(category)
+        if category == "quota" and account_id:
+            quota_pg = next(
+                (pg for pg in cls._instance.pages if isinstance(pg, QuotaSettingsPage)),
+                None,
+            )
+            if quota_pg is not None:
+                quota_pg.focus_account(account_id)
         cls._instance.show()
         cls._instance.raise_()
         cls._instance.activateWindow()

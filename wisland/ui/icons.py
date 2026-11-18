@@ -61,6 +61,69 @@ def draw_svg_icon(p: QtGui.QPainter, rect: QtCore.QRectF, svg_key: str, dark: bo
     return True
 
 
+_AI_SVG_FILES = {
+    "deepseek": "deepseek.svg",
+    "workbuddy": "workbuddy.svg",
+    "gemini": "gemini.svg",
+    "grok_bot": "grokbot.svg",
+    "grokbot": "grokbot.svg",
+    "codex": "codex.svg",
+}
+
+_AI_MONOCHROME_PROVIDERS = frozenset({"deepseek", "gemini", "grok_bot", "grokbot", "codex"})
+
+
+def _ai_icons_dir() -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    p1 = base / "wisland" / "assets" / "ai-icons"
+    if p1.is_dir():
+        return p1
+    return Path(__file__).resolve().parents[1] / "assets" / "ai-icons"
+
+
+def get_ai_svg_renderer(provider_key: str, dark: bool = False) -> QtSvg.QSvgRenderer | None:
+    """加载 AI 服务商 SVG；仅对单色图标做主题前景色适配，彩色品牌图标保持原样。"""
+    name = str(provider_key or "").strip().lower()
+    fname = _AI_SVG_FILES.get(name)
+    if not fname:
+        return None
+    cache_key = (f"ai:{name}:{'dark' if dark else 'light'}", None)
+    if cache_key in _SVG_CACHE:
+        return _SVG_CACHE[cache_key]
+    path = _ai_icons_dir() / fname
+    if not path.is_file():
+        _SVG_CACHE[cache_key] = None
+        return None
+    if name in _AI_MONOCHROME_PROVIDERS:
+        raw = path.read_bytes()
+        target = b"#f5f7fb" if dark else b"#111318"
+        for token in (b'fill="currentColor"', b'fill="#ffffff"', b'fill="#FFFFFF"', b'fill="#fff"', b'fill="#FFF"'):
+            raw = raw.replace(token, b'fill="' + target + b'"')
+        ren = QtSvg.QSvgRenderer(QtCore.QByteArray(raw))
+    else:
+        ren = QtSvg.QSvgRenderer(str(path))
+    _SVG_CACHE[cache_key] = ren if ren.isValid() else None
+    return _SVG_CACHE[cache_key]
+
+
+def draw_ai_svg_icon(
+    p: QtGui.QPainter,
+    rect: QtCore.QRectF,
+    provider_key: str,
+    opacity: float = 1.0,
+    dark: bool = False,
+) -> bool:
+    """高 DPI 渲染 AI 图标；单色图标适配明暗主题，彩色图标保留品牌色。"""
+    ren = get_ai_svg_renderer(provider_key, dark=dark)
+    if ren is None:
+        return False
+    p.save()
+    p.setOpacity(max(0.0, min(1.0, opacity)))
+    ren.render(p, rect)
+    p.restore()
+    return True
+
+
 def _pen(color: QtGui.QColor, width: float = 1.6) -> QtGui.QPen:
     pen = QtGui.QPen(color, width)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)

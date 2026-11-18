@@ -21,10 +21,11 @@ DATA_DIR.mkdir(exist_ok=True)
 DEFAULTS: dict = {
     "schema_version": 2,
     "pages": {
-        "order": ["home", "mail", "weather", "trans", "tools", "life"],
+        "order": ["home", "mail", "quota", "weather", "trans", "tools", "life"],
         "visible": {
             "home": True,
             "mail": True,
+            "quota": True,
             "weather": True,
             "trans": True,
             "tools": True,
@@ -160,7 +161,7 @@ VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
 VALID_QUOTA_PROVIDERS = ("deepseek", "workbuddy", "gemini", "grok_bot", "codex")
-REGISTERED_PAGE_KEYS = ("home", "mail", "weather", "trans", "tools", "life")
+REGISTERED_PAGE_KEYS = ("home", "mail", "quota", "weather", "trans", "tools", "life")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
 
