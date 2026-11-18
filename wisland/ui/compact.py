@@ -11,7 +11,7 @@ import time
 from PySide6 import QtCore, QtGui
 
 from .anim import clamp, ease_out
-from .icons import draw_svg_icon
+from .icons import draw_life_svg_icon, draw_svg_icon
 from .theme import KIND_COLORS, G, W, icon_font, theme, ui_font
 from .widgets import rounded_pixmap
 
@@ -422,6 +422,15 @@ class CompactView:
             t = a.get("type")
             if t == "volume":
                 return 280, H_ACT
+            if t == "life-reminder":
+                fm_t = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
+                fm_s = QtGui.QFontMetrics(ui_font(12))
+                tw = float(math.ceil(fm_t.horizontalAdvance(a.get("title", ""))) + 2)
+                sub = a.get("sub", "")
+                sw = (8.0 + float(math.ceil(fm_s.horizontalAdvance(sub)) + 2)) if sub else 0.0
+                # 左边距9 + 图标24 + 间距9 + 标题 + 副标题 + 间距8 + 关闭按钮24 + 右边距6
+                w = 9 + 24 + 9 + tw + sw + 8 + 24 + 6
+                return clamp(w, 220.0, 440.0), H_NOTIFY
             if t == "notify":
                 fm_app = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
                 fm_sub = QtGui.QFontMetrics(ui_font(12))
@@ -689,14 +698,19 @@ class CompactView:
         cy = r.center().y()
         t = act.get("type")
         is_notify = (t == "notify")
+        is_life = (t == "life-reminder")
         enter = ease_out((time.monotonic() - act.get("start", 0)) / 0.35)
         color = act.get("color")
-        # 左侧图标槽位 24×24px（左边距 9px、间距 9px）；微信/QQ SVG 在槽位内居中绘制 22×22px
-        d = 24 if is_notify else 26
+        # 左侧图标槽位 24×24px（左边距 9px、间距 9px）；生活提醒与微信/QQ SVG 在槽位内居中绘制 22×22px
+        d = 24 if (is_notify or is_life) else 26
         cr = QtCore.QRectF(r.x() + 9, cy - d / 2, d, d)
-        svg_key = act.get("svg_key") if is_notify else ""
-        drew_svg = bool(svg_key) and draw_svg_icon(p, cr.adjusted(1.0, 1.0, -1.0, -1.0), svg_key, theme.dark, a)
-        if not drew_svg:
+        icon_rect = cr.adjusted(1.0, 1.0, -1.0, -1.0)
+        if is_life:
+            drew_svg = draw_life_svg_icon(p, icon_rect, str(act.get("kind") or ""), theme.dark, a)
+        else:
+            svg_key = act.get("svg_key") if is_notify else ""
+            drew_svg = bool(svg_key) and draw_svg_icon(p, icon_rect, svg_key, theme.dark, a)
+        if not drew_svg and not is_life:
             if color is not None:
                 c = QtGui.QColor(color)
                 c.setAlphaF(a)
@@ -714,7 +728,7 @@ class CompactView:
             else:
                 p.setFont(icon_font((12 if is_notify else 13) if color is not None else 16))
                 p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
-        x = cr.right() + (9 if is_notify else 10)
+        x = cr.right() + (9 if (is_notify or is_life) else 10)
         if t == "volume":
             v = clamp(act.get("value", 0.0), 0, 1)
             bw = r.right() - 52 - x
@@ -732,6 +746,43 @@ class CompactView:
             return
         title = act.get("title", "")
         sub = act.get("sub", "")
+        if is_life:
+            dr = QtCore.QRectF(r.right() - 30, cy - 12, 24, 24)
+            self._notify_dismiss_rect = dr
+            if self.notify_dismiss_hover > 0.01:
+                hbg = QtGui.QColor(255, 255, 255) if theme.dark else QtGui.QColor(0, 0, 0)
+                hbg.setAlphaF(0.14 * self.notify_dismiss_hover * a)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(hbg)
+                p.drawEllipse(dr.adjusted(2, 2, -2, -2))
+            p.setFont(icon_font(8.5))
+            p.setPen(theme.text((0.65 + 0.32 * self.notify_dismiss_hover) * a))
+            p.drawText(dr, Qt.AlignmentFlag.AlignCenter, G.CLOSE)
+
+            avail = max(20.0, dr.left() - 8 - x)
+            f_title = ui_font(12.5, W.DemiBold)
+            fm_t = QtGui.QFontMetrics(f_title)
+            tw = min(float(math.ceil(fm_t.horizontalAdvance(title)) + 2), avail)
+            p.setFont(f_title)
+            p.setPen(theme.text(a))
+            p.drawText(
+                QtCore.QRectF(x, r.y(), tw + 1, r.height()),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                fm_t.elidedText(title, Qt.TextElideMode.ElideRight, int(tw)),
+            )
+            if sub and tw + 8 < avail:
+                sub_x = x + tw + 8
+                sub_w = max(10.0, avail - tw - 8)
+                f_sub = ui_font(12)
+                fm_s = QtGui.QFontMetrics(f_sub)
+                p.setFont(f_sub)
+                p.setPen(theme.text2(a))
+                p.drawText(
+                    QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_s.elidedText(sub, Qt.TextElideMode.ElideRight, int(sub_w)),
+                )
+            return
         if is_notify:
             dr = QtCore.QRectF(r.right() - 30, cy - 12, 24, 24)
             self._notify_dismiss_rect = dr

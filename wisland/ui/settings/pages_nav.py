@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ...core.config import ConfigDraft
-from ..theme import G, W, icon_font, theme, ui_font
+from ..theme import G, W, bind_theme_context, icon_font, settings_theme, ui_font
 from ..widgets import Card, IconButton, Switch, hbox, painter, vbox
 from .base import SettingsPage
 
@@ -34,7 +34,7 @@ class _DragHandle(QtWidgets.QWidget):
     def paintEvent(self, e):
         p = painter(self)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.text3(0.85))
+        p.setBrush(settings_theme.text3(0.85))
         cx, cy = self.width() / 2.0, self.height() / 2.0
         for dx in (-3.0, 3.0):
             for dy in (-6.0, 0.0, 6.0):
@@ -88,12 +88,12 @@ class _PageItemRow(Card):
             spacing=8,
             margins=(14, 12, 16, 12),
         ))
-        theme.changed.connect(self._style_labels)
+        settings_theme.changed.connect(self._style_labels)
         self._style_labels()
 
     def _style_labels(self):
-        tc = theme.qss_color(theme.text())
-        ic = theme.qss_color(theme.on_color())
+        tc = settings_theme.qss_color(settings_theme.text())
+        ic = settings_theme.qss_color(settings_theme.on_color())
         self.title_lbl.setStyleSheet(f"QLabel{{color:{tc};background:transparent;}}")
         self.icon_lbl.setStyleSheet(f"QLabel{{color:{ic};background:transparent;}}")
 
@@ -146,7 +146,7 @@ class _PageItemRow(Card):
         if self.hasFocus() or self._dragging:
             p = painter(self)
             r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-            c = QtGui.QColor(theme.on_color())
+            c = QtGui.QColor(settings_theme.on_color())
             c.setAlphaF(0.85 if self._dragging else 0.55)
             p.setPen(QtGui.QPen(c, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -180,11 +180,13 @@ class PagesNavSettingsPage(SettingsPage):
             self.list_container,
             self.tip_lbl,
         )
-        theme.changed.connect(self._style_tip)
+        settings_theme.changed.connect(self._style_tip)
         self._style_tip()
 
     def _style_tip(self):
-        self.tip_lbl.setStyleSheet(f"QLabel{{color:{theme.qss_color(theme.up())};background:transparent;padding-left:4px;}}")
+        self.tip_lbl.setStyleSheet(
+            f"QLabel{{color:{settings_theme.qss_color(settings_theme.up())};background:transparent;padding-left:4px;}}"
+        )
 
     def _show_tip(self, msg: str):
         if msg:
@@ -222,6 +224,7 @@ class PagesNavSettingsPage(SettingsPage):
                 visible=item["visible"],
                 parent=self.list_container,
             )
+            bind_theme_context(row, settings_theme)
             row.set_nav_bounds(is_first=(idx == 0), is_last=(idx == n - 1))
             row.move_requested.connect(self.move_page)
             row.drag_moved.connect(self._on_row_drag_moved)

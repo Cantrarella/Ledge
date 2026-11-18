@@ -153,10 +153,14 @@ DEFAULTS: dict = {
         "translate": {"enabled": True, "live": True, "live_min_interval_ms": 900, "live_min_new_chars": 4,
                       "context_lines": 3},
     },
+    "settings_window": {
+        "theme": "light",           # light / dark（独立于岛体皮肤）
+    },
 }
 
 VALID_EDGES = ("top", "bottom", "left", "right")
-VALID_THEMES = ("auto", "light", "dark", "rouge", "sky")
+VALID_THEMES = ("auto", "classic", "light", "dark", "rouge", "sky")
+VALID_SETTINGS_THEMES = ("light", "dark")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
@@ -302,6 +306,19 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
         _err(f"无效的主题模式: {thm}")
         if not strict:
             isl["theme"] = "auto"
+
+    # settings_window.theme（独立于岛体皮肤，仅允许 light / dark）
+    sw = merged.get("settings_window")
+    if not isinstance(sw, dict):
+        _err(f"settings_window 配置格式无效: {sw}")
+        if not strict:
+            merged["settings_window"] = {"theme": "light"}
+    else:
+        sw_thm = sw.get("theme", "light")
+        if sw_thm not in VALID_SETTINGS_THEMES:
+            _err(f"无效的设置窗口主题模式: {sw_thm}")
+            if not strict:
+                sw["theme"] = "light"
 
     # hover_expand_ms
     he_ms = isl.get("hover_expand_ms", 120)

@@ -8,7 +8,7 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .anim import Spring
-from .theme import W, icon_font, theme, ui_font
+from .theme import W, icon_font, resolve_theme, ui_font
 
 Qt = QtCore.Qt
 AA = QtGui.QPainter.RenderHint.Antialiasing
@@ -22,10 +22,58 @@ def painter(w: QtWidgets.QWidget) -> QtGui.QPainter:
     return p
 
 
+def _bind_theme_slot(widget: QtCore.QObject, slot) -> None:
+    """将控件的主题刷新回调绑定到当前解析出的 Theme，并支持后续上下文切换重连。"""
+    slots: list = getattr(widget, "_theme_slots", None)
+    if slots is None:
+        slots = []
+        setattr(widget, "_theme_slots", slots)
+    if slot not in slots:
+        slots.append(slot)
+    t = resolve_theme(widget)
+    bound_map: dict = getattr(widget, "_bound_themes", None)
+    if bound_map is None:
+        bound_map = {}
+        setattr(widget, "_bound_themes", bound_map)
+    old_t = bound_map.get(id(slot))
+    if old_t is not t:
+        if old_t is not None:
+            try:
+                old_t.changed.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        t.changed.connect(slot)
+        bound_map[id(slot)] = t
+
+    if not hasattr(widget, "_rebind_theme"):
+        def _rebind(target_theme, _w=widget):
+            cur_slots = list(getattr(_w, "_theme_slots", ()))
+            bmap = getattr(_w, "_bound_themes", None)
+            if bmap is None:
+                bmap = {}
+                setattr(_w, "_bound_themes", bmap)
+            for cb in cur_slots:
+                prev_t = bmap.get(id(cb))
+                if prev_t is not target_theme:
+                    if prev_t is not None:
+                        try:
+                            prev_t.changed.disconnect(cb)
+                        except (RuntimeError, TypeError):
+                            pass
+                    target_theme.changed.connect(cb)
+                    bmap[id(cb)] = target_theme
+                try:
+                    cb()
+                except RuntimeError:
+                    pass
+
+        setattr(widget, "_rebind_theme", _rebind)
+
+
 class Themed:
     """混入：主题切换时自动重绘。"""
     def _hook_theme(self):
-        theme.changed.connect(self._on_theme)
+        _bind_theme_slot(self, self._on_theme)
 
     def _on_theme(self):
         try:
@@ -137,16 +185,17 @@ class IconButton(Hoverable):
         p = painter(self)
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
         enabled = self.isEnabled()
+        t = resolve_theme(self)
         s = self.press_scale() if enabled else 1.0
         p.translate(r.center())
         p.scale(s, s)
         p.translate(-r.center())
         if self.active and enabled:
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(self.color or theme.fill())
+            p.setBrush(self.color or t.fill())
             p.drawEllipse(r)
         elif (self.filled or self._hover.x > 0.01) and enabled:
-            bg = QtGui.QColor(theme.card() if self.filled else theme.hover())
+            bg = QtGui.QColor(t.card() if self.filled else t.hover())
             if not self.filled:
                 bg.setAlphaF(bg.alphaF() * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
@@ -154,9 +203,9 @@ class IconButton(Hoverable):
             p.drawEllipse(r)
         p.setFont(icon_font(self.icon_px))
         if not enabled:
-            fg = theme.text3(0.35)
+            fg = t.text3(0.35)
         else:
-            fg = QtGui.QColor(20, 20, 24) if self.active else (self.color or theme.text(0.9))
+            fg = QtGui.QColor(20, 20, 24) if self.active else (self.color or t.text(0.9))
             if self.active and self.color is not None:
                 fg = QtGui.QColor("white")
         p.setPen(fg)
@@ -216,14 +265,15 @@ class PillButton(Hoverable):
         p.scale(s, s)
         p.translate(-r.center())
 
+        t = resolve_theme(self)
         if not enabled:
-            bg = theme.card(0.55)
-            fg = theme.text3(0.6)
+            bg = t.card(0.55)
+            fg = t.text3(0.6)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         elif self.danger:
-            dc = QtGui.QColor(theme.up())
+            dc = QtGui.QColor(t.up())
             bg = QtGui.QColor(dc)
             bg.setAlphaF(0.16 * self._hover.x)
             pen_c = QtGui.QColor(dc)
@@ -233,22 +283,22 @@ class PillButton(Hoverable):
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
             fg = dc
         elif self.primary:
-            bg = QtGui.QColor(theme.on_color())
+            bg = QtGui.QColor(t.on_color())
             if self._hover.x > 0.01:
                 bg = bg.lighter(100 + round(10 * self._hover.x))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-            fg = theme.on_fg(0.98)
+            fg = t.on_fg(0.98)
         else:
-            bg = theme.card(1.0 + 0.6 * self._hover.x)
+            bg = t.card(1.0 + 0.6 * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-            fg = theme.text(0.92)
+            fg = t.text(0.92)
 
         if self.hasFocus() and enabled:
-            fc = QtGui.QColor(theme.up() if self.danger else theme.on_color())
+            fc = QtGui.QColor(t.up() if self.danger else t.on_color())
             p.setPen(QtGui.QPen(fc, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
@@ -320,9 +370,10 @@ class Label(QtWidgets.QWidget, Themed):
         self.clicked.emit()
 
     def paintEvent(self, e):
+        t = resolve_theme(self)
         p = painter(self)
         p.setFont(self.font_)
-        c = self.color or (theme.text() if self.level == 1 else theme.text2() if self.level == 2 else theme.text3())
+        c = self.color or (t.text() if self.level == 1 else t.text2() if self.level == 2 else t.text3())
         p.setPen(c)
         r = QtCore.QRectF(self.rect())
         if self.wrap:
@@ -343,7 +394,7 @@ class Card(QtWidgets.QFrame, Themed):
     def paintEvent(self, e):
         p = painter(self)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.card(self.alpha))
+        p.setBrush(resolve_theme(self).card(self.alpha))
         p.drawRoundedRect(QtCore.QRectF(self.rect()), self.radius, self.radius)
 
 
@@ -369,12 +420,13 @@ class WheelScrollArea(QtWidgets.QScrollArea):
         self.inner.setStyleSheet("#scrollInner{background:transparent}")
         self.setWidget(self.inner)
         self.inner.setAutoFillBackground(False)   # setWidget 会强制打开
-        theme.changed.connect(self._style_bar)
+        _bind_theme_slot(self, self._style_bar)
         self._style_bar()
 
     @QtCore.Slot()
     def _style_bar(self):
-        c = theme.qss_color(theme.text(0.28))
+        t = resolve_theme(self)
+        c = t.qss_color(t.text(0.28))
         if self.orientation == "horizontal":
             self.horizontalScrollBar().setStyleSheet(
                 "QScrollBar:horizontal{background:transparent;height:2px;margin:0px}"
@@ -499,21 +551,22 @@ class LineEdit(QtWidgets.QLineEdit):
         if width:
             self.setFixedWidth(width)
         self.setFont(ui_font(13))
-        theme.changed.connect(self._style)
+        _bind_theme_slot(self, self._style)
         self._style()
 
     def _style(self):
-        bg = theme.qss_color(theme.card(1.2))
-        fg = theme.qss_color(theme.text())
-        bd = theme.qss_color(theme.text(0.14))
-        fc = theme.qss_color(theme.on_color())
+        t = resolve_theme(self)
+        bg = t.qss_color(t.card(1.2))
+        fg = t.qss_color(t.text())
+        bd = t.qss_color(t.text(0.14))
+        fc = t.qss_color(t.on_color())
         self.setStyleSheet(
             f"QLineEdit{{background:{bg};border:1px solid {bd};border-radius:10px;"
             f"padding:0 12px;color:{fg};"
             f"selection-background-color:rgba(79,140,255,120)}}"
             f"QLineEdit:focus{{border:1.5px solid {fc};}}")
         pal = self.palette()
-        pal.setColor(QtGui.QPalette.ColorRole.PlaceholderText, theme.text3())
+        pal.setColor(QtGui.QPalette.ColorRole.PlaceholderText, t.text3())
         self.setPalette(pal)
 
     def mousePressEvent(self, e):
@@ -618,11 +671,12 @@ class Switch(Hoverable):
             self._timer.stop()
 
     def paintEvent(self, e):
+        th = resolve_theme(self)
         p = painter(self)
         r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
         t = max(0.0, min(1.0, self._knob.x))
-        off_c = theme.track()
-        on_c = theme.on_color()
+        off_c = th.track()
+        on_c = th.on_color()
         bg = QtGui.QColor(
             round(off_c.red() + (on_c.red() - off_c.red()) * t),
             round(off_c.green() + (on_c.green() - off_c.green()) * t),
@@ -642,7 +696,7 @@ class Switch(Hoverable):
         p.setBrush(QtGui.QColor(255, 255, 255, 248))
         p.drawRoundedRect(knob_r, d / 2, d / 2)
         if self.hasFocus():
-            p.setPen(QtGui.QPen(theme.on_color(), 1.5))
+            p.setPen(QtGui.QPen(th.on_color(), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
 
@@ -662,7 +716,7 @@ class ComboBox(QtWidgets.QComboBox):
         if items:
             self.set_items(items)
         self.currentIndexChanged.connect(self._on_idx)
-        theme.changed.connect(self._style)
+        _bind_theme_slot(self, self._style)
         self._style()
 
     def set_items(self, items: list[tuple[object, str]]):
@@ -688,11 +742,12 @@ class ComboBox(QtWidgets.QComboBox):
             self.clearFocus()
 
     def _style(self):
-        bg = theme.qss_color(theme.card(1.2))
-        fg = theme.qss_color(theme.text())
-        bd = theme.qss_color(theme.text(0.14))
-        fc = theme.qss_color(theme.on_color())
-        m_bg, m_fg, m_sel = theme.menu_qss()
+        t = resolve_theme(self)
+        bg = t.qss_color(t.card(1.2))
+        fg = t.qss_color(t.text())
+        bd = t.qss_color(t.text(0.14))
+        fc = t.qss_color(t.on_color())
+        m_bg, m_fg, m_sel = t.menu_qss()
         self.setStyleSheet(
             f"QComboBox{{background:{bg};border:1px solid {bd};border-radius:10px;"
             f"padding:0 28px 0 12px;color:{fg};}}"
@@ -706,10 +761,11 @@ class ComboBox(QtWidgets.QComboBox):
 
     def paintEvent(self, e):
         super().paintEvent(e)
+        t = resolve_theme(self)
         p = painter(self)
-        col = theme.text2() if self.isEnabled() else theme.text3()
+        col = t.text2() if self.isEnabled() else t.text3()
         if self.isEnabled() and (self.underMouse() or self.hasFocus()):
-            col = theme.text()
+            col = t.text()
         pen = QtGui.QPen(col, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -733,14 +789,15 @@ class SpinBox(QtWidgets.QSpinBox):
         self.setFixedHeight(32)
         self.setFixedWidth(width)
         self.setFont(ui_font(13, num=True))
-        theme.changed.connect(self._style)
+        _bind_theme_slot(self, self._style)
         self._style()
 
     def _style(self):
-        bg = theme.qss_color(theme.card(1.2))
-        fg = theme.qss_color(theme.text())
-        bd = theme.qss_color(theme.text(0.14))
-        fc = theme.qss_color(theme.on_color())
+        t = resolve_theme(self)
+        bg = t.qss_color(t.card(1.2))
+        fg = t.qss_color(t.text())
+        bd = t.qss_color(t.text(0.14))
+        fc = t.qss_color(t.on_color())
         self.setStyleSheet(
             f"QSpinBox{{background:{bg};border:1px solid {bd};border-radius:10px;"
             f"padding:0 10px;color:{fg};}}"
@@ -762,14 +819,15 @@ class DoubleSpinBox(QtWidgets.QDoubleSpinBox):
         self.setFixedHeight(32)
         self.setFixedWidth(width)
         self.setFont(ui_font(13, num=True))
-        theme.changed.connect(self._style)
+        _bind_theme_slot(self, self._style)
         self._style()
 
     def _style(self):
-        bg = theme.qss_color(theme.card(1.2))
-        fg = theme.qss_color(theme.text())
-        bd = theme.qss_color(theme.text(0.14))
-        fc = theme.qss_color(theme.on_color())
+        t = resolve_theme(self)
+        bg = t.qss_color(t.card(1.2))
+        fg = t.qss_color(t.text())
+        bd = t.qss_color(t.text(0.14))
+        fc = t.qss_color(t.on_color())
         self.setStyleSheet(
             f"QDoubleSpinBox{{background:{bg};border:1px solid {bd};border-radius:10px;"
             f"padding:0 10px;color:{fg};}}"
@@ -797,7 +855,7 @@ class SettingRow(Card):
 
         top_items: list = [self.title_lbl]
         if badge:
-            self.badge_lbl = Label(badge, 11, W.Medium, 2, color=theme.on_color())
+            self.badge_lbl = Label(badge, 11, W.Medium, 2, color=resolve_theme(self).on_color())
             top_items.append(self.badge_lbl)
         top_items.append(None)
         left_items: list = [hbox(*top_items, spacing=8)]
@@ -828,14 +886,17 @@ class SettingRow(Card):
         if control is not None:
             self._main_lay.addWidget(self._ctrl_wrap, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
-        theme.changed.connect(self._style_labels)
+        _bind_theme_slot(self, self._style_labels)
         self._style_labels()
 
     def _style_labels(self):
-        self.title_lbl.setStyleSheet(f"QLabel{{color:{theme.qss_color(theme.text())};background:transparent;}}")
+        t = resolve_theme(self)
+        self.title_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.text())};background:transparent;}}")
         if self.sub_lbl is not None:
-            self.sub_lbl.setStyleSheet(f"QLabel{{color:{theme.qss_color(theme.text3())};background:transparent;}}")
-        self.err_lbl.setStyleSheet(f"QLabel{{color:{theme.qss_color(theme.up())};background:transparent;}}")
+            self.sub_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.text3())};background:transparent;}}")
+        self.err_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.up())};background:transparent;}}")
+        if hasattr(self, "badge_lbl") and self.badge_lbl is not None:
+            self.badge_lbl.set_color(t.on_color())
 
     def set_error(self, msg: str):
         msg = (msg or "").strip()
@@ -884,11 +945,13 @@ class ConfirmDialog(QtWidgets.QDialog):
         btn_ok.clicked.connect(self.accept)
         btns.append(btn_ok)
         self.setLayout(vbox(t_lbl, m_lbl, 8, hbox(*btns, spacing=10), spacing=10, margins=(20, 18, 20, 18)))
+        _bind_theme_slot(self, self._style)
         self._style()
 
     def _style(self):
-        bg = "#1e2028" if theme.dark else "#f5f6fa"
-        fg = "#ffffff" if theme.dark else "#14161c"
+        t = resolve_theme(self)
+        bg = "#1e2028" if t.dark else "#f5f6fa"
+        fg = "#ffffff" if t.dark else "#14161c"
         self.setStyleSheet(f"QDialog{{background:{bg};color:{fg};}}")
 
     @classmethod

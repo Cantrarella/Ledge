@@ -716,9 +716,10 @@ class TestConfigAndSettings(unittest.TestCase):
 
             # 喝水达到每日目标后停止喝水提醒
             fired.clear()
+            today_d = dt.date.today()
             water.drink(2500, hour=14)
             self.assertTrue(water.reached_goal())
-            health.tick(dt.datetime(2026, 11, 18, 15, 0), now_mono=base_mono + 8000, check_lock=False)
+            health.tick(dt.datetime(today_d.year, today_d.month, today_d.day, 15, 0), now_mono=base_mono + 8000, check_lock=False)
             self.assertNotIn("water", [k for k, _, _ in fired])
         finally:
             cfg.set("life.lunch_rest", orig_lunch, save=False)
@@ -899,6 +900,352 @@ class TestConfigAndSettings(unittest.TestCase):
             isl.close()
         lp2.close()
         tp.close()
+
+    def test_17_life_reminder_icons_queue_compact_expanded_and_timers(self):
+        """测试喝水/久坐 SVG 图标、主题映射、收起/展开岛内提醒队列、计时隔离与不触发系统通知。"""
+        from types import SimpleNamespace
+        from PySide6 import QtCore, QtGui
+        from wisland.services.health_reminders import HealthReminderService
+        from wisland.services.todo import TodoService
+        from wisland.services.water import WaterService
+        from wisland.ui.icons import _SVG_CACHE, draw_life_svg_icon, get_life_svg_renderer
+        from wisland.ui.island import Island
+        from wisland.ui.pages.life import LifePage
+        from wisland.ui.theme import theme
+
+        _SVG_CACHE.clear()
+
+        # 1) 图标加载、缓存与主题映射（dark/rouge -> dark SVG; light/sky -> light SVG）
+        r_wd = get_life_svg_renderer("water", True)
+        r_wl = get_life_svg_renderer("water", False)
+        r_sd = get_life_svg_renderer("sit", True)
+        r_sl = get_life_svg_renderer("sit", False)
+        self.assertIsNotNone(r_wd)
+        self.assertIsNotNone(r_wl)
+        self.assertIsNotNone(r_sd)
+        self.assertIsNotNone(r_sl)
+        self.assertIsNone(get_life_svg_renderer("todo", True))
+        self.assertIs(get_life_svg_renderer("water", True), r_wd)
+
+        # 导出 22px 实际尺寸预览图并校验透明背景
+        out_dir = Path(r"C:\Users\User\.gemini\antigravity\brain\8d8a99c7-d155-4d86-87b9-c28576636299\scratch")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        preview = QtGui.QImage(120, 40, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+        preview.fill(QtCore.Qt.GlobalColor.transparent)
+        pp = QtGui.QPainter(preview)
+        pp.fillRect(0, 0, 60, 40, QtGui.QColor("#181920"))
+        pp.fillRect(60, 0, 60, 40, QtGui.QColor("#f3f5f9"))
+        self.assertTrue(draw_life_svg_icon(pp, QtCore.QRectF(6, 9, 22, 22), "water", True))
+        self.assertTrue(draw_life_svg_icon(pp, QtCore.QRectF(32, 9, 22, 22), "sit", True))
+        self.assertTrue(draw_life_svg_icon(pp, QtCore.QRectF(66, 9, 22, 22), "water", False))
+        self.assertTrue(draw_life_svg_icon(pp, QtCore.QRectF(92, 9, 22, 22), "sit", False))
+        pp.end()
+        self.assertTrue(preview.save(str(out_dir / "life-icons-22px-preview.png")))
+
+        # 2) 队列不覆盖、不触发系统通知、收起/展开态均可看见、点击跳转对应生活视图
+        todo = TodoService(path=Path(self.tmpdir.name) / "todo17.json")
+        water = WaterService(path=Path(self.tmpdir.name) / "water17.json")
+        health = HealthReminderService(water, todo)
+        lp = LifePage(SimpleNamespace(todo=todo, water=water, health=health))
+        isl = Island([lp])
+        clicked_kinds: list[str] = []
+        isl.life_reminder_clicked.connect(lambda k: (clicked_kinds.append(k), isl.expand("life"), lp.switch_view(k)))
+
+        try:
+            # 队列去重与顺序：先喝水、后久坐，绝不覆盖喝水；同 kind 不重复排队
+            self.assertTrue(isl.show_life_reminder("water", "该喝水啦", "每次 250 ml · 今日已喝 0 ml", duration=8.0))
+            self.assertFalse(isl.show_life_reminder("water", "该喝水啦", "重复", duration=8.0))
+            self.assertTrue(isl.show_life_reminder("sit", "该起身活动一下了", "已连续久坐 60 分钟", duration=8.0))
+            self.assertEqual(isl.current_life_reminder()["kind"], "water")
+            self.assertEqual(isl.compact.activity["type"], "life-reminder")
+            self.assertEqual(isl.compact.activity["kind"], "water")
+
+            # 尺寸与收起态渲染截图（dark/light × water/sit）
+            def _save_compact_shot(mode: str, fname: str):
+                theme.set_mode(mode)
+                cw, ch = isl.compact.size_hint()
+                isl.sw.snap(cw)
+                isl.sh.snap(ch)
+                isl._update_geometry(force=True)
+                self.app.processEvents()
+                pix = QtGui.QPixmap(int(cw) + 24, int(ch) + 20)
+                pix.fill(QtGui.QColor("#111318") if theme.dark else QtGui.QColor("#eef1f7"))
+                p = QtGui.QPainter(pix)
+                p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+                body_r = QtCore.QRectF(12, 10, cw, ch)
+                path = QtGui.QPainterPath()
+                path.addRoundedRect(body_r, ch / 2.0, ch / 2.0)
+                p.fillPath(path, theme.tint_brush(body_r))
+                p.strokePath(path, QtGui.QPen(theme.outline(), 1.2))
+                isl.compact._paint_activity(p, body_r, 1.0)
+                p.end()
+                self.assertTrue(pix.save(str(out_dir / fname)))
+
+            _save_compact_shot("dark", "life-compact-water-dark.png")
+            _save_compact_shot("light", "life-compact-water-light.png")
+
+            # 结束当前喝水提醒 -> 自动推进显示久坐提醒
+            isl.dismiss_life_reminder(advance=True)
+            self.assertEqual(isl.current_life_reminder()["kind"], "sit")
+            _save_compact_shot("dark", "life-compact-sit-dark.png")
+            _save_compact_shot("light", "life-compact-sit-light.png")
+
+            # 展开态提醒可见性、不改变 419×140 尺寸、不遮挡齿轮/圆点
+            orig_size = isl.expanded_size()
+            isl.expand("life")
+            isl.content.show()
+            isl._place_life_banner()
+            self.app.processEvents()
+            self.assertEqual(isl.expanded_size(), orig_size)
+            self.assertTrue(isl._life_banner.isVisibleTo(isl.content))
+            self.assertFalse(isl._life_banner.geometry().intersects(lp.gear_btn.geometry()))
+            self.assertFalse(isl._life_banner.geometry().intersects(isl.nav.geometry()))
+
+            for mode, fname in (("dark", "life-expanded-dark.png"), ("light", "life-expanded-light.png")):
+                theme.set_mode(mode)
+                self.app.processEvents()
+                pix = QtGui.QPixmap(isl.content.size())
+                pix.fill(QtGui.QColor("#181920") if theme.dark else QtGui.QColor("#f3f5f9"))
+                isl.content.render(pix)
+                self.assertTrue(pix.save(str(out_dir / fname)))
+
+            # 点击提醒跳转到对应生活页视图，并自动关闭浮层恢复原页面
+            isl._on_life_banner_clicked("sit")
+            self.assertEqual(clicked_kinds, ["sit"])
+            self.assertEqual(lp.tabs.current_key(), "sit")
+            self.assertIsNone(isl.current_life_reminder())
+            self.assertFalse(isl._life_banner.isVisible())
+
+            # 3) 计时规则隔离：喝一口只重置喝水；起身了只重置久坐；重启从零开始（无持久化字段）
+            health.water_last_ts = 100.0
+            health.sit_start_ts = 100.0
+            lp.water_view._on_drink()
+            self.assertGreater(health.water_last_ts, 100.0)
+            self.assertEqual(health.sit_start_ts, 100.0)
+            lp.sit_view._on_stand()
+            self.assertGreater(health.sit_start_ts, 100.0)
+        finally:
+            theme.set_mode("light")
+            isl.close()
+            lp.close()
+
+
+class ThemeDecouplingAndClassicSkinTests(unittest.TestCase):
+    """岛体皮肤与设置窗口主题彻底解耦 + 经典纯黑岛体皮肤回归测试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_config_defaults_and_validation_for_settings_window_theme(self):
+        from wisland.core.config import (
+            DEFAULTS,
+            VALID_SETTINGS_THEMES,
+            VALID_THEMES,
+            validate_config,
+        )
+
+        self.assertEqual(DEFAULTS["settings_window"]["theme"], "light")
+        self.assertIn("classic", VALID_THEMES)
+        self.assertEqual(VALID_SETTINGS_THEMES, ("light", "dark"))
+
+        # 严格校验拒绝 auto / classic / rouge / sky
+        for bad in ("auto", "classic", "rouge", "sky", "unknown"):
+            raw = {"island": {"theme": "classic"}, "settings_window": {"theme": bad, "extra_keep": 42}}
+            ok, errs, _ = validate_config(raw, strict=True)
+            self.assertFalse(ok)
+            self.assertTrue(any("设置窗口主题" in e for e in errs))
+
+            # 非严格模式回退到 light，绝不从 island.theme 推导，且保留未知字段
+            _, _, norm = validate_config(raw, strict=False)
+            self.assertEqual(norm["island"]["theme"], "classic")
+            self.assertEqual(norm["settings_window"]["theme"], "light")
+            self.assertEqual(norm["settings_window"]["extra_keep"], 42)
+
+    def test_theme_instances_are_isolated_and_auto_luminance_never_leaks(self):
+        from wisland.ui.theme import (
+            ISLAND_THEME_NAMES,
+            SETTINGS_THEME_NAMES,
+            island_theme,
+            settings_theme,
+            theme,
+        )
+
+        self.assertIs(theme, island_theme)
+        self.assertIsNot(island_theme, settings_theme)
+        self.assertIn(("classic", "经典纯黑"), ISLAND_THEME_NAMES)
+        self.assertEqual(SETTINGS_THEME_NAMES, [("light", "浅色"), ("dark", "深色")])
+
+        orig_isl = island_theme.mode
+        orig_set = settings_theme.mode
+        try:
+            island_theme.set_mode("light")
+            settings_theme.set_mode("light")
+            isl_hits = []
+            set_hits = []
+            island_theme.changed.connect(lambda: isl_hits.append(island_theme.pal_name))
+            settings_theme.changed.connect(lambda: set_hits.append(settings_theme.pal_name))
+
+            # 改岛体皮肤不影响 settings_theme
+            island_theme.set_mode("classic")
+            self.assertTrue(island_theme.solid)
+            self.assertTrue(island_theme.dark)
+            self.assertEqual(settings_theme.pal_name, "light")
+            self.assertFalse(settings_theme.dark)
+            self.assertEqual(set_hits, [])
+
+            # settings_theme 拒绝 auto / classic / rouge / sky
+            for bad in ("auto", "classic", "rouge", "sky"):
+                settings_theme.set_mode(bad)
+                self.assertEqual(settings_theme.pal_name, "light")
+
+            # 改 settings_theme 不影响 island_theme
+            settings_theme.set_mode("dark")
+            self.assertEqual(settings_theme.pal_name, "dark")
+            self.assertTrue(settings_theme.dark)
+            self.assertEqual(island_theme.pal_name, "classic")
+
+            # auto 岛体随背景亮度切换，不影响 settings_theme
+            island_theme.set_mode("auto")
+            island_theme._apply("light")
+            island_theme._lum = 0.9
+            island_theme._flip_since = None
+            island_theme.feed_luminance(0.1)
+            island_theme._flip_since = -1e9
+            island_theme._lum = 0.1
+            island_theme.feed_luminance(0.1)
+            self.assertEqual(island_theme.pal_name, "dark")
+            self.assertEqual(settings_theme.pal_name, "dark")
+
+            # settings_theme.feed_luminance 永远是空操作
+            settings_theme.set_mode("light")
+            settings_theme.feed_luminance(0.0)
+            self.assertEqual(settings_theme.pal_name, "light")
+        finally:
+            island_theme.set_mode(orig_isl)
+            settings_theme.set_mode(orig_set)
+
+    def test_settings_window_and_classic_island_decoupled_ui_and_screenshots(self):
+        import tempfile
+        from wisland.core.config import Config
+        from wisland.ui.island import Island
+        from wisland.ui.page_registry import PageRegistry
+        from wisland.ui.pages.home import HomePage
+        from wisland.ui.pages.mail import MailPage
+        from wisland.ui.pages.quota import QuotaPage
+        from wisland.ui.settings.general import GeneralSettingsPage
+        from wisland.ui.settings_window import SettingsWindow
+        from wisland.ui.theme import island_theme, resolve_theme, settings_theme
+
+        orig_isl = island_theme.mode
+        orig_set = settings_theme.mode
+        win = None
+        isl = None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                shot_dir = Path(td) / "shots"
+                shot_dir.mkdir(parents=True, exist_ok=True)
+                cfg_path = Path(td) / "config.json"
+                mgr = Config(cfg_path)
+                win = SettingsWindow(config_obj=mgr)
+                win.show()
+                self.app.processEvents()
+
+                gen_pg = next(pg for pg in win.pages if isinstance(pg, GeneralSettingsPage))
+                self.assertIs(resolve_theme(gen_pg), settings_theme)
+                self.assertIs(resolve_theme(gen_pg.cb_theme), settings_theme)
+                self.assertIs(resolve_theme(gen_pg.cb_settings_theme), settings_theme)
+
+                isl_vals = [gen_pg.cb_theme.itemData(i) for i in range(gen_pg.cb_theme.count())]
+                set_vals = [gen_pg.cb_settings_theme.itemData(i) for i in range(gen_pg.cb_settings_theme.count())]
+                self.assertIn("classic", isl_vals)
+                self.assertEqual(set_vals, ["light", "dark"])
+
+                # 4 种组合依次切换并保存截图
+                combos = [
+                    ("classic", "light", "decoupled-classic-island-light-settings.png"),
+                    ("light", "dark", "decoupled-light-island-dark-settings.png"),
+                    ("rouge", "light", "decoupled-rouge-island-light-settings.png"),
+                    ("sky", "dark", "decoupled-sky-island-dark-settings.png"),
+                ]
+                for isl_mode, set_mode, fname in combos:
+                    gen_pg.cb_theme.set_value(isl_mode)
+                    gen_pg.cb_settings_theme.set_value(set_mode)
+                    self.assertTrue(win.save_settings())
+                    island_theme.set_mode(mgr.get("island.theme", "auto"))
+                    self.app.processEvents()
+                    self.assertEqual(island_theme.mode, isl_mode)
+                    self.assertEqual(settings_theme.mode, set_mode)
+                    self.assertEqual(settings_theme.dark, set_mode == "dark")
+
+                    pix = win.grab()
+                    self.assertTrue(pix.save(str(shot_dir / fname)))
+
+                # 验证 classic 纯黑岛体渲染（纯黑不透明底，无毛玻璃透底）
+                from PySide6 import QtCore, QtGui
+                island_theme.set_mode("classic")
+
+                class _Sig(QtCore.QObject):
+                    changed = QtCore.Signal(object)
+                    running_changed = QtCore.Signal(bool)
+                    volume_changed = QtCore.Signal(float, bool)
+
+                sig = _Sig()
+                mock_ctx = type(
+                    "MockCtx",
+                    (),
+                    {
+                        "media": type("M", (), {"changed": sig.changed, "state": lambda *_: {}, "previous": lambda *_: None, "play_pause": lambda *_: None, "next": lambda *_: None})(),
+                        "audio": type("A", (), {"volume_changed": sig.volume_changed, "toggle_mute": lambda *_: None, "muted": lambda *_: False})(),
+                        "live": type("L", (), {"running_changed": sig.running_changed, "is_running": lambda *_: False})(),
+                        "open_settings": lambda *a, **k: None,
+                    },
+                )()
+                reg = PageRegistry()
+                home_pg = HomePage(mock_ctx)
+                quota_pg = QuotaPage(mock_ctx)
+                mail_pg = MailPage(mock_ctx)
+                reg.register(home_pg)
+                reg.register(quota_pg)
+                reg.register(mail_pg)
+                isl = Island([home_pg, quota_pg, mail_pg], registry=reg)
+                isl.show()
+                self.app.processEvents()
+
+                # 测试 _paint_glass 在 classic 下绘制纯黑 #000000
+                glass_img = QtGui.QImage(200, 60, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+                glass_img.fill(QtCore.Qt.GlobalColor.white)
+                gp = QtGui.QPainter(glass_img)
+                rect_path = QtGui.QPainterPath()
+                rect_path.addRoundedRect(QtCore.QRectF(10, 10, 180, 40), 20, 20)
+                isl._paint_glass(gp, rect_path, crossfade=False)
+                gp.end()
+                center_px = glass_img.pixelColor(100, 30)
+                self.assertEqual((center_px.red(), center_px.green(), center_px.blue()), (0, 0, 0))
+
+                # 截图：classic 收起态
+                self.assertTrue(isl.grab().save(str(shot_dir / "classic-island-compact.png")))
+
+                # 截图：classic 展开态 - 主页 / AI 额度 / 邮箱
+                for key, fname in (
+                    ("home", "classic-island-home.png"),
+                    ("quota", "classic-island-quota.png"),
+                    ("mail", "classic-island-mail.png"),
+                ):
+                    isl.expand(key)
+                    isl.content.show()
+                    self.app.processEvents()
+                    pix = QtGui.QPixmap(isl.content.size())
+                    pix.fill(QtGui.QColor("#000000"))
+                    isl.content.render(pix)
+                    self.assertTrue(pix.save(str(shot_dir / fname)))
+        finally:
+            if isl is not None:
+                isl.close()
+            if win is not None:
+                win.close()
+            island_theme.set_mode(orig_isl)
+            settings_theme.set_mode(orig_set)
 
 
 if __name__ == "__main__":

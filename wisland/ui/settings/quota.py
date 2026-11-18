@@ -22,7 +22,7 @@ from ...services.quota import (
 )
 from ..icons import draw_ai_svg_icon
 from ..pages.system import styled_menu
-from ..theme import G, W, theme, ui_font
+from ..theme import G, W, bind_theme_context, settings_theme, ui_font
 from ..widgets import (
     Card,
     ComboBox,
@@ -81,16 +81,16 @@ class _ProviderSvgBadge(QtWidgets.QWidget):
             _label, hex_col = ACCENT_COLORS.get(self.color_key, ACCENT_COLORS["blue"])
             col = QtGui.QColor(hex_col)
             bg = QtGui.QColor(col)
-            bg.setAlphaF(0.16 if theme.dark else 0.12)
-            p.setPen(QtGui.QPen(theme.text(0.10), 1.0))
+            bg.setAlphaF(0.16 if settings_theme.dark else 0.12)
+            p.setPen(QtGui.QPen(settings_theme.text(0.10), 1.0))
             p.setBrush(bg)
             p.drawEllipse(r.adjusted(1.0, 1.0, -1.0, -1.0))
         icon_r = QtCore.QRectF(r.center().x() - 10.0, r.center().y() - 10.0, 20.0, 20.0)
-        if not draw_ai_svg_icon(p, icon_r, self.provider, dark=theme.dark):
+        if not draw_ai_svg_icon(p, icon_r, self.provider, dark=settings_theme.dark):
             _label, hex_col = ACCENT_COLORS.get(self.color_key, ACCENT_COLORS["blue"])
             col = QtGui.QColor(hex_col)
             p.setFont(ui_font(10.0, W.Bold))
-            p.setPen(col if not theme.dark else QtGui.QColor("#ffffff"))
+            p.setPen(col if not settings_theme.dark else QtGui.QColor("#ffffff"))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.badge)
 
 
@@ -110,11 +110,11 @@ class _ColorDotButton(Hoverable):
         p = painter(self)
         c = QtCore.QRectF(self.rect()).center()
         if self.selected:
-            p.setPen(QtGui.QPen(theme.text(0.75), 1.5))
+            p.setPen(QtGui.QPen(settings_theme.text(0.75), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(c, 7.5, 7.5)
         elif self._hover.x > 0.05:
-            p.setPen(QtGui.QPen(theme.text(0.35), 1.0))
+            p.setPen(QtGui.QPen(settings_theme.text(0.35), 1.0))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(c, 7.5, 7.5)
         p.setPen(Qt.PenStyle.NoPen)
@@ -140,20 +140,20 @@ class _StatusPill(QtWidgets.QWidget):
 
     def _resolve_color(self) -> QtGui.QColor:
         if self.kind == "ok":
-            return QtGui.QColor(theme.down())
+            return QtGui.QColor(settings_theme.down())
         if self.kind == "err":
-            return QtGui.QColor(theme.up())
+            return QtGui.QColor(settings_theme.up())
         if self.kind == "warn":
             return QtGui.QColor("#f59e0b")
         if self.kind == "accent":
-            return QtGui.QColor(theme.on_color())
-        return QtGui.QColor(theme.text3())
+            return QtGui.QColor(settings_theme.on_color())
+        return QtGui.QColor(settings_theme.text3())
 
     def paintEvent(self, e):
         p = painter(self)
         col = self._resolve_color()
         bg = QtGui.QColor(col)
-        bg.setAlphaF(0.18 if theme.dark else 0.14)
+        bg.setAlphaF(0.18 if settings_theme.dark else 0.14)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
         r = QtCore.QRectF(self.rect())
@@ -376,15 +376,15 @@ class _QuotaAccountCard(Card):
             if snap is not None and snap.raw_stale and snap.fetched_at > 0:
                 short_err = f"{short_err}（当前展示 {_format_ts(snap.fetched_at)} 的缓存数据）"
             self.lbl_meta.setText(short_err)
-            col_meta = theme.up() if eff_status != AccountStatus.RATE_LIMITED.value else QtGui.QColor("#f59e0b")
+            col_meta = settings_theme.up() if eff_status != AccountStatus.RATE_LIMITED.value else QtGui.QColor("#f59e0b")
         else:
             ts_val = snap.fetched_at if (snap is not None and snap.fetched_at > 0) else acc.last_refresh_at
             meta_txt = f"最后更新：{_format_ts(ts_val)}"
             if snap is not None and snap.raw_stale:
                 meta_txt = f"{meta_txt} · 数据已过期"
             self.lbl_meta.setText(meta_txt)
-            col_meta = theme.text3()
-        self.lbl_meta.setStyleSheet(f"background:transparent;border:none;color:{theme.qss_color(col_meta)};")
+            col_meta = settings_theme.text3()
+        self.lbl_meta.setStyleSheet(f"background:transparent;border:none;color:{settings_theme.qss_color(col_meta)};")
 
         # 4) 操作行：监控 Switch + 常驻岛上（置顶） + 刷新/重试 + 重新连接（始终可用）
         self.sw_monitor = Switch(checked=acc.enabled, parent=self.detail_wrap)
@@ -618,7 +618,7 @@ class QuotaSettingsPage(SettingsPage):
         self._mgr.snapshot_updated.connect(self._on_mgr_snapshot_updated)
         self._mgr.refreshing_changed.connect(self._on_mgr_refreshing_changed)
         self._mgr.all_refreshing_changed.connect(self._on_mgr_all_refreshing_changed)
-        theme.changed.connect(self._rebuild_account_cards)
+        settings_theme.changed.connect(self._rebuild_account_cards)
 
     # ---------------- 响应式宽度与表单交互 ----------------
     def resizeEvent(self, e):
@@ -713,11 +713,11 @@ class QuotaSettingsPage(SettingsPage):
             self.ed_api_key.setText("")
 
         if not (is_deepseek or is_gemini):
-            self.lbl_form_status.set_color(theme.text3())
+            self.lbl_form_status.set_color(settings_theme.text3())
             self.lbl_form_status.setText(spec.auth_hint)
             self.lbl_form_status.show()
         elif is_gemini and not self._active_req_id:
-            self.lbl_form_status.set_color(theme.text3())
+            self.lbl_form_status.set_color(settings_theme.text3())
             hint = (
                 spec.auth_hint
                 if self._gemini_manual_cookie
@@ -737,7 +737,7 @@ class QuotaSettingsPage(SettingsPage):
             self.btn_test_save.set_text(f"连接 {spec.name}")
 
     def _show_form_status(self, text: str, is_err: bool = False):
-        self.lbl_form_status.set_color(theme.up() if is_err else theme.down())
+        self.lbl_form_status.set_color(settings_theme.up() if is_err else settings_theme.down())
         self.lbl_form_status.setText(text)
         self.lbl_form_status.show()
 
@@ -876,7 +876,7 @@ class QuotaSettingsPage(SettingsPage):
         # 若该账号是尚未保存进 manager 的草稿账号且有暂存密钥，先临时同步进 manager 内存供刷新
         if self._mgr.get_account(acc.id) is None and acc.id in self._pending_secrets:
             if not self._mgr._creds.save_secret(acc.credential_key, acc.identity or acc.id, self._pending_secrets[acc.id]):
-                self.lbl_toolbar_status.set_color(theme.up())
+                self.lbl_toolbar_status.set_color(settings_theme.up())
                 self.lbl_toolbar_status.setText("会话凭据保存失败，未写入系统凭据管理器")
                 return
             self._mgr._accounts.append(copy.deepcopy(acc))
@@ -942,6 +942,7 @@ class QuotaSettingsPage(SettingsPage):
             self._cards.append(card)
             self.accounts_lay.addWidget(card)
             card.show()
+        bind_theme_context(self.accounts_wrap, settings_theme)
 
     # ---------------- 与 SettingsWindow 保存/取消事务集成 ----------------
     def has_pending_changes(self) -> bool:

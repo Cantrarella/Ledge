@@ -24,10 +24,11 @@ from ..core.config import cfg
 from .anim import Spring, clamp, lerp, smooth
 from .compact import CompactView
 from .glass import Backdrop, exclude_from_capture
+from .icons import draw_life_svg_icon
 from .nav import NavBar
 from .shape import body_path, body_points, deform, drip_path, edge_corners, neck_path, poly_path
 from .unread_dock import DOCK_WIDTH, UnreadDock
-from .theme import G, theme
+from .theme import G, W, icon_font, theme, ui_font
 
 Qt = QtCore.Qt
 user32 = ctypes.WinDLL("user32")
@@ -234,6 +235,110 @@ class _BlankDoubleClick(QtCore.QObject):
         return False
 
 
+class _LifeReminderBanner(QtWidgets.QWidget):
+    """展开态岛内轻量生活提醒浮层：不改变 419px 面板尺寸、不遮挡顶部齿轮/刷新按钮与底部圆点。"""
+
+    clicked_kind = QtCore.Signal(str)
+    dismissed = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._kind = "water"
+        self._title = ""
+        self._sub = ""
+        self._hover_close = False
+        self.setFixedHeight(40)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide()
+
+    def set_reminder(self, item: dict):
+        self._kind = str(item.get("kind") or "water")
+        self._title = str(item.get("title") or "")
+        self._sub = str(item.get("sub") or "")
+        self.update()
+
+    def _close_rect(self) -> QtCore.QRectF:
+        return QtCore.QRectF(self.width() - 30.0, (self.height() - 22.0) / 2.0, 22.0, 22.0)
+
+    def mouseMoveEvent(self, e):
+        hv = self._close_rect().adjusted(-3, -3, 3, 3).contains(e.position())
+        if hv != self._hover_close:
+            self._hover_close = hv
+            self.update()
+
+    def leaveEvent(self, e):
+        if self._hover_close:
+            self._hover_close = False
+            self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self._close_rect().adjusted(-3, -3, 3, 3).contains(e.position()):
+                self.dismissed.emit()
+            else:
+                self.clicked_kind.emit(self._kind)
+            e.accept()
+
+    def paintEvent(self, e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        r = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        bg = QtGui.QColor(34, 36, 44, 242) if theme.dark else QtGui.QColor(250, 251, 255, 244)
+        bd = QtGui.QColor(255, 255, 255, 38) if theme.dark else QtGui.QColor(16, 18, 24, 28)
+        p.setPen(QtGui.QPen(bd, 1.0))
+        p.setBrush(bg)
+        p.drawRoundedRect(r, 12.0, 12.0)
+
+        # 左侧 24×24 槽位居中绘制 22×22 SVG（无彩色圆底）
+        slot_r = QtCore.QRectF(r.left() + 9.0, r.center().y() - 12.0, 24.0, 24.0)
+        icon_r = slot_r.adjusted(1.0, 1.0, -1.0, -1.0)
+        draw_life_svg_icon(p, icon_r, self._kind, theme.dark, 1.0)
+
+        cr = self._close_rect()
+        if self._hover_close:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.hover())
+            p.drawEllipse(cr)
+        p.setFont(icon_font(9.0))
+        p.setPen(theme.text(0.72 if not self._hover_close else 0.95))
+        p.drawText(cr, Qt.AlignmentFlag.AlignCenter, G.CLOSE)
+
+        tx = slot_r.right() + 9.0
+        tw = max(40.0, cr.left() - 6.0 - tx)
+        f_t = ui_font(12.0, W.DemiBold)
+        fm_t = QtGui.QFontMetrics(f_t)
+        p.setFont(f_t)
+        p.setPen(theme.text())
+        if self._sub:
+            p.drawText(
+                QtCore.QRectF(tx, r.top() + 4.0, tw, 16.0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                fm_t.elidedText(self._title, Qt.TextElideMode.ElideRight, int(tw)),
+            )
+            f_s = ui_font(10.5, W.Normal)
+            fm_s = QtGui.QFontMetrics(f_s)
+            p.setFont(f_s)
+            p.setPen(theme.text2())
+            p.drawText(
+                QtCore.QRectF(tx, r.top() + 20.0, tw, 15.0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                fm_s.elidedText(self._sub, Qt.TextElideMode.ElideRight, int(tw)),
+            )
+        else:
+            p.drawText(
+                QtCore.QRectF(tx, r.top(), tw, r.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                fm_t.elidedText(self._title, Qt.TextElideMode.ElideRight, int(tw)),
+            )
+        p.end()
+
+
 class Island(QtWidgets.QWidget):
     expanded_changed = QtCore.Signal(bool)
     hotkey = QtCore.Signal(str)
@@ -248,6 +353,7 @@ class Island(QtWidgets.QWidget):
     play_pause_requested = QtCore.Signal()      # 收起态音乐视图的播放 / 暂停键
     notify_banner_clicked = QtCore.Signal()     # 点击收起态通知横幅
     notify_banner_dismissed = QtCore.Signal()   # 关闭收起态通知横幅（不清未读）
+    life_reminder_clicked = QtCore.Signal(str)  # 点击生活提醒 ("water"|"sit")
 
     def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -327,6 +433,12 @@ class Island(QtWidgets.QWidget):
         self.nav.changed.connect(self.show_page)
         self.nav.drag_requested.connect(self.begin_drag)
         self.content.hide()
+        self._life_queue: list[dict] = []
+        self._active_life_reminder: dict | None = None
+        self._life_timer = QtCore.QTimer(self, singleShot=True, timeout=self._on_life_reminder_timeout)
+        self._life_banner = _LifeReminderBanner(self.content)
+        self._life_banner.clicked_kind.connect(self._on_life_banner_clicked)
+        self._life_banner.dismissed.connect(lambda: self.dismiss_life_reminder(advance=True))
         self.veil = _Veil(self)
         self.unread_dock = UnreadDock(self)
         self.unread_dock.layout_changed.connect(self._place_unread_dock)
@@ -571,6 +683,77 @@ class Island(QtWidgets.QWidget):
     def activity(self, act: dict, duration: float = 2.4):
         self.compact.show_activity(act, duration)
         self._kick()
+
+    # ================================================================ 岛内生活提醒队列
+    def show_life_reminder(self, kind: str, title: str, sub: str = "", duration: float = 8.0) -> bool:
+        """岛内生活提醒入队（water / sit）：同一时间只显示一条，不覆盖当前提醒，不触发系统通知。"""
+        k = str(kind or "").strip().lower()
+        if k not in ("water", "sit"):
+            return False
+        if self._active_life_reminder and self._active_life_reminder.get("kind") == k:
+            return False
+        if any(it.get("kind") == k for it in self._life_queue):
+            return False
+        item = {
+            "type": "life-reminder",
+            "kind": k,
+            "title": str(title or ""),
+            "sub": str(sub or ""),
+            "duration": max(1.0, float(duration)),
+        }
+        if self._active_life_reminder is None:
+            self._activate_life_reminder(item)
+        else:
+            self._life_queue.append(item)
+        return True
+
+    def _activate_life_reminder(self, item: dict):
+        self._active_life_reminder = dict(item)
+        dur = max(1.0, float(item.get("duration", 8.0)))
+        self._life_timer.start(round(dur * 1000))
+        self.compact.show_activity(item, dur + 0.25)
+        self._life_banner.set_reminder(item)
+        self._place_life_banner()
+        if self.expanded:
+            self._life_banner.show()
+            self._life_banner.raise_()
+        self._kick()
+
+    def _on_life_reminder_timeout(self):
+        self.dismiss_life_reminder(advance=True)
+
+    def _on_life_banner_clicked(self, kind: str):
+        self.dismiss_life_reminder(advance=True)
+        self.life_reminder_clicked.emit(kind)
+
+    def dismiss_life_reminder(self, advance: bool = True):
+        self._life_timer.stop()
+        self._active_life_reminder = None
+        self.compact.clear_activity("life-reminder")
+        self._life_banner.hide()
+        if advance and self._life_queue:
+            nxt = self._life_queue.pop(0)
+            self._activate_life_reminder(nxt)
+        self._kick()
+
+    def current_life_reminder(self) -> dict | None:
+        return dict(self._active_life_reminder) if self._active_life_reminder is not None else None
+
+    def _place_life_banner(self):
+        if self._active_life_reminder is None:
+            self._life_banner.hide()
+            return
+        cw = max(200, self.content.width())
+        ch = max(100, self.content.height())
+        bw = max(180, cw - PAD * 2)
+        # 避开顶部 PageHeader（含齿轮/刷新按钮）和底部 NavBar（页面圆点）
+        top_y = PAD + 30
+        max_y = max(top_y, ch - NAV_H - self._nav_bpad() - self._life_banner.height() - 6)
+        y = min(top_y, max_y)
+        self._life_banner.setGeometry(PAD, y, bw, self._life_banner.height())
+        if self.expanded:
+            self._life_banner.show()
+            self._life_banner.raise_()
 
     def _set_content_opacity(self, a: float):
         """不再使用 QGraphicsOpacityEffect：在透明分层窗口里，带效果的子控件会单独重绘，
@@ -990,6 +1173,7 @@ class Island(QtWidgets.QWidget):
             cr = self._content_rect(tw, th, lbody)
             if cr != self.content.geometry():
                 self.content.setGeometry(cr)
+            self._place_life_banner()
             vis = lbody.toAlignedRect().intersected(cr).translated(-cr.topLeft())
             # 只在遮罩真正变化时设置：每帧 setMask/clearMask 会让内容单独重绘一遍，出现没有玻璃底的帧
             want = vis if vis.size() != cr.size() else None
@@ -1131,6 +1315,9 @@ class Island(QtWidgets.QWidget):
 
     def _paint_glass(self, p: QtGui.QPainter, path: QtGui.QPainterPath, crossfade: bool = True):
         """毛玻璃底 + 色调 + 光泽（灵动岛本体与内容渐显面纱共用）。"""
+        if theme.solid:
+            p.fillPath(path, theme.tint())
+            return
         base_opacity = p.opacity()
         # 2) 毛玻璃底（新截图与上一张交叉淡入，避免跳变）
         state = self.backdrop.state
@@ -1163,9 +1350,9 @@ class Island(QtWidgets.QWidget):
         p.fillPath(path, g)
 
     def _paint_rest(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
-        # 5) 常态动画：沿边缘缓慢游走的流光
+        # 5) 常态动画：沿边缘缓慢游走的流光（纯黑实体皮肤跳过）
         t = time.perf_counter() - self._t0
-        if not self.expanded:
+        if not self.expanded and not theme.solid:
             ph = (math.sin(t * 0.55) * 0.5 + 0.5)
             far_y = bb.bottom() if self.edge != "bottom" else bb.top()
             pt = QtCore.QPointF(bb.left() + bb.width() * ph, far_y)
@@ -1242,13 +1429,16 @@ class Island(QtWidgets.QWidget):
         if abs(self.compact.play_hover - hv) > 0.01:
             self.compact.play_hover += (hv - self.compact.play_hover) * 0.5
             self._kick()
+        if self.expanded and self.compact.mode() != "activity":
+            pass
+        r_life, on_life_dismiss = self._on_life_banner(local_cur) if (inside and not self.passthrough()) else (False, False)
         _, on_dismiss = self._on_notify_banner(local_cur) if (inside and not self.passthrough()) else (False, False)
-        nhv = 1.0 if on_dismiss else 0.0
+        nhv = 1.0 if (on_dismiss or on_life_dismiss) else 0.0
         if abs(self.compact.notify_dismiss_hover - nhv) > 0.01:
             self.compact.notify_dismiss_hover += (nhv - self.compact.notify_dismiss_hover) * 0.5
             self._kick()
-        if (on_btn or on_dismiss) and not self.expanded:
-            self._hover_since = None              # 在播放键或通知关闭键上停留不展开
+        if (on_btn or on_dismiss or on_life_dismiss or r_life) and not self.expanded:
+            self._hover_since = None              # 在播放键、通知关闭键或生活提醒上停留不误触发悬停展开
             return
         if inside and self.passthrough():
             inside = False                        # 可穿透：鼠标视为不在灵动岛上（只响应右键）
@@ -1313,12 +1503,37 @@ class Island(QtWidgets.QWidget):
             return True, False
         return False, False
 
+    def _on_life_banner(self, pos: QtCore.QPointF) -> tuple[bool, bool]:
+        """返回 (is_life_banner, is_dismiss_button)。"""
+        if self.expanded or self.compact.mode() != "activity":
+            return False, False
+        if (self.compact.activity or {}).get("type") != "life-reminder":
+            return False, False
+        r = QtCore.QRectF(self.rect())
+        dr = self.compact._notify_dismiss_rect
+        if dr is not None and dr.adjusted(-5, -5, 5, 5).contains(pos):
+            return True, True
+        if r.contains(pos):
+            return True, False
+        return False, False
+
     def mouseReleaseEvent(self, e):
         self.lp_timer.stop()
         if self._press is not None and self._on_play_button(e.position()) and self._on_play_button(self._press):
             self._press = None
             self.play_pause_requested.emit()
             return
+        if self._press is not None:
+            is_lb, is_lb_dismiss = self._on_life_banner(e.position())
+            if is_lb:
+                kind = str((self.compact.activity or {}).get("kind") or "")
+                self._press = None
+                if is_lb_dismiss:
+                    self.dismiss_life_reminder(advance=True)
+                else:
+                    self._on_life_banner_clicked(kind)
+                self._kick()
+                return
         if self._press is not None:
             is_nb, is_dismiss = self._on_notify_banner(e.position())
             if is_nb:
@@ -1634,6 +1849,7 @@ class Island(QtWidgets.QWidget):
             user32.DeregisterShellHookWindow(hwnd)
         except Exception:  # noqa: BLE001
             pass
+        self._life_timer.stop()
         self.unread_dock._timer.stop()
         self.backdrop.stop()
         self._rhook.remove()

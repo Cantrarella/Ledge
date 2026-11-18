@@ -37,25 +37,15 @@ main
 最近已推送提交：
 
 ```text
-97c9bdc (HEAD -> main, origin/main, origin/HEAD) feat(quota): add in-island AI quota page and themed AI SVG icons
+f670261 (HEAD -> main, origin/main, origin/HEAD) feat(quota): complete AI provider integrations and release cleanup
+97c9bdc feat(quota): add in-island AI quota page and themed AI SVG icons
 807ca38 feat(quota): add quota service foundation, credentials, DeepSeek adapter and settings page
 e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and align header gear
 7ae0d2f feat(mail,settings): remove msg page, always show OTP for 180s, fix mail list render and polish settings UI
 6c1c1dc feat(mail): add mail list/detail UI, OTP preview card, body cache, and IDLE monitor
 ```
 
-当前工作区已整理并准备提交“AI 额度完整接入、滚轮冒泡修复与收尾修复（WorkBuddy SVG 裁切、大凭据分块与保存无竞态、进度条 Tooltip 移除、Daozai 风格设置页与 Gemini 浏览器登录）”：
-
-```text
-已纳入本次提交范围：
-- AGENTS.md, PROJECT_STATE.md
-- wisland/app.py, wisland/ui/page_registry.py, wisland/ui/widgets.py, wisland/ui/icons.py
-- wisland/assets/ai-icons/workbuddy.svg
-- wisland/ui/pages/quota.py, wisland/ui/settings/quota.py, wisland/ui/settings_window.py
-- wisland/services/quota/credentials.py, wisland/services/quota/manager.py, wisland/services/quota/providers.py
-- wisland/services/quota/adapters/__init__.py, workbuddy.py, codex.py, gemini.py, grok_bot.py
-- tests/test_quota_foundation.py, tests/test_quota_settings.py, tests/test_quota_page.py
-```
+当前阶段已收尾完成（主题拆分、经典纯黑皮肤、喝水/久坐岛内提醒与 22×22 主题图标）。
 
 ## 3. 产品总体方向
 
@@ -197,51 +187,26 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 - Grok Bot：已接通（PKCE 浏览器授权轮询 + Token 续期 + `GetSandUsageStatus` 周额度解析）。
 - DSH：永久排除。
 
-## 7. 当前阶段（已完成，待验收与提交）
+## 7. 当前阶段（已完成）
 
-### AI 额度重构与五服务商接入（阶段 1–6）
+### AI 额度、主题拆分、经典皮肤、生活提醒
 
-目标：
-
-- 移除 `QuotaPage` 灰色 `Card` 与垂直滚动条，内容直接落在 419×176 透明岛体表面。
-- 实现 `quota` 页面动态显隐（`pages.visible.quota AND has_connected_accounts()`），无真实已连接账号时隐藏且删除最后一个账号后安全切页。
-- 按服务商区分连接流程并逐个接入 WorkBuddy、Codex、Gemini、Grok Bot。
-- 同步修复 WorkBuddy 请求头（浏览器 `User-Agent` / `Origin` / 无 `X-Client-Platform` 回退）及设置页连接按钮宽度截断。
-
-验收结果：
-
-- 额度专项测试 25/25 通过（`tests/test_quota_page.py`、`tests/test_quota_settings.py`、`tests/test_quota_foundation.py`）。
-- 相关回归测试 29/30 通过（`tests/test_mail_page.py`、`tests/test_config_and_settings.py`、`tests/test_unread_dock.py`）；全库测试 67/68 通过（唯一失败项为既有 `TestConfigAndSettings.test_15_life_todo_water_sit_and_reminders` 硬编码日期 `2026-11-18` 在 `2026-11-19` 跨天触发清零，与本次改动无关）。
-- `python -m compileall -q wisland tests` 与 `git diff --check` 通过。
-- 浅色 (`light`)、深色 (`dark`)、晴空 (`sky`)、胭脂 (`rouge`)、自动深色 (`auto-dark`)、自动浅色 (`auto-light`) 419×176 截图检查通过（WorkBuddy 图标无残影、无黑色 Tooltip 遮挡）。
-- 已于 `2026-11-19 07:32:51` 通过 PyInstaller 6.22.3 重新打包并同步 `D:\Codex\wisland\WIsland.exe` 与 `_internal`，确认 5 个 AI SVG 图标与 4 个新 adapter 模块均已打入。
-
-状态：已完成审查、清理并准备提交推送到 `origin/main`。
+- 阶段：AI 额度、主题拆分、经典皮肤、生活提醒
+- 状态：完成
+- 测试结果：全量测试 `tests/` 72/72 通过；`python -m compileall -q wisland tests` 与 `git diff --check` 通过。
+- 打包结果：PyInstaller 6.22.3 使用 `WIsland.spec` 构建成功，包内已包含 5 个 `ai-icons`、4 个 `life-icons`、5 个 `quota.adapters.*` 及 `wisland.ui.theme`，EXE 启动冒烟驻留正常。
+- 修改文件：`wisland/core/config.py`、`wisland/ui/theme.py`、`wisland/ui/widgets.py`、`wisland/ui/pages/system.py`、`wisland/ui/settings_window.py`、`wisland/ui/settings/*`、`wisland/ui/island.py`、`wisland/ui/compact.py`、`wisland/ui/icons.py`、`wisland/app.py`、`wisland/assets/life-icons/*`、`tests/test_config_and_settings.py`、`PROJECT_STATE.md`
+- 已知风险：受限测试环境未写入真实 Windows Credential Manager（采用隔离内存凭据存储验证）；真实线上 AI 账号（WorkBuddy/Codex/Gemini/Grok Bot）及长期运行稳定性仍需结合实机环境进一步观察。
+- 下一阶段：
+  1. 首页最终布局确认。
+  2. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长时间稳定性测试。
+  3. 版本号、崩溃日志、诊断信息和正式发布包。
 
 ## 8. 后续计划
 
-按顺序执行：
-
-1. 已验收岛内 AI 额度页。
-2. 已补齐 `quota` 的页面注册、默认配置、设置页 fallback 和相关测试。
-3. 已检查图标资源进入 PyInstaller 包；待有构建环境时重新产出 EXE 并做启动验收。
-4. 待用户明确授权后，提交并推送 AI 额度展示层。
-5. 逐个接入剩余服务商：
-   - WorkBuddy
-   - Codex
-   - Gemini
-   - Grok Bot
-6. 重做或确认首页最终布局。
-7. 最终稳定性测试：
-   - Win10 / Win11
-   - 高 DPI
-   - 多显示器
-   - 睡眠唤醒
-   - 断网重连
-   - 长时间运行
-   - 设置窗口反复开关
-   - Qt 崩溃和黑屏
-8. 版本号、更新检查、崩溃日志、诊断信息和发布包。
+1. 首页最终布局确认。
+2. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长时间稳定性测试。
+3. 版本号、崩溃日志、诊断信息和正式发布包。
 
 ## 9. 已知问题与待验证项
 
@@ -302,12 +267,12 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 每次阶段完成后，在本文件追加或更新：
 
 ```text
-阶段：AI 额度重构、五服务商接入、滚轮冒泡修复与收尾发布准备
-状态：已完成审查、清理与打包验证，准备提交推送 origin/main
-提交：e7dd39c（含本轮审查修复与收尾清理）
-测试：额度专项 25/25 通过；全库 67/68 通过（唯一失败为无关测试 test_15 硬编码日期跨天）；compileall 与 git diff --check 通过
-验证环境：Windows / Python 3.13.14 / PySide6；light/dark/sky/rouge/auto-dark/auto-light 419×176 实际渲染检查；PyInstaller 6.22.3 打包通过
-修改文件：AGENTS.md、PROJECT_STATE.md、app.py、page_registry.py、ui/widgets.py、ui/icons.py、assets/ai-icons/workbuddy.svg、pages/quota.py、settings/quota.py、settings_window.py、services/quota/credentials.py、providers.py、manager.py、adapters/* 与额度测试
-遗留问题：Gemini 浏览器自动采集与 WorkBuddy/Grok Bot/Codex 真实线上账号端到端行为待用户在最新 EXE 中进一步实机确认；test_15 日期硬编码待另行修正
-下一阶段：提交并推送 origin/main 后，转入首页最终布局或发布稳定性工作
+阶段：AI 额度、主题拆分、经典皮肤、生活提醒
+状态：完成
+提交：待本次提交后记录
+测试：全量测试 tests/ 72/72 通过；compileall 与 git diff --check 通过
+打包：PyInstaller 6.22.3 构建 WIsland.spec 通过，包内资源与 EXE 启动冒烟正常
+修改文件：PROJECT_STATE.md、app.py、core/config.py、ui/theme.py、ui/widgets.py、ui/pages/system.py、ui/settings_window.py、ui/settings/*、ui/island.py、ui/compact.py、ui/icons.py、assets/life-icons/*、tests/test_config_and_settings.py
+已知风险：受限测试环境未写入真实 Windows Credential Manager；真实线上 AI 账号与长期运行稳定性待实机持续观察
+下一阶段：1. 首页最终布局确认；2. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长时间稳定性测试；3. 版本号、崩溃日志、诊断信息和正式发布包
 ```

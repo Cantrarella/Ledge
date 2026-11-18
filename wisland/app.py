@@ -137,10 +137,11 @@ def main():
     from .ui.island import Island
     from .ui.page_registry import PageRegistry
     from .ui.settings_window import SettingsWindow
-    from .ui.theme import KIND_COLORS, G, theme
+    from .ui.theme import KIND_COLORS, G, island_theme, settings_theme
     from .ui.widgets import glyph_pixmap
 
-    theme.set_mode(cfg.get("island.theme", "auto"))
+    island_theme.set_mode(cfg.get("island.theme", "auto"))
+    settings_theme.set_mode(cfg.get("settings_window.theme", "light"))
     ctx = SimpleNamespace()
     ctx.media = MediaService()
     ctx.audio = AudioService()
@@ -361,21 +362,25 @@ def main():
     island.play_pause_requested.connect(lambda: ctx.media.play_pause())
     ctx.live.error.connect(lambda m: island.activity({"glyph": G.LIVE, "title": "实时字幕", "sub": m}, 4))
 
-    # ---------------- 生活提醒事件（通用岛内活动提示，后续可接入通知队列） ----------------
+    # ---------------- 生活提醒事件（岛内队列：water/sit 使用主题 SVG 图标；todo 保持不变） ----------------
     def on_life_reminder(kind: str, title: str, sub: str):
-        col_map = {
-            "water": QtGui.QColor("#3b82f6"),
-            "sit": QtGui.QColor("#22c55e"),
-            "todo": QtGui.QColor("#ff9f0a"),
-        }
-        glyph_map = {"water": G.BOLT, "sit": G.PULSE, "todo": G.CHECK}
+        if kind in ("water", "sit"):
+            island.show_life_reminder(kind, title, sub, duration=8.0)
+            return
         island.activity({
-            "glyph": glyph_map.get(kind, G.BELL),
-            "color": col_map.get(kind, KIND_COLORS["other"]),
+            "glyph": G.CHECK if kind == "todo" else G.BELL,
+            "color": QtGui.QColor("#ff9f0a") if kind == "todo" else KIND_COLORS["other"],
             "title": title,
             "sub": sub,
         }, 5.0)
     ctx.health.reminder_triggered.connect(on_life_reminder)
+
+    def on_life_reminder_clicked(kind: str):
+        if "life" in P:
+            island.expand("life")
+            if kind in ("water", "sit"):
+                P["life"].switch_view(kind)
+    island.life_reminder_clicked.connect(on_life_reminder_clicked)
 
     # ---------------- 热键 ----------------
     def on_hotkey(name):
@@ -391,7 +396,8 @@ def main():
     cycle_timer = QtCore.QTimer(app)
 
     def apply_runtime_config(show_toast: bool = False):
-        theme.set_mode(cfg.get("island.theme", "auto"))
+        island_theme.set_mode(cfg.get("island.theme", "auto"))
+        settings_theme.set_mode(cfg.get("settings_window.theme", "light"))
         island.apply_config()
         if not island.expanded and compact.view in ("clock", "pet", "music"):
             want_view = cfg.get("island.compact_view", "clock")

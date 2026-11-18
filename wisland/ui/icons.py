@@ -62,6 +62,71 @@ def draw_svg_icon(p: QtGui.QPainter, rect: QtCore.QRectF, svg_key: str, dark: bo
     return True
 
 
+_LIFE_SVG_FILES = {
+    ("water", True): "water-cup-dark.svg",
+    ("water", False): "water-cup-light.svg",
+    ("sit", True): "chair-dark.svg",
+    ("sit", False): "chair-light.svg",
+}
+
+
+def _life_icons_dir() -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    p1 = base / "wisland" / "assets" / "life-icons"
+    if p1.is_dir():
+        return p1
+    return Path(__file__).resolve().parents[1] / "assets" / "life-icons"
+
+
+def get_life_svg_renderer(kind: str, dark: bool) -> QtSvg.QSvgRenderer | None:
+    """加载并缓存生活提醒 SVG 渲染器（water/sit），保留 SVG 原始颜色。"""
+    k = str(kind or "").strip().lower()
+    fname = _LIFE_SVG_FILES.get((k, bool(dark)))
+    if not fname:
+        return None
+    cache_key = (f"life:{k}", bool(dark))
+    if cache_key in _SVG_CACHE:
+        return _SVG_CACHE[cache_key]
+    path = _life_icons_dir() / fname
+    if not path.is_file():
+        _SVG_CACHE[cache_key] = None
+        return None
+    ren = QtSvg.QSvgRenderer(str(path))
+    _SVG_CACHE[cache_key] = ren if ren.isValid() else None
+    return _SVG_CACHE[cache_key]
+
+
+def draw_life_svg_icon(
+    p: QtGui.QPainter,
+    rect: QtCore.QRectF,
+    kind: str,
+    dark: bool,
+    opacity: float = 1.0,
+) -> bool:
+    """保持宽高比在 rect 内居中渲染生活提醒 SVG 图标。"""
+    ren = get_life_svg_renderer(kind, dark)
+    if ren is None:
+        return False
+    vb = ren.viewBoxF()
+    sw = vb.width() if vb.width() > 0 else float(ren.defaultSize().width() or 1)
+    sh = vb.height() if vb.height() > 0 else float(ren.defaultSize().height() or 1)
+    scale = min(rect.width() / sw, rect.height() / sh)
+    tw = sw * scale
+    th = sh * scale
+    target = QtCore.QRectF(
+        rect.center().x() - tw / 2.0,
+        rect.center().y() - th / 2.0,
+        tw,
+        th,
+    )
+    p.save()
+    p.setClipRect(rect)
+    p.setOpacity(max(0.0, min(1.0, opacity)))
+    ren.render(p, target)
+    p.restore()
+    return True
+
+
 _AI_SVG_FILES = {
     "deepseek": "deepseek.svg",
     "workbuddy": "workbuddy.svg",

@@ -11,7 +11,7 @@ from ...services.mail.credentials import make_credential_key
 from ...services.mail.manager import MailAccountManager
 from ...services.mail.models import MailAccount
 from ...services.mail.providers import PROVIDER_ORDER, get_provider, validate_account_params
-from ..theme import G, W, theme
+from ..theme import G, W, bind_theme_context, settings_theme
 from ..widgets import (
     Card,
     ComboBox,
@@ -53,12 +53,12 @@ class _Divider(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(1)
-        theme.changed.connect(self._apply)
+        settings_theme.changed.connect(self._apply)
         self._apply()
 
     @QtCore.Slot()
     def _apply(self):
-        col = "rgba(255,255,255,18)" if theme.dark else "rgba(0,0,0,15)"
+        col = "rgba(255,255,255,18)" if settings_theme.dark else "rgba(0,0,0,15)"
         self.setStyleSheet(f"background:{col};border:none;")
 
 
@@ -311,7 +311,7 @@ class MailAccountsSettingsPage(SettingsPage):
         )
 
         self._mgr.task_finished.connect(self._on_task_finished, Qt.ConnectionType.UniqueConnection)
-        theme.changed.connect(self._apply_guide_style)
+        settings_theme.changed.connect(self._apply_guide_style)
 
         self._apply_guide_style()
         self._on_provider_changed()
@@ -319,7 +319,7 @@ class MailAccountsSettingsPage(SettingsPage):
 
     @QtCore.Slot()
     def _apply_guide_style(self):
-        fg = "#c9ceda" if theme.dark else "#3b4252"
+        fg = "#c9ceda" if settings_theme.dark else "#3b4252"
         self.lbl_guide_body.setStyleSheet(f"background:transparent;border:none;font-size:12px;color:{fg};line-height:1.4;")
         self.lbl_privacy_body.setStyleSheet(f"background:transparent;border:none;font-size:12px;color:{fg};line-height:1.4;")
 
@@ -383,11 +383,11 @@ class MailAccountsSettingsPage(SettingsPage):
             self.lbl_status.hide()
             return
         if kind == "err":
-            col = theme.qss_color(theme.up())
+            col = settings_theme.qss_color(settings_theme.up())
         elif kind == "ok":
-            col = theme.qss_color(theme.down())
+            col = settings_theme.qss_color(settings_theme.down())
         else:
-            col = theme.qss_color(theme.on_color())
+            col = settings_theme.qss_color(settings_theme.on_color())
         self.lbl_status.setStyleSheet(f"background:transparent;border:none;font-size:12px;font-weight:600;color:{col};padding-top:6px;")
         self.lbl_status.setText(msg)
         self.lbl_status.show()
@@ -578,10 +578,12 @@ class MailAccountsSettingsPage(SettingsPage):
                 )
             )
             self.list_lay.addWidget(empty)
+            bind_theme_context(empty, settings_theme)
             return
 
         for acc in self._draft_accounts:
             self.list_lay.addWidget(self._build_account_card(acc))
+        bind_theme_context(self.list_wrap, settings_theme)
 
     def _focus_add_form(self):
         self.ed_email.setFocus()
@@ -603,15 +605,15 @@ class MailAccountsSettingsPage(SettingsPage):
         )
         badge = Label(st_label, 11.5, W.DemiBold, 1)
         if st_kind == "ok":
-            badge.set_color(theme.down())
+            badge.set_color(settings_theme.down())
         elif st_kind == "err":
-            badge.set_color(theme.up())
+            badge.set_color(settings_theme.up())
         elif st_kind == "accent":
-            badge.set_color(theme.on_color())
+            badge.set_color(settings_theme.on_color())
         elif st_kind == "muted":
-            badge.set_color(theme.text3())
+            badge.set_color(settings_theme.text3())
         else:
-            badge.set_color(theme.text2())
+            badge.set_color(settings_theme.text2())
 
         detail = f"{spec.name} · {acc.host}:{acc.port}"
         if acc.last_error:
@@ -620,7 +622,7 @@ class MailAccountsSettingsPage(SettingsPage):
         lbl_s = QtWidgets.QLabel(detail, card)
         lbl_s.setWordWrap(True)
         lbl_s.setStyleSheet(
-            f"background:transparent;border:none;font-size:11.5px;color:{theme.qss_color(theme.up() if acc.last_error else theme.text3())};"
+            f"background:transparent;border:none;font-size:11.5px;color:{settings_theme.qss_color(settings_theme.up() if acc.last_error else settings_theme.text3())};"
         )
 
         sw = Switch(checked=acc.enabled)

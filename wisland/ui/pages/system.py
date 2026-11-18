@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..theme import theme
+from ..theme import resolve_theme
 
 Qt = QtCore.Qt
 
@@ -45,7 +45,7 @@ def styled_menu(parent=None) -> QtWidgets.QMenu:
     m.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     m.setWindowFlag(Qt.WindowType.FramelessWindowHint)
     m.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint)
-    bg, fg, sel = theme.menu_qss()
+    bg, fg, sel = resolve_theme(parent).menu_qss()
     m.setStyleSheet(
         f"QMenu{{background:{bg};border-radius:14px;padding:6px;color:{fg};font-family:'HarmonyOS Sans','Microsoft YaHei UI';font-size:13px}}"
         f"QMenu::item{{padding:6px 22px 6px 14px;border-radius:9px}}"

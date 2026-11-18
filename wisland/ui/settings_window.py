@@ -20,7 +20,7 @@ from .settings import (
     ToolsLifeSettingsPage,
     WeatherSettingsPage,
 )
-from .theme import G, W, icon_font, theme, ui_font
+from .theme import G, W, bind_theme_context, icon_font, settings_theme, ui_font
 from .widgets import ConfirmDialog, Hoverable, Label, PillButton, hbox, painter, rounded_pixmap, vbox
 
 Qt = QtCore.Qt
@@ -53,28 +53,32 @@ class _CategoryButton(Hoverable):
         p = painter(self)
         r = QtCore.QRectF(self.rect()).adjusted(2, 2, -2, -2)
         if self.selected:
-            sel_bg = QtGui.QColor(theme.on_color())
-            sel_bg.setAlphaF(0.18 if theme.dark else 0.14)
+            sel_bg = QtGui.QColor(settings_theme.on_color())
+            sel_bg.setAlphaF(0.18 if settings_theme.dark else 0.14)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(sel_bg)
             p.drawRoundedRect(r, 10, 10)
             # 左侧 3px 强调线
             bar = QtCore.QRectF(r.left() + 3, r.center().y() - 8, 3.0, 16)
-            p.setBrush(theme.on_color())
+            p.setBrush(settings_theme.on_color())
             p.drawRoundedRect(bar, 1.5, 1.5)
         elif self._hover.x > 0.01:
-            bg = QtGui.QColor(theme.hover())
+            bg = QtGui.QColor(settings_theme.hover())
             bg.setAlphaF(bg.alphaF() * self._hover.x)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(r, 10, 10)
 
         if self.hasFocus():
-            p.setPen(QtGui.QPen(theme.on_color(), 1.2))
+            p.setPen(QtGui.QPen(settings_theme.on_color(), 1.2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r, 10, 10)
 
-        fg = theme.on_color() if (self.selected and not theme.dark) else (theme.text(0.98) if self.selected else theme.text2(0.92))
+        fg = (
+            settings_theme.on_color()
+            if (self.selected and not settings_theme.dark)
+            else (settings_theme.text(0.98) if self.selected else settings_theme.text2(0.92))
+        )
         p.setPen(fg)
         p.setFont(icon_font(15))
         p.drawText(QtCore.QRectF(r.left() + 14, r.top(), 20, r.height()), Qt.AlignmentFlag.AlignCenter, self.glyph)
@@ -167,10 +171,13 @@ class SettingsWindow(QtWidgets.QWidget):
         self.footer.setFixedHeight(58)
         self.footer.setLayout(hbox((self.status_lbl, 1), self.btn_cancel, self.btn_save, spacing=10, margins=(20, 10, 20, 12)))
 
+        self._theme_context = settings_theme
         right_lay = vbox(self.header, (self.stack, 1), self.footer, spacing=0, margins=(0, 0, 0, 0))
         self.setLayout(hbox(self.sidebar, (right_lay, 1), spacing=0, margins=(0, 0, 0, 0)))
 
-        theme.changed.connect(self._apply_window_style)
+        bind_theme_context(self, settings_theme)
+        settings_theme.set_mode(self.cfg_obj.get("settings_window.theme", "light"))
+        settings_theme.changed.connect(self._apply_window_style)
         self._apply_window_style()
         self.switch_category("general")
         self._load_all_from_draft()
@@ -202,28 +209,34 @@ class SettingsWindow(QtWidgets.QWidget):
         return cls._instance
 
     def _apply_window_style(self):
-        if theme.dark:
+        if settings_theme.dark:
             win_bg = "#181920"
             side_bg = "#13141a"
             head_bg = "#181920"
             foot_bg = "#15161c"
             sep = "rgba(255,255,255,18)"
+            tip_bg, tip_fg, tip_bd = "#242630", "#f4f6fb", "rgba(255,255,255,28)"
         else:
             win_bg = "#f3f5f9"
             side_bg = "#eaedf4"
             head_bg = "#f3f5f9"
             foot_bg = "#edf0f6"
             sep = "rgba(0,0,0,16)"
-        self.setStyleSheet(f"SettingsWindow{{background:{win_bg};}}")
+            tip_bg, tip_fg, tip_bd = "#ffffff", "#181a20", "rgba(0,0,0,24)"
+        self.setStyleSheet(
+            f"SettingsWindow{{background:{win_bg};}}"
+            f"SettingsWindow QToolTip{{background:{tip_bg};color:{tip_fg};"
+            f"border:1px solid {tip_bd};border-radius:6px;padding:4px 8px;}}"
+        )
         self.sidebar.setStyleSheet(f"QFrame{{background:{side_bg};border-right:1px solid {sep};}}")
         self.header.setStyleSheet(f"QFrame{{background:{head_bg};border-bottom:1px solid {sep};}}")
         self.footer.setStyleSheet(f"QFrame{{background:{foot_bg};border-top:1px solid {sep};}}")
-        self.dirty_lbl.set_color(theme.on_color())
+        self.dirty_lbl.set_color(settings_theme.on_color())
         self.update()
 
     def paintEvent(self, e):
         p = QtGui.QPainter(self)
-        bg = QtGui.QColor("#181920" if theme.dark else "#f3f5f9")
+        bg = QtGui.QColor("#181920" if settings_theme.dark else "#f3f5f9")
         p.fillRect(self.rect(), bg)
 
     def switch_category(self, key: str):
@@ -277,7 +290,7 @@ class SettingsWindow(QtWidgets.QWidget):
             return
         dirty = self.is_dirty()
         if dirty:
-            self.dirty_lbl.set_color(theme.on_color())
+            self.dirty_lbl.set_color(settings_theme.on_color())
             self.dirty_lbl.setText("● 有未保存修改")
             self.btn_save.setEnabled(True)
             self.btn_save.set_text("保存设置")
@@ -332,14 +345,14 @@ class SettingsWindow(QtWidgets.QWidget):
             if mail_pg is not None:
                 cred_ok, cred_err = mail_pg.commit_credentials()
                 if not cred_ok:
-                    self.status_lbl.set_color(theme.up())
+                    self.status_lbl.set_color(settings_theme.up())
                     self.status_lbl.setText(f"保存失败：{cred_err}")
                     self.switch_category("mail_accounts")
                     return False
             if quota_pg is not None:
                 q_ok, q_err = quota_pg.commit_credentials()
                 if not q_ok:
-                    self.status_lbl.set_color(theme.up())
+                    self.status_lbl.set_color(settings_theme.up())
                     self.status_lbl.setText(f"保存失败：{q_err}")
                     self.switch_category("quota")
                     return False
@@ -352,7 +365,7 @@ class SettingsWindow(QtWidgets.QWidget):
                 if not ok:
                     err_msg = errors[0] if errors else "配置校验未通过"
                     self._route_field_errors(errors)
-                    self.status_lbl.set_color(theme.up())
+                    self.status_lbl.set_color(settings_theme.up())
                     self.status_lbl.setText(f"保存失败：{err_msg}")
                     return False
 
@@ -361,7 +374,7 @@ class SettingsWindow(QtWidgets.QWidget):
                 if quota_pg is not None:
                     fin_ok, fin_err = quota_pg.finalize_commit()
                     if not fin_ok:
-                        self.status_lbl.set_color(theme.up())
+                        self.status_lbl.set_color(settings_theme.up())
                         self.status_lbl.setText(f"保存失败：{fin_err or '会话凭据保存失败，未写入系统凭据管理器'}")
                         self.switch_category("quota")
                         return False
@@ -376,9 +389,10 @@ class SettingsWindow(QtWidgets.QWidget):
             if isinstance(gen_page, GeneralSettingsPage):
                 gen_page.apply_autostart_if_changed()
 
+            settings_theme.set_mode(self.cfg_obj.get("settings_window.theme", "light"))
             self.draft = self.cfg_obj.create_draft()
             self._baseline_dict = self.collect_to_draft().to_dict()
-            self.status_lbl.set_color(theme.down())
+            self.status_lbl.set_color(settings_theme.down())
             self.status_lbl.setText("✓ 设置已保存并生效")
             self.saved.emit()
             return True

@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6 import QtCore, QtWidgets
 
 from ...core.config import ConfigDraft
-from ..theme import W, theme, ui_font
+from ..theme import W, bind_theme_context, settings_theme, ui_font
 from ..widgets import ComboBox, DoubleSpinBox, LineEdit, PasswordEdit, ScrollArea, SettingRow, SpinBox, Switch, vbox
 
 
@@ -19,10 +19,11 @@ class SettingsPage(ScrollArea):
     def __init__(self, ctx=None, parent=None):
         super().__init__(parent)
         self.ctx = ctx
+        self._theme_context = settings_theme
         self._sec_titles: list[QtWidgets.QLabel] = []
         self._sec_descs: list[QtWidgets.QLabel] = []
         self._rows: dict[str, SettingRow] = {}
-        theme.changed.connect(self._style_sections)
+        settings_theme.changed.connect(self._style_sections)
 
     def section(self, title: str, desc: str = "") -> QtWidgets.QLayout:
         lbl = QtWidgets.QLabel(title, self.inner)
@@ -40,8 +41,8 @@ class SettingsPage(ScrollArea):
         return vbox(lbl, spacing=2, margins=(4, 10, 4, 2))
 
     def _style_sections(self):
-        tc = theme.qss_color(theme.text())
-        sc = theme.qss_color(theme.text3())
+        tc = settings_theme.qss_color(settings_theme.text())
+        sc = settings_theme.qss_color(settings_theme.text3())
         for lbl in self._sec_titles:
             lbl.setStyleSheet(f"QLabel{{color:{tc};background:transparent;}}")
         for sub in self._sec_descs:
@@ -59,6 +60,7 @@ class SettingsPage(ScrollArea):
         # 滚动容器底部保留 24px 内边距，确保最后一组卡片可完整滚到底部操作栏上方
         lay = vbox(*widgets, None, spacing=10, margins=(20, 12, 20, 24))
         self.inner.setLayout(lay)
+        bind_theme_context(self, settings_theme)
         self._hook_change_signals()
 
     def _hook_change_signals(self):

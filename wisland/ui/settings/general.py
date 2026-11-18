@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...core.config import ConfigDraft
-from ..theme import G, THEME_NAMES
+from ..theme import G, ISLAND_THEME_NAMES, SETTINGS_THEME_NAMES
 from ..widgets import ComboBox, LineEdit, SettingRow, Switch
 from .base import SettingsPage
 
@@ -17,7 +17,8 @@ class GeneralSettingsPage(SettingsPage):
         super().__init__(ctx, parent)
         self._autostart_init = False
 
-        self.cb_theme = ComboBox(THEME_NAMES, width=196)
+        self.cb_theme = ComboBox(ISLAND_THEME_NAMES, width=196)
+        self.cb_settings_theme = ComboBox(SETTINGS_THEME_NAMES, width=196)
         self.sw_autostart = Switch()
         self.cb_expand = ComboBox([
             ("hover", "悬停自动展开"),
@@ -35,8 +36,15 @@ class GeneralSettingsPage(SettingsPage):
         )
 
         self.finish_layout(
-            self.section("外观与启动", "设置灵动岛毛玻璃主题色板与开机自动运行行为"),
-            SettingRow("界面主题", "跟随桌面背景亮度自动切换，或固定使用指定主题色板", self.cb_theme),
+            self.section("外观与启动", "分别设置灵动岛皮肤与设置窗口主题，以及开机自动运行行为"),
+            self.register_row(
+                "island.theme",
+                SettingRow("岛体皮肤", "选择灵动岛本身的外观皮肤（含跟随背景自动与经典纯黑）", self.cb_theme),
+            ),
+            self.register_row(
+                "settings_window.theme",
+                SettingRow("设置窗口主题", "独立控制设置中心窗口本身的浅色或深色外观", self.cb_settings_theme),
+            ),
             SettingRow("开机启动", "登录 Windows 时自动在后台启动 Wisland", self.sw_autostart),
             self.section("交互与可见性", "控制灵动岛的展开触发、鼠标穿透、截图显示与全屏避让"),
             SettingRow("展开方式", "控制鼠标移入灵动岛时的展开策略（也可在灵动岛上双击快速切换长关）", self.cb_expand),
@@ -51,6 +59,7 @@ class GeneralSettingsPage(SettingsPage):
         from ...app import autostart_enabled
         self.clear_errors()
         self.cb_theme.set_value(draft.get("island.theme", "auto"))
+        self.cb_settings_theme.set_value(draft.get("settings_window.theme", "light"))
         self._autostart_init = autostart_enabled()
         self.sw_autostart.setChecked(self._autostart_init)
         self.cb_expand.set_value(draft.get("island.expand_mode", "hover"))
@@ -61,6 +70,7 @@ class GeneralSettingsPage(SettingsPage):
 
     def save_to_draft(self, draft: ConfigDraft):
         draft.set("island.theme", self.cb_theme.current_value() or "auto")
+        draft.set("settings_window.theme", self.cb_settings_theme.current_value() or "light")
         emode = self.cb_expand.current_value() or "hover"
         draft.set("island.expand_mode", emode)
         draft.set("island.pinned", emode == "always")

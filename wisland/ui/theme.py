@@ -119,25 +119,59 @@ PALETTES = {
         "rim1": (255, 255, 255, 210), "rim2": (255, 255, 255, 70), "outline": (12, 32, 56, 60),
         "menu": ("rgba(247,239,225,248)", "#0c2038", "rgba(50,171,253,70)"),
     },
+    # 经典纯黑：Daozai 风格不透明纯黑实体，无毛玻璃透底与高光雾层
+    "classic": {
+        "dark": True, "solid": True, "text": (255, 255, 255), "t2": 0.70, "t3": 0.48,
+        "tint": (0, 0, 0, 255), "card": (22, 22, 24, 235), "hover": (255, 255, 255, 22),
+        "pill": (40, 40, 43, 255), "track": (36, 36, 39, 255), "fill": (255, 255, 255, 235),
+        "on": "#3b82f6", "up": "#ff5a52", "down": "#35c98e",
+        "rim1": (255, 255, 255, 18), "rim2": (255, 255, 255, 8), "outline": (0, 0, 0, 220),
+        "menu": ("rgba(22,22,24,248)", "white", "rgba(255,255,255,36)"),
+    },
 }
 
-THEME_NAMES = [("auto", "跟随背景自动"), ("light", "浅色毛玻璃"), ("dark", "深色毛玻璃"),
-               ("rouge", "胭脂撞色"), ("sky", "晴空渐变")]
+ISLAND_THEME_NAMES = [
+    ("auto", "跟随背景自动"),
+    ("classic", "经典纯黑"),
+    ("light", "浅色毛玻璃"),
+    ("dark", "深色毛玻璃"),
+    ("rouge", "胭脂撞色"),
+    ("sky", "晴空渐变"),
+]
+SETTINGS_THEME_NAMES = [
+    ("light", "浅色"),
+    ("dark", "深色"),
+]
+THEME_NAMES = ISLAND_THEME_NAMES
 
 
 class Theme(QtCore.QObject):
     changed = QtCore.Signal()
 
-    def __init__(self, mode: str = "auto"):
+    def __init__(
+        self,
+        mode: str = "auto",
+        *,
+        allowed_modes: tuple[str, ...] | None = None,
+        allow_auto: bool = True,
+    ):
         super().__init__()
+        self._allow_auto = bool(allow_auto)
+        self._allowed_modes = tuple(allowed_modes) if allowed_modes is not None else tuple(k for k, _ in ISLAND_THEME_NAMES)
+        if mode not in self._allowed_modes:
+            mode = "auto" if (self._allow_auto and "auto" in self._allowed_modes) else self._allowed_modes[0]
         self.mode = mode
         self._lum = 0.5
         self.pal_name = None
-        self._apply(mode if mode in PALETTES else "dark")
+        self.dark = False
+        self.solid = False
+        self._apply(mode if mode in PALETTES else ("dark" if self._allow_auto else self._allowed_modes[0]))
 
     # --- 自动切换（带滞回，避免在中间亮度来回跳） ---
     def feed_luminance(self, lum: float):
         import time as _t
+        if not self._allow_auto:
+            return
         self._lum = self._lum * 0.8 + lum * 0.2
         if self.mode != "auto":
             return
@@ -162,8 +196,13 @@ class Theme(QtCore.QObject):
         self._apply("dark" if want else "light")
 
     def set_mode(self, mode: str):
+        if mode not in self._allowed_modes:
+            return
         self.mode = mode
-        pal = mode if mode in PALETTES else ("dark" if self.dark else "light")
+        if mode == "auto" and self._allow_auto:
+            pal = "dark" if self.dark else "light"
+        else:
+            pal = mode if mode in PALETTES else ("dark" if self.dark else "light")
         self._apply(pal)
 
     def _apply(self, pal: str):
@@ -171,6 +210,7 @@ class Theme(QtCore.QObject):
         self.pal_name = pal
         self.pal = PALETTES[pal]
         self.dark = self.pal["dark"]
+        self.solid = bool(self.pal.get("solid", False))
         if changed:
             self.changed.emit()
 
@@ -270,4 +310,57 @@ KIND_COLORS = {
     "other": QtGui.QColor("#8e8e93"),
 }
 
-theme = Theme()
+island_theme = Theme(
+    "auto",
+    allowed_modes=tuple(k for k, _ in ISLAND_THEME_NAMES),
+    allow_auto=True,
+)
+settings_theme = Theme(
+    "light",
+    allowed_modes=tuple(k for k, _ in SETTINGS_THEME_NAMES),
+    allow_auto=False,
+)
+theme = island_theme
+
+
+def resolve_theme(obj) -> Theme:
+    """沿父级链解析最近的主题上下文（未绑定时默认返回 island_theme）。"""
+    cur = obj
+    visited: set[int] = set()
+    while cur is not None and id(cur) not in visited:
+        visited.add(id(cur))
+        ctx = getattr(cur, "_theme_context", None)
+        if isinstance(ctx, Theme):
+            return ctx
+        ctx_prop = getattr(cur, "theme_context", None)
+        if isinstance(ctx_prop, Theme):
+            return ctx_prop
+        parent = None
+        parent_widget_fn = getattr(cur, "parentWidget", None)
+        if callable(parent_widget_fn):
+            parent = parent_widget_fn()
+        if parent is None:
+            parent_fn = getattr(cur, "parent", None)
+            if callable(parent_fn):
+                parent = parent_fn()
+        cur = parent
+    return island_theme
+
+
+def bind_theme_context(root, target_theme: Theme) -> None:
+    """为根对象及其子树绑定主题上下文，并重连已注册的动态主题回调。"""
+    if root is None:
+        return
+    setattr(root, "_theme_context", target_theme)
+    rebind = getattr(root, "_rebind_theme", None)
+    if callable(rebind):
+        rebind(target_theme)
+    children_fn = getattr(root, "children", None)
+    if not callable(children_fn):
+        return
+    for child in list(children_fn()):
+        if getattr(child, "_theme_context", None) is None:
+            rebind_child = getattr(child, "_rebind_theme", None)
+            if callable(rebind_child):
+                rebind_child(target_theme)
+        bind_theme_context(child, target_theme)
