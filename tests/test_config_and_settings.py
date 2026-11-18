@@ -266,7 +266,8 @@ class TestConfigAndSettings(unittest.TestCase):
         from wisland.ui.page_registry import PageRegistry
         from wisland.ui.pages.base import Page
 
-        # 预先写入含未注册页面（如 mail、ai_quota）的配置，验证只显示 4 个真实页面但保留未注册项
+        # 预先写入含已废弃页面（msg）和未注册页面（如 ai_quota）的配置：
+        # 加载时应清理 msg，同时只显示 4 个真实页面并保留 ai_quota 等未知字段
         init_cfg = {
             "schema_version": 2,
             "pages": {
@@ -278,7 +279,7 @@ class TestConfigAndSettings(unittest.TestCase):
         c = Config(path=self.cfg_path)
 
         reg = PageRegistry()
-        for k, g, t in (("home", "\uE80F", "主页"), ("msg", "\uE8BD", "消息"),
+        for k, g, t in (("home", "\uE80F", "主页"), ("mail", "\uE715", "邮箱"),
                         ("weather", "\uE706", "天气"), ("trans", "\uE720", "实时字幕")):
             pg = type(f"Page_{k}", (Page,), {"key": k, "glyph": g, "title": t})()
             reg.register(pg)
@@ -294,26 +295,28 @@ class TestConfigAndSettings(unittest.TestCase):
             pg_map = {pg.key: pg for pg in win.pages}
             nav_pg = pg_map["pages_nav"]
 
-            # 1) 设置中只列出 4 个真实页面，不出现 mail / ai_quota 等未注册页面
-            self.assertEqual(nav_pg.ordered_keys(), ["home", "msg", "weather", "trans"])
+            # 1) 设置中只列出 4 个真实页面，不出现 msg / ai_quota 等页面
+            self.assertEqual(nav_pg.ordered_keys(), ["home", "mail", "weather", "trans"])
 
             # 2) 将 weather 移到第一位，隐藏 home，点击取消 -> 不修改任何配置，恢复原顺序与显示状态
+            #    加载时已清理废弃的 msg，保留 ai_quota
             nav_pg.move_page("weather", -1)
             nav_pg.move_page("weather", -1)
             nav_pg.set_page_visible("home", False)
             self.assertEqual(nav_pg.ordered_keys()[0], "weather")
             win.cancel_and_close(prompt_if_dirty=False)
-            self.assertEqual(c.get("pages.order"), ["home", "mail", "msg", "weather", "trans", "ai_quota"])
+            self.assertEqual(c.get("pages.order"), ["home", "mail", "weather", "trans", "ai_quota"])
+            self.assertNotIn("msg", c.get("pages.visible"))
             self.assertTrue(c.get("pages.visible.home"))
-            self.assertEqual(isl.nav.keys(), ["home", "msg", "weather", "trans"])
+            self.assertEqual(isl.nav.keys(), ["home", "weather", "trans"])
 
-            # 3) 重新打开设置，将 trans 移到首位，隐藏 home 和 msg，点击保存 -> 窗口保持打开，顺序与隐藏立即生效
+            # 3) 重新打开设置，将 trans 移到首位，隐藏 home 和 mail，点击保存 -> 窗口保持打开，顺序与隐藏立即生效
             win.show()
             nav_pg.move_page("trans", -1)
             nav_pg.move_page("trans", -1)
             nav_pg.move_page("trans", -1)
             nav_pg.set_page_visible("home", False)
-            nav_pg.set_page_visible("msg", False)
+            nav_pg.set_page_visible("mail", False)
             saved = win.save_settings()
             self.assertTrue(saved)
             self.assertTrue(win.isVisible(), "保存设置后不应关闭设置窗口")
@@ -324,7 +327,7 @@ class TestConfigAndSettings(unittest.TestCase):
             # 验证岛体导航只包含可见的 trans 与 weather，且由于原当前页 home 被隐藏，自动切到第一个可见页 trans
             self.assertEqual(isl.nav.keys(), ["trans", "weather"])
             self.assertEqual(isl._page_key, "trans")
-            # 滚轮只能在 trans 与 weather 之间切换，不能切到隐藏的 home 或 msg
+            # 滚轮只能在 trans 与 weather 之间切换，不能切到隐藏的 home 或 mail
             isl.nav.step_wheel(-120)
             self.assertEqual(isl.nav.current(), "weather")
             isl.nav.step_wheel(-120)
@@ -334,8 +337,10 @@ class TestConfigAndSettings(unittest.TestCase):
             after_ids = {k: id(p) for k, p in reg.pages_dict().items()}
             self.assertEqual(orig_ids, after_ids)
 
-            # 验证未注册页面配置项在 config.json 中依然保留
+            # 验证未注册页面 ai_quota 在 config.json 中依然保留，废弃的 msg 已被清理
             disk_cfg = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+            self.assertNotIn("msg", disk_cfg["pages"]["order"])
+            self.assertNotIn("msg", disk_cfg["pages"]["visible"])
             self.assertIn("mail", disk_cfg["pages"]["order"])
             self.assertIn("ai_quota", disk_cfg["pages"]["order"])
             self.assertEqual(disk_cfg["pages"]["visible"]["mail"], False)
@@ -608,8 +613,8 @@ class TestConfigAndSettings(unittest.TestCase):
             isl.close()
 
         # 3) 底部导航不再保存或绘制红点
-        nav = NavBar([("home", "", "主页"), ("msg", "", "消息")])
-        nav.set_badge("msg", 99)
+        nav = NavBar([("home", "", "主页"), ("mail", "", "邮箱")])
+        nav.set_badge("mail", 99)
         self.assertEqual(nav.badges, {})
 
     def test_15_life_todo_water_sit_and_reminders(self):

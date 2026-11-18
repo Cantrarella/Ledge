@@ -165,7 +165,7 @@ class IconButton(Hoverable):
 
 class PillButton(Hoverable):
     """胶囊按钮：图标 + 文字，支持主色（primary）、危险操作描边（danger）与禁用弱化态。"""
-    def __init__(self, text: str, glyph: str = "", parent=None, height: int = 30, primary: bool = False,
+    def __init__(self, text: str, glyph: str = "", parent=None, height: int = 28, primary: bool = False,
                  danger: bool = False):
         super().__init__(parent)
         self.text = text
@@ -174,12 +174,14 @@ class PillButton(Hoverable):
         self.danger = danger
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setFixedHeight(height)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
         self._fit()
 
     def _fit(self):
-        fm = QtGui.QFontMetrics(ui_font(12.5, W.Medium))
-        w = fm.horizontalAdvance(self.text) + 34 + (22 if self.glyph else 0)
-        self.setMinimumWidth(min(max(w, 84), self.maximumWidth()))
+        fm = QtGui.QFontMetrics(ui_font(12.0, W.Medium))
+        w = fm.horizontalAdvance(self.text) + 22 + (18 if self.glyph else 0)
+        w = max(w, 52)
+        self.setFixedWidth(min(w, self.maximumWidth()))
 
     def set_text(self, t: str):
         self.text = t
@@ -252,15 +254,24 @@ class PillButton(Hoverable):
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
 
         p.setPen(fg)
-        x = r.x() + 13
+        f_txt = ui_font(12.0, W.Medium)
+        fm = QtGui.QFontMetrics(f_txt)
         if self.glyph:
-            p.setFont(icon_font(13))
-            p.drawText(QtCore.QRectF(x, r.y(), 16, r.height()), Qt.AlignmentFlag.AlignCenter, self.glyph)
-            x += 20
-        p.setFont(ui_font(12.5, W.Medium))
-        tw = r.right() - x - 11
-        p.drawText(QtCore.QRectF(x, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   QtGui.QFontMetrics(p.font()).elidedText(self.text, Qt.TextElideMode.ElideRight, int(tw)))
+            max_tw = max(12.0, r.width() - 34.0)
+            elided = fm.elidedText(self.text, Qt.TextElideMode.ElideRight, int(max_tw))
+            tw = fm.horizontalAdvance(elided)
+            total_w = 15.0 + 5.0 + tw
+            start_x = r.center().x() - total_w / 2.0
+            p.setFont(icon_font(12.5))
+            p.drawText(QtCore.QRectF(start_x, r.y(), 15.0, r.height()), Qt.AlignmentFlag.AlignCenter, self.glyph)
+            p.setFont(f_txt)
+            p.drawText(QtCore.QRectF(start_x + 20.0, r.y(), tw + 2.0, r.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        else:
+            p.setFont(f_txt)
+            txt_r = r.adjusted(8, 0, -8, 0)
+            elided = fm.elidedText(self.text, Qt.TextElideMode.ElideRight, int(txt_r.width()))
+            p.drawText(txt_r, Qt.AlignmentFlag.AlignCenter, elided)
 
 
 class Label(QtWidgets.QWidget, Themed):
@@ -473,14 +484,13 @@ class LineEdit(QtWidgets.QLineEdit):
     """需要键盘焦点的输入框：点击时通知灵动岛临时接受焦点，自带清晰键盘焦点描边。"""
     focus_wanted = QtCore.Signal()
 
-    def __init__(self, placeholder: str = "", parent=None, width: int = 200):
+    def __init__(self, placeholder: str = "", parent=None, width: int = 196):
         super().__init__(parent)
         self.setPlaceholderText(placeholder)
         self.setProperty("wants_focus", True)
         self.setFixedHeight(32)
         if width:
-            self.setMinimumWidth(min(160, width))
-            self.setMaximumWidth(max(240, width))
+            self.setFixedWidth(width)
         self.setFont(ui_font(13))
         theme.changed.connect(self._style)
         self._style()
@@ -505,16 +515,15 @@ class LineEdit(QtWidgets.QLineEdit):
 
 
 class PasswordEdit(QtWidgets.QWidget):
-    """带显示/隐藏明文切换按钮的密钥输入框（160–240px）。"""
+    """带显示/隐藏明文切换按钮的密钥输入框（默认宽度 196px）。"""
     textChanged = QtCore.Signal(str)
 
-    def __init__(self, placeholder: str = "粘贴 API Key（可选）", parent=None, width: int = 220):
+    def __init__(self, placeholder: str = "粘贴 API Key（可选）", parent=None, width: int = 196):
         super().__init__(parent)
         from .theme import G
         self._G = G
         self.setFixedHeight(32)
-        self.setMinimumWidth(max(160, min(width, 240)))
-        self.setMaximumWidth(max(240, width))
+        self.setFixedWidth(width)
         self.edit = LineEdit(placeholder, self, width=0)
         self.edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.edit.setMinimumWidth(120)
@@ -632,14 +641,14 @@ class Switch(Hoverable):
 
 
 class ComboBox(QtWidgets.QComboBox):
-    """主题化下拉框：支持 (value, label) 键值对绑定（建议宽度 160–240px）。"""
+    """主题化下拉框：支持 (value, label) 键值对绑定（默认宽度 196px）。"""
     value_changed = QtCore.Signal(object)
 
-    def __init__(self, items: list[tuple[object, str]] | None = None, parent=None, width: int = 180):
+    def __init__(self, items: list[tuple[object, str]] | None = None, parent=None, width: int = 196):
         super().__init__(parent)
         self.setFixedHeight(32)
-        self.setMinimumWidth(max(160, min(width, 240)))
-        self.setMaximumWidth(max(240, width))
+        self.setFixedWidth(width)
+        self.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.setFont(ui_font(13))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -668,6 +677,8 @@ class ComboBox(QtWidgets.QComboBox):
 
     def _on_idx(self, _):
         self.value_changed.emit(self.currentData())
+        if self.hasFocus():
+            self.clearFocus()
 
     def _style(self):
         bg = theme.qss_color(theme.card(1.2))
@@ -677,25 +688,43 @@ class ComboBox(QtWidgets.QComboBox):
         m_bg, m_fg, m_sel = theme.menu_qss()
         self.setStyleSheet(
             f"QComboBox{{background:{bg};border:1px solid {bd};border-radius:10px;"
-            f"padding:0 12px;color:{fg};}}"
+            f"padding:0 28px 0 12px;color:{fg};}}"
             f"QComboBox:hover,QComboBox:focus{{border:1.5px solid {fc};}}"
-            "QComboBox::drop-down{border:none;width:24px;}"
+            "QComboBox::drop-down{subcontrol-origin:padding;subcontrol-position:top right;border:none;width:26px;}"
             f"QComboBox QAbstractItemView{{background:{m_bg};color:{m_fg};"
-            f"selection-background-color:{m_sel};border:1px solid {bd};border-radius:8px;padding:4px;outline:none;}}"
+            f"selection-background-color:{m_sel};border:1px solid {bd};border-radius:10px;padding:4px;outline:none;}}"
+            "QComboBox QAbstractItemView::item{min-height:26px;padding:2px 8px;border-radius:6px;}"
+            f"QComboBox QAbstractItemView::item:selected,QComboBox QAbstractItemView::item:hover{{background:{m_sel};color:{m_fg};}}"
         )
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = painter(self)
+        col = theme.text2() if self.isEnabled() else theme.text3()
+        if self.isEnabled() and (self.underMouse() or self.hasFocus()):
+            col = theme.text()
+        pen = QtGui.QPen(col, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        cx = self.width() - 15.0
+        cy = self.height() / 2.0 + 0.5
+        path = QtGui.QPainterPath()
+        path.moveTo(cx - 4.0, cy - 2.0)
+        path.lineTo(cx, cy + 2.2)
+        path.lineTo(cx + 4.0, cy - 2.0)
+        p.drawPath(path)
 
 
 class SpinBox(QtWidgets.QSpinBox):
-    """主题化整数微调框（建议宽度 160–240px）。"""
-    def __init__(self, min_v: int = 0, max_v: int = 9999, step: int = 1, suffix: str = "", parent=None, width: int = 168):
+    """主题化整数微调框（默认宽度 196px）。"""
+    def __init__(self, min_v: int = 0, max_v: int = 9999, step: int = 1, suffix: str = "", parent=None, width: int = 196):
         super().__init__(parent)
         self.setRange(min_v, max_v)
         self.setSingleStep(step)
         if suffix:
             self.setSuffix(suffix)
         self.setFixedHeight(32)
-        self.setMinimumWidth(max(160, min(width, 240)))
-        self.setMaximumWidth(max(240, width))
+        self.setFixedWidth(width)
         self.setFont(ui_font(13, num=True))
         theme.changed.connect(self._style)
         self._style()
@@ -714,9 +743,9 @@ class SpinBox(QtWidgets.QSpinBox):
 
 
 class DoubleSpinBox(QtWidgets.QDoubleSpinBox):
-    """主题化浮点数微调框（建议宽度 160–240px）。"""
+    """主题化浮点数微调框（默认宽度 196px）。"""
     def __init__(self, min_v: float = 0.0, max_v: float = 100.0, step: float = 0.05, decimals: int = 2,
-                 suffix: str = "", parent=None, width: int = 168):
+                 suffix: str = "", parent=None, width: int = 196):
         super().__init__(parent)
         self.setDecimals(decimals)
         self.setRange(min_v, max_v)
@@ -724,8 +753,7 @@ class DoubleSpinBox(QtWidgets.QDoubleSpinBox):
         if suffix:
             self.setSuffix(suffix)
         self.setFixedHeight(32)
-        self.setMinimumWidth(max(160, min(width, 240)))
-        self.setMaximumWidth(max(240, width))
+        self.setFixedWidth(width)
         self.setFont(ui_font(13, num=True))
         theme.changed.connect(self._style)
         self._style()

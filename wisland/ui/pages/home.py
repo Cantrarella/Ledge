@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""主页（正在播放 + 快捷操作 + 自定义启动器）与消息页（QQ / 微信 / 邮件提醒）。"""
+"""主页（正在播放 + 快捷操作 + 自定义启动器）。"""
 from __future__ import annotations
 
 import time
@@ -9,8 +9,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ...core.config import cfg, expand
 from ..anim import Spring, clamp
 from ..header import PageHeader
-from ..theme import KIND_COLORS, G, W, icon_font, theme, ui_font
-from ..widgets import (Card, Hoverable, IconButton, Label, PillButton, ScrollArea, Themed, fmt_time, hbox,
+from ..theme import G, W, icon_font, theme, ui_font
+from ..widgets import (Card, Hoverable, IconButton, Label, PillButton, Themed, fmt_time, hbox,
                        painter, rounded_pixmap, vbox)
 from .base import Page
 
@@ -382,135 +382,3 @@ class HomePage(Page):
 def cfg_path():
     from ...core.config import CONFIG_PATH
     return CONFIG_PATH
-
-
-# ======================================================================== 消息
-class AppTile(Hoverable):
-    def __init__(self, kind: str, name: str, glyph: str, parent=None):
-        super().__init__(parent)
-        self.kind, self.name, self.glyph = kind, name, glyph
-        self.count = 0
-        self.last = ""
-        self.setFixedHeight(84)
-
-    def set_count(self, n: int, last: str = ""):
-        self.count, self.last = n, last
-        self.update()
-
-    def paintEvent(self, e):
-        p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        s = self.press_scale()
-        p.translate(r.center())
-        p.scale(s, s)
-        p.translate(-r.center())
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.card(1.0 + 0.6 * self._hover.x))
-        p.drawRoundedRect(r, 18, 18)
-        col = KIND_COLORS.get(self.kind, KIND_COLORS["other"])
-        cr = QtCore.QRectF(r.x() + 12, r.y() + 12, 30, 30)
-        p.setBrush(col)
-        p.drawEllipse(cr)
-        p.setFont(icon_font(14))
-        p.setPen(QtGui.QColor("white"))
-        p.drawText(cr, Qt.AlignmentFlag.AlignCenter, self.glyph)
-        p.setFont(ui_font(13, W.DemiBold))
-        p.setPen(theme.text())
-        p.drawText(QtCore.QRectF(cr.right() + 8, cr.y(), 120, 30), Qt.AlignmentFlag.AlignVCenter, self.name)
-        p.setFont(ui_font(22, W.Bold, num=True))
-        p.setPen(col if self.count else theme.text3())
-        p.drawText(QtCore.QRectF(r.x() + 14, r.y() + 46, r.width() - 28, 30), Qt.AlignmentFlag.AlignVCenter,
-                   str(self.count) if self.count else "0")
-        p.setFont(ui_font(11))
-        p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(r.x() + 14, r.y() + 46, r.width() - 26, 30),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                   self.last or "")
-
-
-class HistoryList(QtWidgets.QWidget, Themed):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.rows: list[dict] = []
-        self._hook_theme()
-
-    def set_rows(self, rows):
-        self.rows = rows[:30]
-        self.setFixedHeight(max(30, len(self.rows) * 30))
-        self.update()
-
-    def paintEvent(self, e):
-        p = painter(self)
-        if not self.rows:
-            p.setFont(ui_font(12))
-            p.setPen(theme.text3())
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无")
-            return
-        for i, r in enumerate(self.rows):
-            y = i * 30
-            col = KIND_COLORS.get(r.get("kind"), KIND_COLORS["other"])
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col)
-            p.drawEllipse(QtCore.QPointF(10, y + 15), 4, 4)
-            p.setFont(ui_font(12.5, W.Medium))
-            p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(24, y, 80, 30), Qt.AlignmentFlag.AlignVCenter, r.get("name", ""))
-            kind = r.get("kind")
-            desc = "新邮件" if kind == "mail" else (f"{r['sender']} 发来消息" if r.get("sender") else "新消息")
-            p.setFont(ui_font(12.5))
-            p.setPen(theme.text2())
-            p.drawText(QtCore.QRectF(100, y, self.width() - 170, 30), Qt.AlignmentFlag.AlignVCenter,
-                       QtGui.QFontMetrics(p.font()).elidedText(desc, Qt.TextElideMode.ElideRight, self.width() - 170))
-            p.setFont(ui_font(11.5, num=True))
-            p.setPen(theme.text3())
-            p.drawText(QtCore.QRectF(self.width() - 64, y, 60, 30), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                       time.strftime("%H:%M", time.localtime(r.get("time", 0))))
-
-
-class MessagesPage(Page):
-    key, glyph, title, height = "msg", G.MESSAGE, "消息", 285
-
-    def __init__(self, ctx):
-        super().__init__(ctx)
-        self.header = PageHeader(ctx, self)
-        self.header.add_left(Label("消息", 12, W.DemiBold, 2))
-        clear = IconButton(G.CHECK, 24, 11, "全部已读")
-        clear.clicked.connect(self._clear_all)
-        self.header.add_right(clear)
-
-        self.tiles = {
-            "qq": AppTile("qq", "QQ", G.CHAT),
-            "wechat": AppTile("wechat", "微信", G.MESSAGE),
-            "mail": AppTile("mail", "邮件", G.MAIL),
-        }
-        for k, t in self.tiles.items():
-            t.clicked.connect(lambda k=k: self._open(k))
-        self.hist = HistoryList()
-        sc = ScrollArea()
-        lay = QtWidgets.QVBoxLayout(sc.inner)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.hist)
-        lay.addStretch(1)
-        self.setLayout(vbox(self.header, hbox(*self.tiles.values(), spacing=8), (sc, 1), spacing=8))
-
-    def _open(self, kind):
-        self.ctx.notify.open(kind)
-        if self.island:
-            self.island.collapse()
-
-    def _clear_all(self):
-        for k in list(self.ctx.notify.counts):
-            self.ctx.notify.clear(k)
-
-    def refresh(self):
-        counts = self.ctx.notify.counts
-        hist = list(self.ctx.notify.history)
-        for k, t in self.tiles.items():
-            last = next((h for h in hist if h.get("kind") == k), None)
-            t.set_count(counts.get(k, 0), time.strftime("%H:%M", time.localtime(last["time"])) if last else "")
-        self.hist.set_rows(hist)
-
-    def on_show(self):
-        super().on_show()
-        self.header.refresh_clock()
-        self.refresh()

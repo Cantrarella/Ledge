@@ -142,7 +142,7 @@ class _ResponsiveRow(QtWidgets.QWidget):
 
 class MailAccountsSettingsPage(SettingsPage):
     key = "mail_accounts"
-    title = "邮件账号"
+    title = "邮件"
     glyph = G.MAIL
 
     def __init__(self, ctx=None, parent=None):
@@ -263,8 +263,8 @@ class MailAccountsSettingsPage(SettingsPage):
         self.sw_otp_enabled = Switch()
         self.sw_otp_enabled.toggled.connect(lambda *_: self.changed.emit())
         self.cmb_otp_hide = ComboBox(width=330)
-        self.cmb_otp_hide.addItem("30 秒", 30)
-        self.cmb_otp_hide.addItem("60 秒（默认）", 60)
+        self.cmb_otp_hide.addItem("60 秒", 60)
+        self.cmb_otp_hide.addItem("180 秒（默认）", 180)
         self.cmb_otp_hide.addItem("300 秒（5 分钟）", 300)
         self.cmb_otp_hide.currentIndexChanged.connect(lambda *_: self.changed.emit())
 
@@ -272,7 +272,7 @@ class MailAccountsSettingsPage(SettingsPage):
         self.sw_sync_seen.toggled.connect(lambda *_: self.changed.emit())
 
         self.row_otp_enabled = _ResponsiveRow("开启验证码识别", "从邮件标题、纯文本和 HTML 文本中自动识别验证码", self.sw_otp_enabled, self.prefs_card)
-        self.row_otp_hide = _ResponsiveRow("默认隐藏时长", "未识别到邮件声明有效期时使用此默认时长", self.cmb_otp_hide, self.prefs_card)
+        self.row_otp_hide = _ResponsiveRow("验证码停留时长", "左侧验证码预览区从展示起倒计时关闭的时间（一律直接显示）", self.cmb_otp_hide, self.prefs_card)
         self.row_sync_seen = _ResponsiveRow("同步已读状态到服务器", "默认关闭，仅在本机标记已读；开启后打开正文会回写服务器", self.sw_sync_seen, self.prefs_card)
 
         self.privacy_box = QtWidgets.QWidget(self.prefs_card)
@@ -790,7 +790,7 @@ class MailAccountsSettingsPage(SettingsPage):
                     loaded.append(acc)
         self._draft_accounts = loaded
         self.sw_otp_enabled.setChecked(bool(draft.get("mail.otp_enabled", True)))
-        hide_s = int(draft.get("mail.otp_hide_seconds", 60) or 60)
+        hide_s = int(draft.get("mail.otp_hide_seconds", 180) or 180)
         idx = self.cmb_otp_hide.findData(hide_s)
         self.cmb_otp_hide.setCurrentIndex(idx if idx >= 0 else 1)
         self.sw_sync_seen.setChecked(bool(draft.get("mail.sync_read_to_server", False)))
@@ -799,5 +799,5 @@ class MailAccountsSettingsPage(SettingsPage):
     def save_to_draft(self, draft: ConfigDraft):
         draft.set("mail.accounts", [a.to_config_dict() for a in self._draft_accounts])
         draft.set("mail.otp_enabled", bool(self.sw_otp_enabled.isChecked()))
-        draft.set("mail.otp_hide_seconds", int(self.cmb_otp_hide.currentData() or 60))
+        draft.set("mail.otp_hide_seconds", int(self.cmb_otp_hide.currentData() or 180))
         draft.set("mail.sync_read_to_server", bool(self.sw_sync_seen.isChecked()))

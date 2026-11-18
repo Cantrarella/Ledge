@@ -131,12 +131,6 @@ class SettingsWindow(QtWidgets.QWidget):
             DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft),
             AboutSettingsPage(ctx, self),
         ]
-        # 保持「常规」与「岛体与表情」中的主题和展开方式下拉框双向同步
-        gen_pg, isl_pg = self.pages[0], self.pages[1]
-        gen_pg.cb_theme.value_changed.connect(isl_pg.cb_theme.set_value)
-        isl_pg.cb_theme.value_changed.connect(gen_pg.cb_theme.set_value)
-        gen_pg.cb_expand.value_changed.connect(isl_pg.cb_expand.set_value)
-        isl_pg.cb_expand.value_changed.connect(gen_pg.cb_expand.set_value)
 
         self.nav_buttons: dict[str, _CategoryButton] = {}
         nav_items = [brand_box]

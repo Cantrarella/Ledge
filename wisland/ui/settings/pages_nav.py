@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""页面与导航设置页：对注册表中真实存在的页面（主页、消息、天气、实时字幕）进行拖拽/按键自由排序与显示开关控制。"""
+"""页面与导航设置页：对注册表中真实存在的页面（主页、邮箱、天气、实时字幕、工具、生活）进行拖拽/按键自由排序与显示开关控制。"""
 from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -14,7 +14,7 @@ Qt = QtCore.Qt
 # 真实已注册页面的默认元数据（当独立测试无 ctx.registry 时使用）
 _FALLBACK_META = [
     ("home", G.HOME, "主页"),
-    ("msg", G.MESSAGE, "消息"),
+    ("mail", G.MAIL, "邮箱"),
     ("weather", G.SUN, "天气"),
     ("trans", G.LIVE, "实时字幕"),
     ("tools", G.CLIP, "工具"),

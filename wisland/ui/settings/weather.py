@@ -19,9 +19,9 @@ class WeatherSettingsPage(SettingsPage):
         super().__init__(ctx, parent)
         self._cities: list[dict] = []
 
-        self.ed_city = LineEdit("例如：上海 / 北京 / 东京", width=200)
-        self.ed_api_key = PasswordEdit("粘贴 API Key（可选）", width=220)
-        self.sp_interval = SpinBox(1, 1440, 5, suffix=" 分钟", width=168)
+        self.ed_city = LineEdit("例如：上海 / 北京 / 东京", width=196)
+        self.ed_api_key = PasswordEdit("粘贴 API Key（可选）", width=196)
+        self.sp_interval = SpinBox(1, 1440, 5, suffix=" 分钟", width=196)
 
         self.btn_refresh = PillButton("立即刷新天气", G.REFRESH, height=30)
         self.btn_refresh.clicked.connect(self._on_refresh_now)

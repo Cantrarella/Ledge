@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6 import QtGui
 
 from ...core.config import ConfigDraft
-from ..theme import G, THEME_NAMES
+from ..theme import G
 from ..widgets import ComboBox, SpinBox, SettingRow, Switch
 from .base import SettingsPage
 
@@ -18,40 +18,31 @@ class IslandPetSettingsPage(SettingsPage):
     def __init__(self, ctx=None, parent=None):
         super().__init__(ctx, parent)
 
-        self.cb_theme = ComboBox(THEME_NAMES)
-        self.cb_expand = ComboBox([
-            ("hover", "悬停展开"),
-            ("always", "常驻展开"),
-            ("never", "长关（双击切换）"),
-        ])
         self.cb_edge = ComboBox([
             ("top", "顶部边缘"),
             ("bottom", "底部边缘"),
             ("left", "左侧边缘"),
             ("right", "右侧边缘"),
-        ])
-        self.sp_pos = SpinBox(0, 100, 5, suffix=" %")
-        self.cb_screen = ComboBox()
+        ], width=196)
+        self.sp_pos = SpinBox(0, 100, 5, suffix=" %", width=196)
+        self.cb_screen = ComboBox(width=196)
         self._populate_screens()
 
         self.cb_compact = ComboBox([
             ("clock", "时间与天气"),
             ("pet", "灵动小表情"),
             ("music", "音乐播放"),
-        ])
-        self.sp_cycle = SpinBox(0, 3600, 5, suffix=" 秒")
-        self.sp_hover_ms = SpinBox(0, 5000, 20, suffix=" ms")
-        self.sp_collapse_ms = SpinBox(0, 10000, 50, suffix=" ms")
-        self.sp_blur_fps = SpinBox(1, 60, 1, suffix=" FPS")
+        ], width=196)
+        self.sp_cycle = SpinBox(0, 3600, 5, suffix=" 秒", width=196)
+        self.sp_hover_ms = SpinBox(0, 5000, 20, suffix=" ms", width=196)
+        self.sp_collapse_ms = SpinBox(0, 10000, 50, suffix=" ms", width=196)
+        self.sp_blur_fps = SpinBox(1, 60, 1, suffix=" FPS", width=196)
 
         self.sw_media_auto = Switch()
         self.sw_media_lyrics = Switch()
         self.sw_netease_log = Switch()
 
         self.finish_layout(
-            self.section("外观主题与展开方式", "设置灵动岛毛玻璃主题色板与默认展开策略"),
-            SettingRow("主题", "跟随桌面背景亮度自动切换，或固定使用指定主题色板", self.cb_theme),
-            SettingRow("展开方式", "控制鼠标移入灵动岛时的展开策略（悬停展开 / 常驻展开 / 长关）", self.cb_expand),
             self.section("停靠与位置", "调整灵动岛吸附的显示器、屏幕边缘及沿边偏移（也可直接按住灵动岛拖拽）"),
             SettingRow("停靠屏幕边缘", "灵动岛默认贴附的屏幕边缘方向", self.cb_edge),
             SettingRow("沿边位置比例", "50% 为正中，0% 靠近左/上端，100% 靠近右/下端", self.sp_pos),
@@ -82,8 +73,6 @@ class IslandPetSettingsPage(SettingsPage):
 
     def load_from_draft(self, draft: ConfigDraft):
         self._populate_screens()
-        self.cb_theme.set_value(draft.get("island.theme", "auto"))
-        self.cb_expand.set_value(draft.get("island.expand_mode", "hover"))
         self.cb_edge.set_value(draft.get("island.edge", "top"))
         pos_frac = float(draft.get("island.pos", 0.5) or 0.5)
         self.sp_pos.setValue(round(pos_frac * 100))
@@ -98,10 +87,6 @@ class IslandPetSettingsPage(SettingsPage):
         self.sw_netease_log.setChecked(bool(draft.get("media.netease_log", True)))
 
     def save_to_draft(self, draft: ConfigDraft):
-        draft.set("island.theme", self.cb_theme.current_value() or "auto")
-        emode = self.cb_expand.current_value() or "hover"
-        draft.set("island.expand_mode", emode)
-        draft.set("island.pinned", emode == "always")
         draft.set("island.edge", self.cb_edge.current_value() or "top")
         draft.set("island.pos", round(self.sp_pos.value() / 100.0, 4))
         scr_val = self.cb_screen.current_value()

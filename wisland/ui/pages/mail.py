@@ -266,20 +266,8 @@ class _MailRow(Hoverable):
         p.setPen(theme.text3())
         p.drawText(time_r, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self.time_str)
 
-        # 可选验证码状态标签（有左侧预览卡时不显示"已隐藏"小标签）
+        # 单行列表不再显示"已隐藏"小标签
         right_limit = time_r.left() - 4.0
-        if self.has_otp and self.show_otp_badge:
-            otp_w = 34.0
-            otp_r = QtCore.QRectF(right_limit - otp_w, r.center().y() - 6.0, otp_w, 12.0)
-            otp_bg = QtGui.QColor(theme.on_color())
-            otp_bg.setAlphaF(0.18 if theme.dark else 0.14)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(otp_bg)
-            p.drawRoundedRect(otp_r, 4.0, 4.0)
-            p.setFont(ui_font(8.0, W.Medium))
-            p.setPen(theme.on_color() if not theme.dark else theme.text())
-            p.drawText(otp_r, Qt.AlignmentFlag.AlignCenter, "已隐藏")
-            right_limit = otp_r.left() - 4.0
 
         # 4. 发件人 & 5. 标题（窄列表按剩余宽度弹性分配，整宽保留 105/115px）
         unread = not self.hdr.is_read
@@ -309,8 +297,13 @@ class _MailRow(Hoverable):
                    fm_t.elidedText(subj_txt, Qt.TextElideMode.ElideRight, int(subj_w)))
 
 
+_OTP_PREVIEW_TTL_SECONDS = 180
+
+
 class _OtpPreviewCard(Hoverable):
-    """左侧验证码预览区：无背景/无描边，动态等宽、动态纵向分区，默认遮挡。"""
+    """左侧验证码预览区：无背景/无描边，动态等宽、动态纵向分区，直接明文显示并在 180s 后自动关闭。"""
+
+    expired = QtCore.Signal(object)  # (account_id, uid, code)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -321,9 +314,9 @@ class _OtpPreviewCard(Hoverable):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self._hdr: MailHeader | None = None
         self._info: VerificationCodeInfo | None = None
-        self._revealed: bool = False
+        self._token: tuple[str, str, str] | None = None
         self._copied: bool = False
-        self._remaining_s: int = 0
+        self._remaining_s: int = _OTP_PREVIEW_TTL_SECONDS
         self._reveal_deadline: float = 0.0
         self._hide_timer = QtCore.QTimer(self, interval=500, timeout=self._on_tick)
         self._copy_timer = QtCore.QTimer(self, singleShot=True, interval=1500, timeout=self._on_copy_done)
@@ -335,20 +328,23 @@ class _OtpPreviewCard(Hoverable):
             return None
         return (self._hdr.account_id, str(self._hdr.uid))
 
-    def set_target(self, hdr: MailHeader, info: VerificationCodeInfo):
-        new_key = (hdr.account_id, str(hdr.uid))
-        old_key = self.current_key()
-        same_target = (old_key == new_key and self._info is not None and self._info.code == info.code)
+    def set_target(self, hdr: MailHeader, info: VerificationCodeInfo, deadline: float | None = None):
+        new_token = (hdr.account_id, str(hdr.uid), info.code)
+        same_target = (self._token == new_token)
         self._hdr = hdr
         self._info = info
+        self._token = new_token
+        if deadline is not None:
+            self._reveal_deadline = float(deadline)
+        elif not same_target or self._reveal_deadline <= 0.0:
+            self._reveal_deadline = time.monotonic() + _OTP_PREVIEW_TTL_SECONDS
         if not same_target:
-            # 切换到另一封验证码邮件时，立即重置为遮挡状态并停止旧计时器
-            self._hide_timer.stop()
             self._copy_timer.stop()
-            self._revealed = False
             self._copied = False
-            self._remaining_s = 0
-            self._reveal_deadline = 0.0
+        rem = max(0, math.ceil(self._reveal_deadline - time.monotonic()))
+        self._remaining_s = rem
+        if rem > 0 and not self._hide_timer.isActive():
+            self._hide_timer.start()
         self.setToolTip(f"发件人：{hdr.sender}\n主题：{hdr.subject}")
         self.update()
 
@@ -357,7 +353,7 @@ class _OtpPreviewCard(Hoverable):
         self._copy_timer.stop()
         self._hdr = None
         self._info = None
-        self._revealed = False
+        self._token = None
         self._copied = False
         self._remaining_s = 0
         self._reveal_deadline = 0.0
@@ -365,13 +361,14 @@ class _OtpPreviewCard(Hoverable):
 
     def showEvent(self, e):
         super().showEvent(e)
-        if self._revealed and self._reveal_deadline > 0:
+        if self._info is not None and self._reveal_deadline > 0:
             rem = math.ceil(self._reveal_deadline - time.monotonic())
             if rem <= 0:
-                self._revealed = False
-                self._remaining_s = 0
-                self._reveal_deadline = 0.0
+                tok = self._token
                 self._hide_timer.stop()
+                self._remaining_s = 0
+                if tok is not None:
+                    self.expired.emit(tok)
             else:
                 self._remaining_s = rem
                 if not self._hide_timer.isActive():
@@ -387,35 +384,26 @@ class _OtpPreviewCard(Hoverable):
     def _on_clicked(self):
         if self._info is None:
             return
-        if not self._revealed:
-            self._revealed = True
-            self._copied = False
-            default_s = int(cfg.get("mail.otp_hide_seconds", 60) or 60)
-            ttl = max(1, int(self._info.ttl_seconds or default_s))
-            self._remaining_s = ttl
-            self._reveal_deadline = time.monotonic() + ttl
-            self._hide_timer.start()
-            self.update()
-        else:
-            cb = QtWidgets.QApplication.clipboard()
-            if cb is not None:
-                cb.setText(self._info.code)
-            self._copied = True
-            self._copy_timer.start()
-            self.update()
+        cb = QtWidgets.QApplication.clipboard()
+        if cb is not None:
+            cb.setText(self._info.code)
+        self._copied = True
+        self._copy_timer.start()
+        self.update()
 
     @QtCore.Slot()
     def _on_tick(self):
-        if not self._revealed:
+        if self._info is None:
             self._hide_timer.stop()
             return
         rem = math.ceil(self._reveal_deadline - time.monotonic()) if self._reveal_deadline > 0 else (self._remaining_s - 1)
         if rem <= 0:
+            tok = self._token
             self._hide_timer.stop()
-            self._revealed = False
             self._remaining_s = 0
-            self._reveal_deadline = 0.0
             self.update()
+            if tok is not None:
+                self.expired.emit(tok)
         elif rem != self._remaining_s:
             self._remaining_s = rem
             self.update()
@@ -475,8 +463,8 @@ class _OtpPreviewCard(Hoverable):
                    fm_snd.elidedText(_sender_display_name(self._hdr.sender),
                                      Qt.TextElideMode.ElideRight, int(snd_w)))
 
-        # 2. 第二层：绿色大号验证码（从约 25px 开始按实际宽度自动缩小，绝不溢出）
-        code_text = self._info.code if self._revealed else "••••••"
+        # 2. 第二层：绿色大号验证码（直接明文显示，从约 25px 开始按实际宽度自动缩小，绝不溢出）
+        code_text = self._info.code
         px = 25.0
         f_code = ui_font(px, W.Bold, num=True)
         while px > 13.0:
@@ -510,12 +498,9 @@ class _OtpPreviewCard(Hoverable):
         if self._copied:
             hint_txt = "已复制"
             hint_col = theme.down()
-        elif self._revealed:
+        else:
             hint_txt = f"点击复制 · {self._remaining_s}s"
             hint_col = theme.down()
-        else:
-            hint_txt = "点击显示"
-            hint_col = theme.text3()
         f_hint = ui_font(10.0, W.Normal, num=True)
         p.setFont(f_hint)
         p.setPen(hint_col)
@@ -595,16 +580,14 @@ class MailPage(Page):
         self._rows: list[_MailRow] = []
         self._last_rows_sig: tuple | None = None
         self._last_otp_enabled: bool = bool(cfg.get("mail.otp_enabled", True))
+        self._otp_deadlines: dict[tuple[str, str, str], float] = {}
+        self._expired_otp_tokens: set[tuple[str, str, str]] = set()
 
         # 详情态状态
         self._detail_hdr: MailHeader | None = None
         self._detail_req_id: str = ""
         self._detail_scroll_pos: dict[tuple[str, str], int] = {}
         self._otp_info: VerificationCodeInfo | None = None
-        self._otp_revealed: bool = False
-        self._otp_auto_hidden: bool = False
-        self._otp_remaining_s: int = 0
-        self._otp_timer = QtCore.QTimer(self, interval=1000, timeout=self._on_otp_tick)
         self._copy_tip_timer = QtCore.QTimer(self, singleShot=True, interval=1500, timeout=self._restore_otp_hint)
 
         self.mode_stack = QtWidgets.QStackedWidget(self)
@@ -668,6 +651,7 @@ class MailPage(Page):
         self.toolbar_wrap.setLayout(toolbar)
 
         self.otp_preview_card = _OtpPreviewCard(self.list_view)
+        self.otp_preview_card.expired.connect(self._on_otp_preview_expired)
         self.otp_preview_card.hide()
 
         self.right_pane = QtWidgets.QWidget(self.list_view)
@@ -737,17 +721,13 @@ class MailPage(Page):
         self.lbl_detail_meta = Label("", 9.5, W.Normal, 3, num=True, parent=self.detail_view)
         self.lbl_detail_meta.setContentsMargins(2, 0, 2, 0)
 
-        # 验证码区域（仅识别到验证码时显示）
+        # 验证码区域（仅识别到验证码时显示，一律直接明文显示）
         self.otp_card = Card(self.detail_view, radius=8, alpha=0.75)
         self.otp_card.setFixedHeight(24)
         self.lbl_otp_tag = Label("验证码", 10, W.DemiBold, 2, parent=self.otp_card)
-        self.btn_otp_toggle = _CompactChip("已隐藏", parent=self.otp_card, active=False, max_w=120)
-        self.btn_otp_toggle.setToolTip("点击一次显示，再点一次复制")
+        self.btn_otp_toggle = _CompactChip("", parent=self.otp_card, active=True, max_w=120)
+        self.btn_otp_toggle.setToolTip("点击复制验证码")
         self.btn_otp_toggle.clicked.connect(self._on_otp_chip_clicked)
-
-        self.btn_otp_show = _CompactChip("显示", parent=self.otp_card, active=False)
-        self.btn_otp_show.setToolTip("显示验证码")
-        self.btn_otp_show.clicked.connect(self._reveal_otp)
 
         self.btn_otp_copy = _CompactChip("复制", parent=self.otp_card, active=False)
         self.btn_otp_copy.setToolTip("直接一键复制验证码")
@@ -759,7 +739,6 @@ class MailPage(Page):
                 self.lbl_otp_tag,
                 self.btn_otp_toggle,
                 (self.lbl_otp_hint, 1),
-                self.btn_otp_show,
                 self.btn_otp_copy,
                 spacing=5,
                 margins=(6, 0, 6, 0),
@@ -1047,7 +1026,7 @@ class MailPage(Page):
         if mgr is not None and self._detail_req_id:
             mgr.cancel_task(self._detail_req_id)
         self._detail_req_id = ""
-        self._stop_otp_timer(mark_hidden=False)
+        self._copy_tip_timer.stop()
         if self._detail_hdr is not None:
             # 清除滚动位置记录，保证返回后重新打开回到顶部
             self._detail_scroll_pos.pop((self._detail_hdr.account_id, str(self._detail_hdr.uid)), None)
@@ -1133,48 +1112,23 @@ class MailPage(Page):
         )
         if info is None:
             self._otp_info = None
-            self._stop_otp_timer(mark_hidden=False)
             self.otp_card.hide()
             return
         self._otp_info = info
-        if reset_hidden:
-            self._otp_revealed = False
-            self._otp_auto_hidden = False
-            self._otp_timer.stop()
         self._sync_otp_ui()
         self.otp_card.show()
 
     def _sync_otp_ui(self):
         if self._otp_info is None:
             return
-        if self._otp_revealed:
-            self.btn_otp_toggle.set_text(self._otp_info.code)
-            self.btn_otp_toggle.set_active(True)
-            self.btn_otp_show.hide()
-            self.lbl_otp_hint.setText(f"{self._otp_remaining_s}s 后隐藏")
-        else:
-            self.btn_otp_toggle.set_text("已隐藏")
-            self.btn_otp_toggle.set_active(False)
-            self.btn_otp_show.show()
-            self.lbl_otp_hint.setText("不代表验证码失效" if self._otp_auto_hidden else "")
-
-    def _reveal_otp(self):
-        if self._otp_info is None or self._otp_revealed:
-            return
-        self._otp_revealed = True
-        self._otp_auto_hidden = False
-        default_s = int(cfg.get("mail.otp_hide_seconds", 60) or 60)
-        self._otp_remaining_s = int(self._otp_info.ttl_seconds or default_s)
-        self._otp_timer.start()
-        self._sync_otp_ui()
+        self.btn_otp_toggle.set_text(self._otp_info.code)
+        self.btn_otp_toggle.set_active(True)
+        self.lbl_otp_hint.setText("")
 
     def _on_otp_chip_clicked(self):
         if self._otp_info is None:
             return
-        if not self._otp_revealed:
-            self._reveal_otp()
-        else:
-            self.copy_current_otp()
+        self.copy_current_otp()
 
     def copy_current_otp(self):
         if self._otp_info is None:
@@ -1190,23 +1144,12 @@ class MailPage(Page):
         if self._otp_info is not None:
             self._sync_otp_ui()
 
-    @QtCore.Slot()
-    def _on_otp_tick(self):
-        if not self._otp_revealed:
-            self._otp_timer.stop()
-            return
-        self._otp_remaining_s -= 1
-        if self._otp_remaining_s <= 0:
-            self._stop_otp_timer(mark_hidden=True)
-        else:
-            self._sync_otp_ui()
-
-    def _stop_otp_timer(self, mark_hidden: bool):
-        self._otp_timer.stop()
-        self._otp_revealed = False
-        if mark_hidden:
-            self._otp_auto_hidden = True
-        self._sync_otp_ui()
+    @QtCore.Slot(object)
+    def _on_otp_preview_expired(self, token):
+        if token is not None:
+            self._expired_otp_tokens.add(token)
+            self._otp_deadlines.pop(token, None)
+        self.refresh()
 
     # ================================================================ 列表刷新
     def refresh(self):
@@ -1260,23 +1203,38 @@ class MailPage(Page):
         otp_on = bool(cfg.get("mail.otp_enabled", True))
         latest_otp_hdr: MailHeader | None = None
         latest_otp_info: VerificationCodeInfo | None = None
+        latest_otp_deadline: float | None = None
         if otp_on and mgr is not None:
+            now_m = time.monotonic()
             for h in shown_hdrs:
                 info = mgr.get_verification_code(h.account_id, h.uid, h.subject, h.uid_validity)
                 if info is not None:
+                    tok = (h.account_id, str(h.uid), info.code)
+                    if tok in self._expired_otp_tokens:
+                        break
+                    dl = self._otp_deadlines.get(tok)
+                    if dl is None:
+                        ttl_s = max(30, int(cfg.get("mail.otp_hide_seconds", _OTP_PREVIEW_TTL_SECONDS) or _OTP_PREVIEW_TTL_SECONDS))
+                        dl = now_m + ttl_s
+                        self._otp_deadlines[tok] = dl
+                    if dl <= now_m:
+                        self._expired_otp_tokens.add(tok)
+                        self._otp_deadlines.pop(tok, None)
+                        break
                     latest_otp_hdr = h
                     latest_otp_info = info
+                    latest_otp_deadline = dl
                     break
 
-        has_preview_card = (latest_otp_hdr is not None and latest_otp_info is not None)
+        has_preview_card = (latest_otp_hdr is not None and latest_otp_info is not None and latest_otp_deadline is not None)
         if has_preview_card:
-            self.otp_preview_card.set_target(latest_otp_hdr, latest_otp_info)
+            self.otp_preview_card.set_target(latest_otp_hdr, latest_otp_info, deadline=latest_otp_deadline)
             self.otp_preview_card.show()
         else:
             self.otp_preview_card.clear_and_stop()
             self.otp_preview_card.hide()
 
-        self._rebuild_rows(shown_hdrs, acc_map, acc_index, show_otp_badge=not has_preview_card)
+        self._rebuild_rows(shown_hdrs, acc_map, acc_index, show_otp_badge=False)
         self.stack.setCurrentIndex(2)
 
     def _clear_rows(self):
@@ -1319,37 +1277,35 @@ class MailPage(Page):
         if new_sig == self._last_rows_sig:
             return
 
-        self.scroll.setUpdatesEnabled(False)
-        try:
-            self._clear_rows()
-            self._last_rows_sig = new_sig
-            for h, item_sig in zip(hdrs, sig_items):
-                acc = acc_map.get(h.account_id)
-                idx = acc_index.get(h.account_id, -1)
-                col = _account_color(h.account_id, idx)
-                selected = self._selected_key == (h.account_id, str(h.uid))
-                has_otp = item_sig[7]
-                row = _MailRow(
-                    h,
-                    acc,
-                    col,
-                    show_badge=show_badge,
-                    has_otp=has_otp,
-                    show_otp_badge=show_otp_badge,
-                    selected=selected,
-                    parent=self.scroll.inner,
-                )
-                row.row_clicked.connect(self._on_row_clicked)
-                self._rows.append(row)
-                self.scroll_lay.addWidget(row)
-            self.scroll_lay.addStretch(1)
-            self.scroll.inner.adjustSize()
-            self.scroll.clamp_scroll()
-        finally:
-            self.scroll.setUpdatesEnabled(True)
+        self._clear_rows()
+        self._last_rows_sig = new_sig
+        for h, item_sig in zip(hdrs, sig_items):
+            acc = acc_map.get(h.account_id)
+            idx = acc_index.get(h.account_id, -1)
+            col = _account_color(h.account_id, idx)
+            selected = self._selected_key == (h.account_id, str(h.uid))
+            has_otp = item_sig[7]
+            row = _MailRow(
+                h,
+                acc,
+                col,
+                show_badge=show_badge,
+                has_otp=has_otp,
+                show_otp_badge=show_otp_badge,
+                selected=selected,
+                parent=self.scroll.inner,
+            )
+            row.row_clicked.connect(self._on_row_clicked)
+            self._rows.append(row)
+            self.scroll_lay.addWidget(row)
+            row.show()
+        self.scroll_lay.addStretch(1)
+        self.scroll_lay.activate()
+        self.scroll.inner.updateGeometry()
+        self.scroll.clamp_scroll()
+        self.scroll.viewport().update()
 
     def closeEvent(self, e):
         self.otp_preview_card.clear_and_stop()
-        self._otp_timer.stop()
         self._copy_tip_timer.stop()
         super().closeEvent(e)

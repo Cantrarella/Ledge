@@ -17,17 +17,17 @@ class GeneralSettingsPage(SettingsPage):
         super().__init__(ctx, parent)
         self._autostart_init = False
 
-        self.cb_theme = ComboBox(THEME_NAMES, width=188)
+        self.cb_theme = ComboBox(THEME_NAMES, width=196)
         self.sw_autostart = Switch()
         self.cb_expand = ComboBox([
             ("hover", "悬停自动展开"),
             ("always", "常驻保持展开"),
             ("never", "长关（双击切换）"),
-        ], width=188)
+        ], width=196)
         self.sw_passthrough = Switch()
         self.sw_capture = Switch()
         self.sw_fullscreen = Switch()
-        self.ed_hotkey = LineEdit("例如 Ctrl+Alt+I（留空禁用）", width=188)
+        self.ed_hotkey = LineEdit("例如 Ctrl+Alt+I（留空禁用）", width=196)
 
         self.row_hotkey = self.register_row(
             "hotkeys.toggle",

@@ -21,10 +21,9 @@ DATA_DIR.mkdir(exist_ok=True)
 DEFAULTS: dict = {
     "schema_version": 2,
     "pages": {
-        "order": ["home", "msg", "mail", "weather", "trans", "tools", "life"],
+        "order": ["home", "mail", "weather", "trans", "tools", "life"],
         "visible": {
             "home": True,
-            "msg": True,
             "mail": True,
             "weather": True,
             "trans": True,
@@ -133,7 +132,7 @@ DEFAULTS: dict = {
         "interval_s": 120,
         "sync_read_to_server": False,
         "otp_enabled": True,
-        "otp_hide_seconds": 60,
+        "otp_hide_seconds": 180,
         # IMAP 账户（首次运行自动从 Thunderbird 读取服务器和用户名）；填入授权码 / 应用专用密码后才会检查
         "imap": [],
         # 多账号邮件元数据（凭据仅存 Windows 凭据管理器，这里只保存 credential_key 引用）
@@ -155,7 +154,7 @@ VALID_THEMES = ("auto", "light", "dark", "rouge", "sky")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
-REGISTERED_PAGE_KEYS = ("home", "msg", "mail", "weather", "trans", "tools", "life")
+REGISTERED_PAGE_KEYS = ("home", "mail", "weather", "trans", "tools", "life")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
 
@@ -235,9 +234,9 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
         if isinstance(raw_order, list):
             seen: list[str] = []
             for k in raw_order:
-                if isinstance(k, str) and k not in seen:
+                if isinstance(k, str) and k != "msg" and k not in seen:
                     seen.append(k)
-            pgs["order"] = seen
+            pgs["order"] = seen or list(DEFAULTS["pages"]["order"])
 
         raw_vis = pgs.get("visible")
         if not isinstance(raw_vis, dict):
@@ -248,6 +247,7 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
         if isinstance(raw_vis, dict):
             raw_user_vis = (raw.get("pages") or {}).get("visible") if isinstance(raw.get("pages"), dict) else None
             vis_out = copy.deepcopy(raw_user_vis) if isinstance(raw_user_vis, dict) else copy.deepcopy(raw_vis)
+            vis_out.pop("msg", None)
             for k, v in list(vis_out.items()):
                 if not isinstance(v, bool):
                     _err(f"pages.visible.{k} 必须是布尔值")
@@ -404,11 +404,11 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
             ml["interval_s"] = int(m_iv)
         ml["sync_read_to_server"] = bool(ml.get("sync_read_to_server", False))
         ml["otp_enabled"] = bool(ml.get("otp_enabled", True))
-        hide_s = ml.get("otp_hide_seconds", 60)
-        if isinstance(hide_s, bool) or not isinstance(hide_s, (int, float)) or int(hide_s) not in (30, 60, 300):
-            _err(f"验证码默认隐藏时长需为 30 / 60 / 300 秒: {hide_s}")
+        hide_s = ml.get("otp_hide_seconds", 180)
+        if isinstance(hide_s, bool) or not isinstance(hide_s, (int, float)) or int(hide_s) not in (30, 60, 180, 300):
+            _err(f"验证码停留时长需为 60 / 180 / 300 秒: {hide_s}")
             if not strict:
-                ml["otp_hide_seconds"] = 60
+                ml["otp_hide_seconds"] = 180
         else:
             ml["otp_hide_seconds"] = int(hide_s)
         raw_accs = ml.get("accounts", [])

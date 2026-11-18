@@ -119,7 +119,8 @@ def test_01_registry_dimensions_and_empty_states(qt_app, tmp_path):
     ctx = _make_dummy_ctx(mgr, opened)
 
     reg = PageRegistry.create_default(ctx)
-    assert reg.get_entry("msg") is not None
+    assert reg.get_entry("msg") is None
+    assert list(reg.pages_dict().keys()) == ["home", "mail", "weather", "trans", "tools", "life"]
     entry = reg.get_entry("mail")
     assert entry is not None
 
@@ -537,30 +538,27 @@ def test_06_read_sync_policy_and_otp_lifecycle(qt_app, tmp_path):
         pg.resize(395, 236)
         pg.show()
         qt_app.processEvents()
-        assert pg.otp_preview_card.isVisibleTo(pg)  # 列表中出现大验证码预览卡，且默认遮罩隐藏
-        assert pg.otp_preview_card._revealed is False
+        assert pg.otp_preview_card.isVisibleTo(pg)  # 列表中出现大验证码预览卡，直接明文显示
+        assert pg.otp_preview_card._info.code == "739104"
+        assert 1 <= pg.otp_preview_card._remaining_s <= 180
 
         pg.open_detail(hdr1)
         assert _wait_until(qt_app, lambda: pg.body_stack.currentIndex() == 2)
         assert hdr1.is_read is True
         assert store_calls == []  # 未开启同步，绝不修改服务器
 
-        # 验证码：默认隐藏（且无重复"已隐藏"） -> 点一次显示 -> 再点一次复制 -> 定时器到期自动隐藏且提示"不代表验证码失效"
+        # 验证码：详情页一律直接明文显示，点击即可复制，且返回列表后不隐藏、不重置
         assert pg.otp_card.isVisibleTo(pg)
-        assert pg._otp_revealed is False
-        assert pg.btn_otp_toggle._text == "已隐藏"
+        assert pg.btn_otp_toggle._text == "739104"
         assert pg.lbl_otp_hint.text() == ""
         pg.btn_otp_toggle.clicked.emit()
-        assert pg._otp_revealed is True
-        assert pg.btn_otp_toggle._text == "739104"
-        pg.btn_otp_toggle.clicked.emit()
         assert QtWidgets.QApplication.clipboard().text() == "739104"
+        assert pg.lbl_otp_hint.text() == "已复制"
 
-        pg._otp_remaining_s = 1
-        pg._on_otp_tick()
-        assert pg._otp_revealed is False
-        assert pg.btn_otp_toggle._text == "已隐藏"
-        assert "不代表验证码失效" in pg.lbl_otp_hint.text()
+        pg.close_detail()
+        qt_app.processEvents()
+        assert pg.otp_preview_card.isVisibleTo(pg)
+        assert pg.otp_preview_card._info.code == "739104"
 
         # 开启服务器同步并模拟远程失败：保留本机已读 + 提示失败
         cm.set("mail.sync_read_to_server", True)
@@ -591,7 +589,7 @@ def test_07_settings_otp_and_sync_preferences(qt_app, tmp_path):
     pg.load_from_draft(draft)
 
     assert pg.sw_otp_enabled.isChecked() is True
-    assert pg.cmb_otp_hide.currentData() == 60
+    assert pg.cmb_otp_hide.currentData() == 180
     assert pg.sw_sync_seen.isChecked() is False
     assert "仅在本机处理" in pg.lbl_privacy_body.text()
 
@@ -686,7 +684,7 @@ def test_08_prefetch_5_plus_15_disk_cache_and_uidvalidity(qt_app, tmp_path):
     assert pg.body_stack.currentIndex() == 2  # 直接显示正文，不经过加载页 0
     assert "654321" in pg.body_edit.toPlainText()
     assert pg.otp_card.isVisibleTo(pg)
-    assert pg.btn_otp_toggle._text == "已隐藏"
+    assert pg.btn_otp_toggle._text == "654321"
     pg.close()
 
     # 再次刷新（UIDVALIDITY 未变）：不重新下载已有正文
@@ -924,50 +922,67 @@ def test_10_otp_preview_card_layout_interaction_and_filtering(qt_app, tmp_path):
     assert ev.isAccepted()
     assert sb.value() > 0
 
-    # 5) 默认遮挡，一次点击显示，再点一次复制，且绝不打开邮件详情；超时重新遮挡
-    assert pg.otp_preview_card._revealed is False
-    pg.otp_preview_card.clicked.emit()
-    assert pg.otp_preview_card._revealed is True
-    assert pg.mode_stack.currentIndex() == 0
-
+    # 5) 一律直接明文显示，点击即复制，且绝不打开邮件详情；倒计时 180s 到期后自动关闭左侧区并恢复整宽
+    assert 1 <= pg.otp_preview_card._remaining_s <= 180
     pg.otp_preview_card.clicked.emit()
     assert QtWidgets.QApplication.clipboard().text() == "998877"
     assert pg.otp_preview_card._copied is True
     assert pg.mode_stack.currentIndex() == 0
 
-    # 模拟灵动岛收起再展开后倒计时继续减少，且到期后重新遮挡
-    pg.otp_preview_card._reveal_deadline = time.monotonic() + 25.0
+    # 模拟灵动岛收起再展开后倒计时继续减少，不重置为 180s
+    tok_10 = ("a2", "10", "998877")
+    pg._otp_deadlines[tok_10] = time.monotonic() + 25.0
+    pg.otp_preview_card._reveal_deadline = pg._otp_deadlines[tok_10]
     pg.hide()
     qt_app.processEvents()
     assert not pg.otp_preview_card._hide_timer.isActive()
     pg.show()
     qt_app.processEvents()
-    assert pg.otp_preview_card._revealed is True
     assert pg.otp_preview_card._remaining_s <= 25
     assert pg.otp_preview_card._hide_timer.isActive()
 
-    pg.otp_preview_card._reveal_deadline = time.monotonic() - 0.1
-    pg.otp_preview_card._on_tick()
-    assert pg.otp_preview_card._revealed is False
-
-    # 6) 切换未读筛选：uid 10 已读被过滤掉，预览卡自动切换到未读的 112233 并重置遮挡态
-    pg.otp_preview_card.clicked.emit()
-    assert pg.otp_preview_card._revealed is True
+    # 6) 切换未读筛选：uid 10 已读被过滤掉，预览卡自动切换到未读的 112233（同样直接显示并分配 180s）
     pg.set_filter_mode("unread")
     qt_app.processEvents()
     assert pg.otp_preview_card.isVisibleTo(pg)
     assert pg.otp_preview_card.current_key() == ("a2", "11")
     assert pg.otp_preview_card._info.code == "112233"
-    assert pg.otp_preview_card._revealed is False
+    assert 1 <= pg.otp_preview_card._remaining_s <= 180
 
-    # 7) 切换到无验证码的账号 a1：左侧预览卡完全隐藏，计时器停止，右侧列表恢复整宽
+    # 模拟 180s 到期：自动关闭左侧预览卡，右侧恢复整宽，且刷新/切换后不再重新弹出同一封已过期验证码
+    tok_11 = ("a2", "11", "112233")
+    pg._otp_deadlines[tok_11] = time.monotonic() - 0.1
+    pg.otp_preview_card._reveal_deadline = pg._otp_deadlines[tok_11]
+    pg.otp_preview_card._on_tick()
+    qt_app.processEvents()
+    assert not pg.otp_preview_card.isVisibleTo(pg)
+    assert pg.right_pane.width() == 395
+    assert all(r.isVisibleTo(pg) for r in pg._rows)
+
+    pg.refresh()
+    qt_app.processEvents()
+    assert not pg.otp_preview_card.isVisibleTo(pg)
+
+    # 7) 收到新的验证码邮件后：重新出现左侧预览卡，且右侧列表行全部可见
+    mgr._headers["a2"].insert(
+        0,
+        MailHeader(uid="12", account_id="a2", sender="WorkBuddy", subject="Your verification code: 429954", received_at=now + 5, is_read=False),
+    )
+    mgr.headers_updated.emit("a2", mgr._headers["a2"])
+    qt_app.processEvents()
+    assert pg.otp_preview_card.isVisibleTo(pg)
+    assert pg.otp_preview_card._info.code == "429954"
+    assert len(pg._rows) >= 2
+    assert all(r.isVisibleTo(pg) and r.height() == 17 for r in pg._rows)
+
+    # 8) 切换到无验证码的账号 a1：左侧预览卡完全隐藏，计时器停止，右侧列表恢复整宽
     pg.set_filter_mode("all")
     pg.set_account_filter("a1")
     qt_app.processEvents()
     assert not pg.otp_preview_card.isVisibleTo(pg)
     assert not pg.otp_preview_card._hide_timer.isActive()
     assert pg.right_pane.width() == 395
-    assert all(isinstance(r, _MailRow) for r in pg._rows)
+    assert all(isinstance(r, _MailRow) and r.isVisibleTo(pg) for r in pg._rows)
     pg.close()
     mgr.shutdown()
 

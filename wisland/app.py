@@ -259,8 +259,6 @@ def main():
     def on_notified(n):
         compact.pet.react("surprise")
         P["home"].pet.face.react("surprise")
-        if P["msg"].active:
-            P["msg"].refresh()
 
     def on_banner_changed(ev):
         if ev is None:
@@ -286,8 +284,6 @@ def main():
 
     def on_counts(c):
         compact.badges = dict(c)
-        if P["msg"].active:
-            P["msg"].refresh()
         island._kick()
     ctx.notify.notified.connect(on_notified)
     ctx.notify.banner_changed.connect(on_banner_changed)

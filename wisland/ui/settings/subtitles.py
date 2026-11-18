@@ -19,18 +19,18 @@ class SubtitlesSettingsPage(SettingsPage):
         self.cb_source = ComboBox([
             ("loopback", "系统声音内录 (Loopback)"),
             ("mic", "麦克风输入 (Mic)"),
-        ], width=200)
-        self.ed_device = LineEdit("留空使用系统默认设备", width=200)
+        ], width=196)
+        self.ed_device = LineEdit("留空使用系统默认设备", width=196)
 
         self.sw_tr_enabled = Switch()
         self.sw_tr_live = Switch()
 
-        self.ed_base_url = LineEdit("https://api.deepseek.com", width=220)
-        self.ed_model = LineEdit("deepseek-chat / deepseek-flash", width=200)
-        self.ed_api_key = PasswordEdit("粘贴 API Key（可选）", width=220)
+        self.ed_base_url = LineEdit("https://api.deepseek.com", width=196)
+        self.ed_model = LineEdit("deepseek-chat / deepseek-flash", width=196)
+        self.ed_api_key = PasswordEdit("粘贴 API Key（可选）", width=196)
 
-        self.sp_vad_th = DoubleSpinBox(0.05, 0.95, 0.05, decimals=2, width=168)
-        self.sp_max_seg = SpinBox(2, 60, 1, suffix=" 秒", width=168)
+        self.sp_vad_th = DoubleSpinBox(0.05, 0.95, 0.05, decimals=2, width=196)
+        self.sp_max_seg = SpinBox(2, 60, 1, suffix=" 秒", width=196)
 
         self.finish_layout(
             self.section("音频采集与语音检测", "配置实时字幕监听的声音来源与断句灵敏度（重启字幕后生效）"),
