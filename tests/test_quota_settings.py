@@ -105,8 +105,7 @@ def test_02_quota_cards_status_theme_and_no_horizontal_scroll(qt_app, tmp_path):
 
     acc_ok = QuotaAccount(id="ds_ok", provider=Provider.DEEPSEEK.value, alias="DS主力", identity="deepseek-key:111")
     acc_err = QuotaAccount(id="ds_err", provider=Provider.DEEPSEEK.value, alias="DS失效", identity="deepseek-key:222", last_error="API Key 无效")
-    acc_wb = QuotaAccount(id="wb_1", provider=Provider.WORKBUDDY.value, alias="WB占位", identity="wb")
-    cm.set("quota.accounts", [acc_ok.to_config_dict(), acc_err.to_config_dict(), acc_wb.to_config_dict()])
+    cm.set("quota.accounts", [acc_ok.to_config_dict(), acc_err.to_config_dict()])
     mgr.load_from_config()
     mgr._snapshots["ds_ok"] = QuotaSnapshot(
         account_id="ds_ok",
@@ -129,26 +128,50 @@ def test_02_quota_cards_status_theme_and_no_horizontal_scroll(qt_app, tmp_path):
     qt_app.processEvents()
 
     quota_pg: QuotaSettingsPage = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
-    assert len(quota_pg._cards) == 3
+    assert len(quota_pg._cards) == 2
     cards_by_id = {c.acc.id: c for c in quota_pg._cards}
 
-    # 1) DeepSeek 正常卡：显示余额，不显示无意义的“重新连接”
+    # 1) 默认折叠显示摘要/状态胶囊与“详情”按钮；点击“详情”展开后显示“移除”“监控”“常驻岛上”“刷新”“重新连接”
     c_ok: _QuotaAccountCard = cards_by_id["ds_ok"]
+    assert not c_ok.expanded
+    assert c_ok.btn_toggle_detail.text == "详情"
+    assert "66.60" in c_ok.lbl_summary.text()
+
+    quota_pg._toggle_card_expanded("ds_ok")
+    quota_pg._toggle_card_expanded("ds_err")
+    qt_app.processEvents()
+    cards_by_id = {c.acc.id: c for c in quota_pg._cards}
+    c_ok = cards_by_id["ds_ok"]
+    c_err = cards_by_id["ds_err"]
+
+    assert c_ok.expanded and c_ok.btn_toggle_detail.text == "收起"
     assert "66.60" in c_ok.lbl_main_bal.text()
-    assert not c_ok.btn_reconnect.isVisible()
+    assert c_ok.btn_remove.isVisible()
+    assert c_ok.btn_reconnect.isVisible()
     assert c_ok.btn_refresh.isEnabled()
 
-    # 2) 错误卡：显示“重试”和“重新连接”
-    c_err: _QuotaAccountCard = cards_by_id["ds_err"]
+    # 2) 错误卡：显示“重试”、“重新连接”与“移除”
     assert c_err.btn_refresh.text == "重试"
     assert c_err.btn_reconnect.isVisible()
+    assert c_err.btn_remove.isVisible()
 
-    # 3) 未接入服务商：显示“连接器待接入”，且添加表单选中时禁用确认按钮
-    c_wb: _QuotaAccountCard = cards_by_id["wb_1"]
-    assert c_wb.status_pill.label_text == "连接器待接入"
-    quota_pg.open_add_form(Provider.GEMINI.value)
-    assert not quota_pg.btn_test_save.isEnabled()
-    assert quota_pg.btn_test_save.text == "下一阶段接入"
+    # 行内改名直接生效并标记脏状态
+    c_ok.ed_alias_inline.setText("DS新名字")
+    c_ok._on_inline_alias_edited()
+    assert c_ok.acc.alias == "DS新名字"
+    assert "DS新名字" in c_ok.lbl_alias.text()
+
+    # 3) 五个服务商均已完成接入闭环，添加下拉只显示已实现服务商
+    combo_values = [quota_pg.cmb_provider.itemData(i) for i in range(quota_pg.cmb_provider.count())]
+    assert combo_values == [
+        Provider.DEEPSEEK.value,
+        Provider.WORKBUDDY.value,
+        Provider.GEMINI.value,
+        Provider.GROK_BOT.value,
+        Provider.CODEX.value,
+    ]
+    quota_pg.open_add_form(Provider.DEEPSEEK.value)
+    assert quota_pg.btn_test_save.text == "测试并保存"
     quota_pg.close_add_form()
 
     # 4) 颜色菜单不常驻展开（卡片中不存在常驻颜色下拉/色板控件）
@@ -267,3 +290,218 @@ def test_05_open_instance_focuses_quota_reconnect_account(qt_app, tmp_path, monk
         win.close()
         SettingsWindow._instance = None
         mgr.stop()
+
+
+
+def test_06_account_card_hides_identity_source_and_credential_fingerprints(qt_app, tmp_path):
+    cm, _creds, _cache, mgr, _cfg_path = _make_quota_env(tmp_path)
+    accounts = [
+        QuotaAccount(id="a1", provider=Provider.DEEPSEEK.value, alias="DS主力", identity="deepseek-key:abc123", source="https://api.deepseek.com"),
+        QuotaAccount(id="a2", provider=Provider.WORKBUDDY.value, alias="WB主力", identity="wb:slot999", source="https://www.codebuddy.cn"),
+        QuotaAccount(id="a3", provider=Provider.GEMINI.value, alias="GM主力", identity="gemini:hash888", source="https://gemini.google.com/usage"),
+        QuotaAccount(id="a4", provider=Provider.CODEX.value, alias="CX主力", identity="generic-key:codex1", source="C:/auth.json"),
+    ]
+    cm.set("quota.accounts", [a.to_config_dict() for a in accounts])
+    mgr.load_from_config()
+
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    win.switch_category("quota")
+    qt_app.processEvents()
+
+    quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    for narrow in (False, True):
+        quota_pg._narrow_mode = narrow
+        quota_pg._rebuild_account_cards()
+        qt_app.processEvents()
+        assert len(quota_pg._cards) == 4
+        for card in quota_pg._cards:
+            assert not hasattr(card, "lbl_source")
+            texts: list[str] = []
+            for w in card.findChildren(QtWidgets.QWidget):
+                if hasattr(w, "text") and callable(w.text):
+                    t = str(w.text() or "")
+                    if t:
+                        texts.append(t)
+                elif hasattr(w, "_text") and isinstance(w._text, str):
+                    texts.append(w._text)
+                if w.toolTip():
+                    texts.append(w.toolTip())
+            joined = "\n".join(texts).lower()
+            for forbidden in ("key:", "wb:", "gemini:", "deepseek-key:", "credential"):
+                assert forbidden not in joined
+            assert card.status_pill.isVisibleTo(card)
+
+    win.close()
+    mgr.stop()
+
+
+def test_07_gemini_workbuddy_save_consistency_6kb_and_credwrite_failure(qt_app, tmp_path):
+    cm = Config(path=tmp_path / "config.json")
+    creds = InMemoryQuotaCredentialStore()
+    cache = LocalQuotaCache(cache_path=tmp_path / "quota_cache.json")
+
+    def _opener(req, timeout=10):
+        if "gemini.google.com" in req.full_url:
+            body = [
+                {
+                    "data": {
+                        "viewer": {
+                            "rpcs": {
+                                "getUsageInfo": {
+                                    "subscriptionTier": "TIER1",
+                                    "pools": [
+                                        {"poolType": "GXU_FIVE_HOURLY", "percentageUsed": 0.2},
+                                        {"poolType": "GXU_WEEKLY", "percentageUsed": 0.1},
+                                    ],
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+            return _FakeResp(200, json.dumps(body).encode("utf-8"))
+        return _FakeResp(
+            200,
+            json.dumps({
+                "code": 0,
+                "data": {"Packages": [{"PackageCode": "p1", "CycleRemainCapacity": 239.59}]},
+            }).encode("utf-8"),
+        )
+
+    mgr = QuotaManager(config_obj=cm, cred_store=creds, cache=cache, http_opener=_opener)
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    win.switch_category("quota")
+    quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+
+    # 1) Gemini 测试连接成功 -> 保存 -> 立即 read_secret 完全一致
+    big_cookie = "SID=sid-secret-value; __Secure-1PSID=" + ("a" * 6200)
+    quota_pg.open_add_form(Provider.GEMINI.value)
+    quota_pg.ed_email.setText("user@example.com")
+    quota_pg.ed_api_key.setText(big_cookie)
+    quota_pg._on_submit_add_form()
+    assert _wait_until(qt_app, lambda: len(quota_pg._draft_accounts) == 1)
+
+    gm_acc = quota_pg._draft_accounts[0]
+    expected_gm_json = quota_pg._pending_secrets[gm_acc.id]
+    assert len(expected_gm_json.encode("utf-8")) > 6000
+    assert win.save_settings() is True
+    assert creds.read_secret(gm_acc.credential_key) == expected_gm_json
+
+    # 2) 模拟 CredWriteW 失败：追加 WorkBuddy 6KB+ 会话，保存必须失败且保留 _pending_secrets
+    wb_big_sess = json.dumps({
+        "origin": "https://www.codebuddy.cn",
+        "auth": {"accessToken": "wb-tok-" + ("b" * 6200), "refreshToken": "wb-ref-1", "uid": "wb-u1"},
+        "slot": "slot-wb-1",
+    })
+    wb_acc = QuotaAccount(
+        id="wb_6kb",
+        provider=Provider.WORKBUDDY.value,
+        alias="WB大凭据",
+        identity="wb:slot-wb-1",
+        credential_key=f"Wisland/quota/wb_6kb",
+    )
+    quota_pg._draft_accounts.append(wb_acc)
+    quota_pg._pending_secrets[wb_acc.id] = wb_big_sess
+    quota_pg._draft_snapshots[wb_acc.id] = QuotaSnapshot(account_id=wb_acc.id, status=AccountStatus.OK.value, credits=239.59)
+
+    orig_save = creds.save_secret
+
+    def _fail_cred(target, username, secret):
+        creds.last_error = 5
+        creds.last_error_message = "WinError 5: 拒绝访问"
+        return False
+
+    creds.save_secret = _fail_cred  # type: ignore[method-assign]
+    assert win.save_settings() is False
+    assert "保存失败" in win.status_lbl.text()
+    assert "会话凭据保存失败，未写入系统凭据管理器" in win.status_lbl.text()
+    assert "已保存并生效" not in win.status_lbl.text()
+    assert wb_acc.id in quota_pg._pending_secrets
+    creds.save_secret = orig_save  # type: ignore[method-assign]
+
+    # 恢复后保存成功
+    assert win.save_settings() is True
+    assert creds.read_secret(wb_acc.credential_key) == wb_big_sess
+
+    # config.json 与 quota_cache.json 不得包含 Cookie / accessToken / refreshToken
+    cfg_raw = (tmp_path / "config.json").read_text(encoding="utf-8")
+    cache_raw = (tmp_path / "quota_cache.json").read_text(encoding="utf-8")
+    for sensitive in ("sid-secret-value", "wb-tok-", "wb-ref-1", "a" * 100, "b" * 100):
+        assert sensitive not in cfg_raw
+        assert sensitive not in cache_raw
+
+    win.close()
+    mgr.stop()
+
+    # 3) 重启 QuotaManager 后，Gemini 与 WorkBuddy 均能读到保存的会话并刷新
+    cm2 = Config(path=tmp_path / "config.json")
+    cache2 = LocalQuotaCache(cache_path=tmp_path / "quota_cache.json")
+    mgr2 = QuotaManager(config_obj=cm2, cred_store=creds, cache=cache2, http_opener=_opener)
+    assert mgr2.refresh_account(gm_acc.id) is True
+    assert mgr2.refresh_account(wb_acc.id) is True
+    assert _wait_until(qt_app, lambda: not mgr2.is_refreshing())
+    assert mgr2.get_snapshot(gm_acc.id).status == AccountStatus.OK.value
+    assert mgr2.get_snapshot(wb_acc.id).status == AccountStatus.OK.value
+    assert mgr2.get_snapshot(wb_acc.id).credits == 239.59
+    mgr2.stop()
+
+
+
+def test_08_save_settings_no_race_and_gemini_browser_connect(qt_app, tmp_path, monkeypatch):
+    from wisland.services.quota.adapters import gemini as gm_mod
+
+    cm = Config(path=tmp_path / "config.json")
+    creds = InMemoryQuotaCredentialStore()
+    cache = LocalQuotaCache(cache_path=tmp_path / "quota_cache.json")
+    mgr = QuotaManager(config_obj=cm, cred_store=creds, cache=cache)
+
+    # 1) 模拟监听 accounts_changed 时立刻刷新：在 save_settings 过程中绝不能在凭据写入前读到 None
+    seen_errors: list[str] = []
+
+    def _on_acc_changed():
+        for a in mgr.list_accounts():
+            sec = creds.read_secret(a.credential_key)
+            if sec is None:
+                seen_errors.append("missing_secret_during_signal")
+
+    mgr.accounts_changed.connect(_on_acc_changed)
+
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    win.switch_category("quota")
+    quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+
+    # 2) Gemini 浏览器自动登录模式（不填 Cookie 时触发 connect_gemini_browser）
+    def _fake_browser_connect(account_id: str, expected_email: str = "", cancel_event=None, http_opener=None, timeout_s=300.0):
+        sess = {"email": "auto@gmail.com", "cookie": "SID=auto-browser-sid"}
+        snap = QuotaSnapshot(
+            account_id=account_id,
+            fetched_at=time.time(),
+            status=AccountStatus.OK.value,
+            plan_name="AI Pro",
+        )
+        return True, "", sess, snap
+
+    monkeypatch.setattr(gm_mod, "connect_gemini_browser", _fake_browser_connect)
+    # 同步替换 manager 中已导入的引用
+    import wisland.services.quota.manager as mgr_mod
+    monkeypatch.setattr(mgr_mod, "connect_gemini_browser", _fake_browser_connect)
+
+    quota_pg.open_add_form(Provider.GEMINI.value)
+    assert quota_pg.btn_test_save.text == "浏览器登录 Gemini"
+    assert quota_pg.row_form_secret.isHidden()
+    quota_pg._on_submit_add_form()
+    assert _wait_until(qt_app, lambda: len(quota_pg._draft_accounts) == 1)
+
+    assert win.save_settings() is True
+    assert seen_errors == []
+    gm_acc = quota_pg._draft_accounts[0]
+    assert json.loads(creds.read_secret(gm_acc.credential_key) or "{}") == {
+        "email": "auto@gmail.com",
+        "cookie": "SID=auto-browser-sid",
+    }
+
+    win.close()
+    mgr.stop()

@@ -400,6 +400,9 @@ class WheelScrollArea(QtWidgets.QScrollArea):
 
     def wheelEvent(self, e):
         sb = self.horizontalScrollBar() if self.orientation == "horizontal" else self.verticalScrollBar()
+        if sb.maximum() <= sb.minimum():
+            e.ignore()
+            return
         px = e.pixelDelta()
         ang = e.angleDelta()
         if self.orientation == "horizontal":
@@ -411,10 +414,14 @@ class WheelScrollArea(QtWidgets.QScrollArea):
             delta = px.y()
             if delta == 0 and ang.y():
                 delta = int(round(ang.y() * 0.45))
-        if delta and sb.maximum() > sb.minimum():
-            sb.setValue(max(sb.minimum(), min(sb.maximum(), sb.value() - delta)))
-        # 无论是否已到顶部/底部或无余量，内部滚动区一律消费滚轮，绝不触发岛体翻页
-        e.accept()
+        if delta:
+            current = sb.value()
+            target = max(sb.minimum(), min(sb.maximum(), current - delta))
+            if target != current:
+                sb.setValue(target)
+                e.accept()
+                return
+        e.ignore()
 
 
 class ScrollArea(WheelScrollArea):

@@ -167,12 +167,19 @@ class PageRegistry:
         return sorted(self._entries.values(), key=lambda e: (e.order, self._reg_order.index(e.key)))
 
     def visible_entries(self) -> list[PageEntry]:
-        """按 order 返回所有可见的已注册页面项（至少包含一个页面）。"""
-        vis = [e for e in self.all_entries() if e.visible]
+        """按 order 返回所有可见的已注册页面项（含页面自身动态显隐判断，至少包含一个页面）。"""
+        vis = [
+            e for e in self.all_entries()
+            if e.visible and (not hasattr(e.page, "should_show") or bool(e.page.should_show()))
+        ]
         if not vis and self._entries:
             all_e = self.all_entries()
-            all_e[0].visible = True
-            return [all_e[0]]
+            fallback = next(
+                (e for e in all_e if not hasattr(e.page, "should_show") or bool(e.page.should_show())),
+                all_e[0],
+            )
+            fallback.visible = True
+            return [fallback]
         return vis
 
     def visible_pages(self) -> list[Page]:

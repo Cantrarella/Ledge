@@ -263,7 +263,9 @@ class SettingsWindow(QtWidgets.QWidget):
         self.collect_to_draft()
         gen_pg = self.pages[0]
         auto_dirty = gen_pg.autostart_dirty() if isinstance(gen_pg, GeneralSettingsPage) else False
-        return (self.draft.to_dict() != self._baseline_dict) or auto_dirty
+        quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+        quota_pending = quota_pg.has_pending_changes() if quota_pg is not None else False
+        return (self.draft.to_dict() != self._baseline_dict) or auto_dirty or quota_pending
 
     def _on_any_page_changed(self):
         if self._loading or self._saving:
@@ -342,18 +344,30 @@ class SettingsWindow(QtWidgets.QWidget):
                     self.switch_category("quota")
                     return False
 
-            ok, errors = self.cfg_obj.commit_draft(self.draft, strict=True)
-            if not ok:
-                err_msg = errors[0] if errors else "配置校验未通过"
-                self._route_field_errors(errors)
-                self.status_lbl.set_color(theme.up())
-                self.status_lbl.setText(f"保存失败：{err_msg}")
-                return False
+            quota_mgr = getattr(quota_pg, "_mgr", None) if quota_pg is not None else None
+            if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
+                quota_mgr.set_commit_sync_suppressed(True)
+            try:
+                ok, errors = self.cfg_obj.commit_draft(self.draft, strict=True)
+                if not ok:
+                    err_msg = errors[0] if errors else "配置校验未通过"
+                    self._route_field_errors(errors)
+                    self.status_lbl.set_color(theme.up())
+                    self.status_lbl.setText(f"保存失败：{err_msg}")
+                    return False
 
-            if mail_pg is not None:
-                mail_pg.finalize_commit()
-            if quota_pg is not None:
-                quota_pg.finalize_commit()
+                if mail_pg is not None:
+                    mail_pg.finalize_commit()
+                if quota_pg is not None:
+                    fin_ok, fin_err = quota_pg.finalize_commit()
+                    if not fin_ok:
+                        self.status_lbl.set_color(theme.up())
+                        self.status_lbl.setText(f"保存失败：{fin_err or '会话凭据保存失败，未写入系统凭据管理器'}")
+                        self.switch_category("quota")
+                        return False
+            finally:
+                if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
+                    quota_mgr.set_commit_sync_suppressed(False)
 
             for pg in self.pages:
                 pg.clear_errors()

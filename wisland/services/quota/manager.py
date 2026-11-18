@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import json
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -11,7 +13,21 @@ from pathlib import Path
 from PySide6 import QtCore
 
 from ...core.config import cfg as global_cfg
+from .adapters.codex import codex_identity_for_path, fetch_codex_usage, read_codex_auth
 from .adapters.deepseek import DEEPSEEK_BALANCE_URL, DEFAULT_TIMEOUT_S, fetch_deepseek_balance
+from .adapters.gemini import (
+    connect_gemini_browser,
+    fetch_gemini_usage,
+    gemini_identity,
+    validate_gemini_cookie,
+    validate_gemini_email,
+)
+from .adapters.grok_bot import connect_grok_browser, fetch_grok_usage
+from .adapters.workbuddy import (
+    WORKBUDDY_ORIGIN,
+    connect_workbuddy_interactive,
+    fetch_workbuddy_quota,
+)
 from .cache import LocalQuotaCache
 from .credentials import (
     WindowsQuotaCredentialStore,
@@ -63,6 +79,9 @@ class QuotaManager(QtCore.QObject):
         self._refreshing_ids: set[str] = set()
         self._rate_limit_until: dict[str, float] = {}
         self._active_futures: dict[str, concurrent.futures.Future] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._pending_updated_secrets: dict[str, str] = {}
+        self._suppress_config_sync = False
         self._stopping = False
         self._started = False
 
@@ -153,8 +172,13 @@ class QuotaManager(QtCore.QObject):
     def _save_accounts_to_config(self):
         self._cfg.set("quota.accounts", [a.to_config_dict() for a in self._accounts])
 
+    def set_commit_sync_suppressed(self, suppressed: bool):
+        self._suppress_config_sync = bool(suppressed)
+
     @QtCore.Slot()
     def _on_config_changed(self):
+        if self._suppress_config_sync:
+            return
         self.load_from_config()
         self._sync_auto_timer()
         self.accounts_changed.emit()
@@ -162,6 +186,43 @@ class QuotaManager(QtCore.QObject):
     # ---------------- 账号查询与管理 ----------------
     def list_accounts(self) -> list[QuotaAccount]:
         return [copy.deepcopy(a) for a in self._accounts]
+
+    def is_account_connected(self, acc: QuotaAccount) -> bool:
+        """判断账号是否为已连接的真实可用账号（排除未实现服务商、禁用账号及从未连接的伪账号）。"""
+        if not isinstance(acc, QuotaAccount):
+            return False
+        if not is_provider_implemented(acc.provider) or not acc.enabled:
+            return False
+        if not str(acc.credential_key or "").strip():
+            return False
+        snap = self._snapshots.get(acc.id)
+        if snap is not None and snap.status == AccountStatus.UNSUPPORTED.value:
+            return False
+        if acc.id in self._refreshing_ids:
+            return True
+        if snap is not None and (
+            snap.has_valid_data()
+            or snap.status in (
+                AccountStatus.OK.value,
+                AccountStatus.STALE.value,
+                AccountStatus.AUTH_ERROR.value,
+                AccountStatus.NETWORK_ERROR.value,
+                AccountStatus.RATE_LIMITED.value,
+                AccountStatus.PARSE_ERROR.value,
+            )
+        ):
+            return True
+        if (acc.last_test_at or 0.0) > 0 or (acc.last_refresh_at or 0.0) > 0:
+            return True
+        return False
+
+    def list_connected_accounts(self) -> list[QuotaAccount]:
+        """返回所有已连接且已实现服务商的启用账号（置顶优先，保留原有配置顺序）。"""
+        connected = [copy.deepcopy(a) for a in self._accounts if self.is_account_connected(a)]
+        return sorted(connected, key=lambda a: (0 if a.pinned else 1))
+
+    def has_connected_accounts(self) -> bool:
+        return any(self.is_account_connected(a) for a in self._accounts)
 
     def get_account(self, account_id: str) -> QuotaAccount | None:
         for a in self._accounts:
@@ -229,11 +290,17 @@ class QuotaManager(QtCore.QObject):
         self._accounts = [a for a in self._accounts if a.id != acc_id]
         self.accounts_changed.emit()
 
+    def cancel_test(self, req_id: str):
+        """取消正在进行的连接测试并标记丢弃晚到结果。"""
+        ev = self._cancel_events.pop(str(req_id or ""), None)
+        if ev is not None:
+            ev.set()
+
     # ---------------- 异步测试与添加 ----------------
     def test_account_async(
         self,
         provider: str,
-        secret: str,
+        secret: str = "",
         alias: str = "",
         source: str = "",
         account_id: str = "",
@@ -246,20 +313,282 @@ class QuotaManager(QtCore.QObject):
         if not is_valid_provider(prov):
             return False, f"不支持的服务商：{provider}", ""
         if not is_provider_implemented(prov):
-            return False, "连接器将在下一阶段接入", ""
-        clean_secret = str(secret or "").strip()
-        if not clean_secret:
-            return False, "API Key 不能为空", ""
+            return False, "连接器尚未接入", ""
 
         spec = get_provider(prov)
         src = str(source or spec.default_source).strip() or spec.default_source
+        req_id = f"qtest-{uuid.uuid4().hex[:10]}"
+        acc_id = str(account_id or uuid.uuid4().hex).strip()
+        cancel_ev = threading.Event()
+        self._cancel_events[req_id] = cancel_ev
+
+        if prov == Provider.GROK_BOT.value:
+            def _worker_grok():
+                ok, err, slot_id, sess, snap, email_hint = connect_grok_browser(
+                    account_id=acc_id,
+                    cancel_event=cancel_ev,
+                    http_opener=self._http_opener,
+                )
+                if cancel_ev.is_set() or self._stopping:
+                    return
+                ident = f"grok:{slot_id}" if slot_id else ""
+                if ok and not account_id and self.has_duplicate(
+                    prov, ident, "https://api2.cursor.sh", exclude_id=account_id, extra_accounts=check_duplicate_in
+                ):
+                    ok = False
+                    err = f"该 {spec.name} 账号已存在，请勿重复添加"
+                now_ts = time.time()
+                default_alias = f"{spec.name} · {email_hint}" if email_hint else spec.name
+                cand_acc = QuotaAccount(
+                    id=acc_id,
+                    provider=prov,
+                    alias=str(alias or "").strip() or default_alias,
+                    identity=ident,
+                    source="https://api2.cursor.sh",
+                    credential_key=make_quota_credential_key(acc_id),
+                    enabled=True,
+                    pinned=False,
+                    color=spec.default_color,
+                    created_at=now_ts,
+                    last_test_at=now_ts,
+                    last_refresh_at=now_ts if ok else 0.0,
+                    last_error=err,
+                )
+                sec_str = json.dumps(sess, ensure_ascii=False) if (ok and sess) else ""
+                payload = {"account": cand_acc, "snapshot": snap, "secret": sec_str}
+                if not cancel_ev.is_set() and not self._stopping:
+                    self._internal_test_done.emit(req_id, ok, err, payload)
+
+            fut = self._executor.submit(_worker_grok)
+            self._active_futures[req_id] = fut
+            return True, "", req_id
+
+        if prov == Provider.GEMINI.value:
+            # 支持两种模式：
+            # 1) secret 为空 -> 拉起独立临时 Edge/Chrome 浏览器窗口自动提取邮箱与 Cookie
+            # 2) secret 非空 -> 支持手动传入 JSON {"email": ..., "cookie": ...} 或 source=邮箱、secret=Cookie
+            raw_sec = str(secret or "").strip()
+            if not raw_sec:
+                expected_email = str(source or "").strip()
+                if expected_email:
+                    ok_e, email_or_err = validate_gemini_email(expected_email)
+                    if not ok_e:
+                        self._cancel_events.pop(req_id, None)
+                        return False, email_or_err, ""
+                    expected_email = email_or_err
+
+                def _worker_gemini_browser():
+                    ok, err, sess, snap = connect_gemini_browser(
+                        account_id=acc_id,
+                        expected_email=expected_email,
+                        cancel_event=cancel_ev,
+                        http_opener=self._http_opener,
+                    )
+                    if cancel_ev.is_set() or self._stopping:
+                        return
+                    sess_email = str((sess or {}).get("email") or expected_email or "").strip()
+                    ident = gemini_identity(sess_email) if sess_email else ""
+                    if ok and not account_id and ident and self.has_duplicate(
+                        prov, ident, "https://gemini.google.com/usage", exclude_id=account_id, extra_accounts=check_duplicate_in
+                    ):
+                        ok = False
+                        err = f"该 {spec.name} 账号已存在，请勿重复添加"
+                    now_ts = time.time()
+                    cand_acc = QuotaAccount(
+                        id=acc_id,
+                        provider=prov,
+                        alias=str(alias or "").strip() or (f"{spec.name} · {sess_email}" if sess_email else spec.name),
+                        identity=ident,
+                        source="https://gemini.google.com/usage",
+                        credential_key=make_quota_credential_key(acc_id),
+                        enabled=True,
+                        pinned=False,
+                        color=spec.default_color,
+                        created_at=now_ts,
+                        last_test_at=now_ts,
+                        last_refresh_at=now_ts if ok else 0.0,
+                        last_error=err,
+                    )
+                    sec_str = json.dumps(sess, ensure_ascii=False) if (ok and sess) else ""
+                    payload = {"account": cand_acc, "snapshot": snap, "secret": sec_str}
+                    if not cancel_ev.is_set() and not self._stopping:
+                        self._internal_test_done.emit(req_id, ok, err, payload)
+
+                fut = self._executor.submit(_worker_gemini_browser)
+                self._active_futures[req_id] = fut
+                return True, "", req_id
+
+            sess_email = ""
+            sess_cookie = ""
+            if raw_sec.startswith("{"):
+                try:
+                    parsed = json.loads(raw_sec)
+                    sess_email = str(parsed.get("email") or "").strip()
+                    sess_cookie = str(parsed.get("cookie") or "").strip()
+                except Exception:
+                    pass
+            else:
+                sess_email = str(source or "").strip()
+                sess_cookie = raw_sec
+
+            ok_e, email_or_err = validate_gemini_email(sess_email)
+            if not ok_e:
+                self._cancel_events.pop(req_id, None)
+                return False, email_or_err, ""
+            ok_c, cookie_or_err = validate_gemini_cookie(sess_cookie)
+            if not ok_c:
+                self._cancel_events.pop(req_id, None)
+                return False, cookie_or_err, ""
+
+            ident = gemini_identity(email_or_err)
+            if self.has_duplicate(prov, ident, "https://gemini.google.com/usage", exclude_id=account_id, extra_accounts=check_duplicate_in):
+                self._cancel_events.pop(req_id, None)
+                return False, f"该 {spec.name} 账号已存在，请勿重复添加", ""
+
+            sess_json = json.dumps({"email": email_or_err, "cookie": cookie_or_err}, ensure_ascii=False)
+
+            def _worker_gemini():
+                snap = fetch_gemini_usage(
+                    account_id=acc_id,
+                    secret_json=sess_json,
+                    http_opener=self._http_opener,
+                )
+                if cancel_ev.is_set() or self._stopping:
+                    return
+                ok = snap.status == AccountStatus.OK.value
+                err = "" if ok else (snap.last_error or "Gemini 连接测试失败")
+                now_ts = time.time()
+                cand_acc = QuotaAccount(
+                    id=acc_id,
+                    provider=prov,
+                    alias=str(alias or "").strip() or f"{spec.name} · {email_or_err}",
+                    identity=ident,
+                    source="https://gemini.google.com/usage",
+                    credential_key=make_quota_credential_key(acc_id),
+                    enabled=True,
+                    pinned=False,
+                    color=spec.default_color,
+                    created_at=now_ts,
+                    last_test_at=now_ts,
+                    last_refresh_at=now_ts if ok else 0.0,
+                    last_error=err,
+                )
+                payload = {"account": cand_acc, "snapshot": snap, "secret": sess_json}
+                if not cancel_ev.is_set() and not self._stopping:
+                    self._internal_test_done.emit(req_id, ok, err, payload)
+
+            fut = self._executor.submit(_worker_gemini)
+            self._active_futures[req_id] = fut
+            return True, "", req_id
+
+        if prov == Provider.CODEX.value:
+            def _worker_codex():
+                custom_path = Path(source) if source and Path(source).is_file() else None
+                ok, err, auth_dict, resolved_path = read_codex_auth(custom_path)
+                snap = None
+                ident = ""
+                src_str = str(resolved_path) if resolved_path else src
+                if ok and auth_dict is not None and resolved_path is not None:
+                    ident = codex_identity_for_path(resolved_path, auth_dict.get("account_id", ""))
+                    if not account_id and self.has_duplicate(
+                        prov, ident, src_str, exclude_id=account_id, extra_accounts=check_duplicate_in
+                    ):
+                        ok = False
+                        err = f"该 {spec.name} 账号已存在，请勿重复添加"
+                    else:
+                        snap, _ = fetch_codex_usage(
+                            account_id=acc_id,
+                            secret_json=json.dumps(auth_dict),
+                            source_path=src_str,
+                            http_opener=self._http_opener,
+                        )
+                        ok = snap.status == AccountStatus.OK.value
+                        err = "" if ok else (snap.last_error or "Codex 连接测试失败")
+                if cancel_ev.is_set() or self._stopping:
+                    return
+                now_ts = time.time()
+                cand_acc = QuotaAccount(
+                    id=acc_id,
+                    provider=prov,
+                    alias=str(alias or "").strip() or f"{spec.name} · 本机",
+                    identity=ident,
+                    source=src_str,
+                    credential_key=make_quota_credential_key(acc_id),
+                    enabled=True,
+                    pinned=False,
+                    color=spec.default_color,
+                    created_at=now_ts,
+                    last_test_at=now_ts,
+                    last_refresh_at=now_ts if ok else 0.0,
+                    last_error=err,
+                )
+                sec_str = json.dumps(auth_dict, ensure_ascii=False) if (ok and auth_dict) else ""
+                payload = {"account": cand_acc, "snapshot": snap, "secret": sec_str}
+                if not cancel_ev.is_set() and not self._stopping:
+                    self._internal_test_done.emit(req_id, ok, err, payload)
+
+            fut = self._executor.submit(_worker_codex)
+            self._active_futures[req_id] = fut
+            return True, "", req_id
+
+        if prov == Provider.WORKBUDDY.value:
+            expected_slot = ""
+            if account_id:
+                old_acc = self.get_account(account_id)
+                if old_acc and old_acc.identity.startswith("wb:"):
+                    expected_slot = old_acc.identity[3:]
+
+            def _worker_wb():
+                ok, err, slot_id, sess, snap = connect_workbuddy_interactive(
+                    account_id=acc_id,
+                    expected_slot=expected_slot,
+                    cancel_event=cancel_ev,
+                    http_opener=self._http_opener,
+                )
+                if cancel_ev.is_set() or self._stopping:
+                    return
+                ident = f"wb:{slot_id}" if slot_id else ""
+                if ok and not account_id and self.has_duplicate(
+                    prov, ident, WORKBUDDY_ORIGIN, exclude_id=account_id, extra_accounts=check_duplicate_in
+                ):
+                    ok = False
+                    err = f"该 {spec.name} 账号已存在，请勿重复添加"
+                now_ts = time.time()
+                cand_acc = QuotaAccount(
+                    id=acc_id,
+                    provider=prov,
+                    alias=str(alias or "").strip() or spec.name,
+                    identity=ident,
+                    source=WORKBUDDY_ORIGIN,
+                    credential_key=make_quota_credential_key(acc_id),
+                    enabled=True,
+                    pinned=False,
+                    color=spec.default_color,
+                    created_at=now_ts,
+                    last_test_at=now_ts,
+                    last_refresh_at=now_ts if ok else 0.0,
+                    last_error=err,
+                )
+                sec_str = json.dumps(sess, ensure_ascii=False) if (ok and sess) else ""
+                payload = {"account": cand_acc, "snapshot": snap, "secret": sec_str}
+                if not cancel_ev.is_set() and not self._stopping:
+                    self._internal_test_done.emit(req_id, ok, err, payload)
+
+            fut = self._executor.submit(_worker_wb)
+            self._active_futures[req_id] = fut
+            return True, "", req_id
+
+        clean_secret = str(secret or "").strip()
+        if not clean_secret:
+            self._cancel_events.pop(req_id, None)
+            return False, "API Key 不能为空", ""
+
         ident = derive_secret_identity(prov, clean_secret)
 
         if self.has_duplicate(prov, ident, src, exclude_id=account_id, extra_accounts=check_duplicate_in):
+            self._cancel_events.pop(req_id, None)
             return False, f"该 {spec.name} 账号已存在，请勿重复添加", ""
 
-        req_id = f"qtest-{uuid.uuid4().hex[:10]}"
-        acc_id = str(account_id or uuid.uuid4().hex).strip()
         url = src if src.startswith("http") else DEEPSEEK_BALANCE_URL
 
         def _worker():
@@ -270,6 +599,8 @@ class QuotaManager(QtCore.QObject):
                 timeout_s=DEFAULT_TIMEOUT_S,
                 http_opener=self._http_opener,
             )
+            if cancel_ev.is_set() or self._stopping:
+                return
             ok = snap.status == AccountStatus.OK.value
             err = "" if ok else (snap.last_error or "连接测试失败")
             now_ts = time.time()
@@ -289,7 +620,7 @@ class QuotaManager(QtCore.QObject):
                 last_error=err,
             )
             payload = {"account": cand_acc, "snapshot": snap, "secret": clean_secret}
-            if not self._stopping:
+            if not cancel_ev.is_set() and not self._stopping:
                 self._internal_test_done.emit(req_id, ok, err, payload)
 
         fut = self._executor.submit(_worker)
@@ -387,10 +718,81 @@ class QuotaManager(QtCore.QObject):
 
         cred_key = acc.credential_key or make_quota_credential_key(acc.id)
         src_url = acc.source if acc.source.startswith("http") else DEEPSEEK_BALANCE_URL
+        prov = acc.provider
+        wb_slot = acc.identity[3:] if acc.identity.startswith("wb:") else ""
 
         def _worker():
-            secret = self._creds.read_secret(cred_key) or ""
-            if not secret.strip():
+            raw_secret = self._creds.read_secret(cred_key)
+            if prov in (Provider.GEMINI.value, Provider.WORKBUDDY.value):
+                if raw_secret is None:
+                    snap = QuotaSnapshot(
+                        account_id=acc_id,
+                        fetched_at=time.time(),
+                        status=AccountStatus.AUTH_ERROR.value,
+                        last_error="未找到已保存的会话凭据，请重新保存",
+                    )
+                    if not self._stopping:
+                        self._internal_refresh_done.emit(acc_id, snap)
+                    return
+                if not raw_secret.strip():
+                    snap = QuotaSnapshot(
+                        account_id=acc_id,
+                        fetched_at=time.time(),
+                        status=AccountStatus.AUTH_ERROR.value,
+                        last_error="保存的会话凭据损坏，请重新连接",
+                    )
+                    if not self._stopping:
+                        self._internal_refresh_done.emit(acc_id, snap)
+                    return
+                try:
+                    parsed_sess = json.loads(raw_secret)
+                except Exception:
+                    parsed_sess = None
+                if not isinstance(parsed_sess, dict):
+                    snap = QuotaSnapshot(
+                        account_id=acc_id,
+                        fetched_at=time.time(),
+                        status=AccountStatus.AUTH_ERROR.value,
+                        last_error="保存的会话凭据损坏，请重新连接",
+                    )
+                    if not self._stopping:
+                        self._internal_refresh_done.emit(acc_id, snap)
+                    return
+
+            secret = raw_secret or ""
+            if prov == Provider.GROK_BOT.value:
+                snap, updated_sess = fetch_grok_usage(
+                    account_id=acc_id,
+                    secret_json=secret,
+                    http_opener=self._http_opener,
+                )
+                if updated_sess is not None:
+                    self._pending_updated_secrets[acc_id] = json.dumps(updated_sess, ensure_ascii=False)
+            elif prov == Provider.GEMINI.value:
+                snap = fetch_gemini_usage(
+                    account_id=acc_id,
+                    secret_json=secret,
+                    http_opener=self._http_opener,
+                )
+            elif prov == Provider.CODEX.value:
+                snap, updated_auth = fetch_codex_usage(
+                    account_id=acc_id,
+                    secret_json=secret,
+                    source_path=acc.source,
+                    http_opener=self._http_opener,
+                )
+                if updated_auth is not None:
+                    self._pending_updated_secrets[acc_id] = json.dumps(updated_auth, ensure_ascii=False)
+            elif prov == Provider.WORKBUDDY.value:
+                snap, updated_sess = fetch_workbuddy_quota(
+                    account_id=acc_id,
+                    secret_json=secret,
+                    expected_slot=wb_slot,
+                    http_opener=self._http_opener,
+                )
+                if updated_sess is not None:
+                    self._pending_updated_secrets[acc_id] = json.dumps(updated_sess, ensure_ascii=False)
+            elif not secret.strip():
                 snap = QuotaSnapshot(
                     account_id=acc_id,
                     fetched_at=time.time(),
@@ -432,9 +834,42 @@ class QuotaManager(QtCore.QObject):
             self.all_refreshing_changed.emit(False)
 
         acc = next((a for a in self._accounts if a.id == account_id), None)
+        updated_sec = self._pending_updated_secrets.pop(account_id, None)
+        cred_save_failed = False
+        cred_err_detail = ""
+        if updated_sec and acc is not None:
+            cred_key = acc.credential_key or make_quota_credential_key(acc.id)
+            if not self._creds.save_secret(cred_key, acc.identity or acc.id, updated_sec):
+                cred_save_failed = True
+                win_err = getattr(self._creds, "last_error", 0)
+                cred_err_detail = f" (WinError {win_err})" if win_err else ""
         prev_snap = self._snapshots.get(account_id)
         if prev_snap is None:
             prev_snap = self._cache.get(account_id)
+
+        if cred_save_failed:
+            err_msg = f"刷新后的会话凭据保存失败，未写入系统凭据管理器{cred_err_detail}"
+            if prev_snap is not None and prev_snap.has_valid_data():
+                kept = copy.deepcopy(prev_snap)
+                kept.raw_stale = True
+                kept.status = AccountStatus.STALE.value
+                kept.last_error = err_msg
+                final_snap = kept
+                self._cache.put(final_snap, flush=True)
+            else:
+                final_snap = QuotaSnapshot(
+                    account_id=account_id,
+                    fetched_at=new_snap.fetched_at or time.time(),
+                    status=AccountStatus.NETWORK_ERROR.value,
+                    last_error=err_msg,
+                )
+            if acc is not None:
+                acc.last_error = err_msg
+                self._save_accounts_to_config()
+            self._snapshots[account_id] = final_snap
+            self.snapshot_updated.emit(account_id, copy.deepcopy(final_snap))
+            self.account_state_changed.emit(account_id)
+            return
 
         if new_snap.status == AccountStatus.RATE_LIMITED.value:
             self._rate_limit_until[account_id] = time.monotonic() + RATE_LIMIT_BACKOFF_S

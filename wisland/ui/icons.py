@@ -55,6 +55,7 @@ def draw_svg_icon(p: QtGui.QPainter, rect: QtCore.QRectF, svg_key: str, dark: bo
     if ren is None:
         return False
     p.save()
+    p.setClipRect(rect)
     p.setOpacity(max(0.0, min(1.0, opacity)))
     ren.render(p, rect)
     p.restore()
@@ -117,7 +118,13 @@ def draw_ai_svg_icon(
     ren = get_ai_svg_renderer(provider_key, dark=dark)
     if ren is None:
         return False
+    name = str(provider_key or "").strip().lower()
     p.save()
+    p.setClipRect(rect)
+    if name == "workbuddy":
+        circle_clip = QtGui.QPainterPath()
+        circle_clip.addEllipse(rect)
+        p.setClipPath(circle_clip, Qt.ClipOperation.IntersectClip)
     p.setOpacity(max(0.0, min(1.0, opacity)))
     ren.render(p, rect)
     p.restore()

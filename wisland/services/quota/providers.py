@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AI 额度五服务商定义与连接器状态表（第一阶段仅真实接通 DeepSeek）。"""
+"""AI 额度五服务商定义与连接器状态表（DeepSeek、WorkBuddy、Gemini、Grok Bot、Codex 均已接入）。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,37 +40,37 @@ PROVIDERS: dict[str, ProviderSpec] = {
         key=Provider.WORKBUDDY.value,
         name="WorkBuddy",
         badge="WB",
-        implemented=False,
-        default_source="workbuddy://local",
+        implemented=True,
+        default_source="https://www.codebuddy.cn",
         default_color=AccentColor.EMERALD.value,
-        auth_hint="连接器将在下一阶段接入",
+        auth_hint="优先读取本机 WorkBuddy 登录；不可用时通过官网个人账号授权连接。",
     ),
     Provider.GEMINI.value: ProviderSpec(
         key=Provider.GEMINI.value,
         name="Gemini",
         badge="GM",
-        implemented=False,
-        default_source="https://generativelanguage.googleapis.com",
+        implemented=True,
+        default_source="https://gemini.google.com/usage",
         default_color=AccentColor.VIOLET.value,
-        auth_hint="连接器将在下一阶段接入",
+        auth_hint="使用 Google 邮箱与 gemini.google.com 登录 Cookie 查询网页会员额度（绝不跨域转发）。",
     ),
     Provider.GROK_BOT.value: ProviderSpec(
         key=Provider.GROK_BOT.value,
         name="Grok Bot",
         badge="GK",
-        implemented=False,
-        default_source="https://api.x.ai",
+        implemented=True,
+        default_source="https://api2.cursor.sh",
         default_color=AccentColor.AMBER.value,
-        auth_hint="连接器将在下一阶段接入",
+        auth_hint="通过默认浏览器完成 Grok Bot (Cursor) 授权登录，令牌仅存于系统凭据管理器。",
     ),
     Provider.CODEX.value: ProviderSpec(
         key=Provider.CODEX.value,
         name="Codex",
         badge="CX",
-        implemented=False,
+        implemented=True,
         default_source="codex://local",
         default_color=AccentColor.CYAN.value,
-        auth_hint="连接器将在下一阶段接入",
+        auth_hint="自动只读读取本机 $CODEX_HOME/auth.json 或 ~/.codex/auth.json 登录状态。",
     ),
 }
 

@@ -420,6 +420,21 @@ def main():
 
     cfg.changed.connect(lambda: apply_runtime_config(show_toast=True))
 
+    quota_vis_st = {"show": bool(P["quota"].should_show()) if "quota" in P else False}
+
+    def sync_quota_page_visibility(*_):
+        if "quota" not in P:
+            return
+        cur_show = bool(P["quota"].should_show())
+        if cur_show != quota_vis_st["show"]:
+            quota_vis_st["show"] = cur_show
+            registry.sync_from_config(cfg)
+            island.rebuild_pages(registry.visible_pages())
+
+    ctx.quota.accounts_changed.connect(sync_quota_page_visibility)
+    ctx.quota.account_state_changed.connect(sync_quota_page_visibility)
+    cfg.changed.connect(sync_quota_page_visibility)
+
     def reload_cfg():
         cfg.load()
         apply_runtime_config(show_toast=False)
