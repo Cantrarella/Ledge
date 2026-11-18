@@ -94,6 +94,16 @@ DEFAULTS: dict = {
             "wechat": "",      # 例：C:/Program Files/Tencent/Weixin/Weixin.exe
             "mail": "",        # 例：C:/Program Files/Mozilla Thunderbird/thunderbird.exe
         },
+        "enabled": True,             # 开启 Windows 通知读取
+        "wechat_enabled": True,      # 微信通知开关
+        "qq_enabled": True,          # QQ 通知开关
+        "other_enabled": True,       # 其他系统通知开关
+        "flash_compat": True,        # 任务栏闪烁兼容模式
+        "preview_enabled": False,    # 是否显示通知摘要（默认关闭以保护隐私）
+        "display_seconds": 4,        # 通知横幅显示时长（秒）
+        "dnd_enabled": False,        # 免打扰时段开关
+        "dnd_start": "23:00",        # 免打扰开始时间
+        "dnd_end": "07:00",          # 免打扰结束时间
     },
     "weather": {
         "api_key": "",         # 留空 = 使用 Open-Meteo（免费、无需 Key）；填 OpenWeather Key 则改用 OpenWeather

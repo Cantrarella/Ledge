@@ -38,8 +38,8 @@ New-Item -ItemType Directory -Force (Join-Path $PortableDir "data") | Out-Null
 
 Write-Host "[3/4] 同步可执行文件至仓库根目录与 wisland-exe..." -ForegroundColor Cyan
 Copy-Item -Force (Join-Path $PortableDir "WIsland.exe") (Join-Path $RepoRoot "WIsland.exe")
-New-Item -ItemType Directory -Force (Join-Path $RepoRoot "_internal\wisland") | Out-Null
-Copy-Item -Recurse -Force (Join-Path $PortableDir "_internal\wisland\*") (Join-Path $RepoRoot "_internal\wisland")
+New-Item -ItemType Directory -Force (Join-Path $RepoRoot "_internal") | Out-Null
+Copy-Item -Recurse -Force (Join-Path $PortableDir "_internal\*") (Join-Path $RepoRoot "_internal")
 
 if (-not $SkipZip) {
     Write-Host "[4/4] 生成便携版压缩包: $ZipPath ..." -ForegroundColor Cyan

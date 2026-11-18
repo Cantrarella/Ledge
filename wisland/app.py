@@ -253,15 +253,32 @@ def main():
 
     # ---------------- 消息提醒 ----------------
     def on_notified(n):
-        kind = n.get("kind", "other")
-        glyph = {"mail": G.MAIL, "qq": G.CHAT, "wechat": G.MESSAGE}.get(kind, G.BELL)
-        sub = "新邮件" if kind == "mail" else (n.get("sender") or "新消息")
         compact.pet.react("surprise")
         P["home"].pet.face.react("surprise")
-        island.activity({"glyph": glyph, "color": KIND_COLORS.get(kind, KIND_COLORS["other"]),
-                         "title": n.get("name", kind), "sub": sub}, 4.0)
         if P["msg"].active:
             P["msg"].refresh()
+
+    def on_banner_changed(ev):
+        if ev is None:
+            compact.clear_activity("notify")
+            island._kick()
+            return
+        kind = ev.source_key
+        svg_key = kind if kind in ("wechat", "qq") else ""
+        glyph = {"mail": G.MAIL, "qq": G.CHAT, "wechat": G.MESSAGE}.get(kind, G.BELL)
+        color = None if svg_key else KIND_COLORS.get(kind, KIND_COLORS["other"])
+        sub = ctx.notify.controller.format_banner_sub(ev)
+        dur = max(1.0, min(30.0, float(cfg.get("notify.display_seconds", 4) or 4)))
+        island.activity({
+            "type": "notify",
+            "event_id": ev.event_id,
+            "svg_key": svg_key,
+            "glyph": glyph,
+            "color": color,
+            "title": ev.app_name,
+            "sub": sub,
+        }, dur + 0.5)
+        island._kick()
 
     def on_counts(c):
         compact.badges = dict(c)
@@ -269,8 +286,12 @@ def main():
             P["msg"].refresh()
         island._kick()
     ctx.notify.notified.connect(on_notified)
+    ctx.notify.banner_changed.connect(on_banner_changed)
     ctx.notify.counts_changed.connect(on_counts)
+    ctx.notify.notice.connect(lambda t, _err: island.activity({"glyph": G.BELL, "title": t}, 3.2))
     island.flash.connect(ctx.notify.on_flash)
+    island.notify_banner_clicked.connect(ctx.notify.open_current_banner)
+    island.notify_banner_dismissed.connect(ctx.notify.dismiss_current_banner)
     ctx.mailcheck.new_mail.connect(lambda user, n: ctx.notify._emit(
         {"kind": "mail", "name": "邮件", "source": "imap", "time": time.time()}))
 
@@ -362,6 +383,7 @@ def main():
             ctx.clipboard.start()
         else:
             ctx.clipboard.stop()
+        ctx.notify.apply_config()
         if "tools" in P:
             P["tools"].refresh_shelf()
             P["tools"].refresh_clipboard()

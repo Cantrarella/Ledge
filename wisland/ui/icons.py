@@ -2,9 +2,63 @@
 """专用矢量图标绘制：基于 QPainterPath，统一线宽 1.5–2 px，跟随主题配色。"""
 from __future__ import annotations
 
-from PySide6 import QtCore, QtGui
+import sys
+from pathlib import Path
+
+from PySide6 import QtCore, QtGui, QtSvg
 
 Qt = QtCore.Qt
+
+_SVG_CACHE: dict[tuple[str, bool | None], QtSvg.QSvgRenderer | None] = {}
+
+
+def _icons_dir() -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    p1 = base / "wisland" / "assets" / "icons"
+    if p1.is_dir():
+        return p1
+    return Path(__file__).resolve().parents[1] / "assets" / "icons"
+
+
+def get_notify_svg_renderer(svg_key: str, dark: bool) -> QtSvg.QSvgRenderer | None:
+    """加载并缓存通知 SVG 矢量渲染器：保留 SVG 原始颜色，绝不替换 fill；单版本跨主题复用缓存。"""
+    name = str(svg_key or "").lower()
+    if not name:
+        return None
+
+    themed_key = (name, bool(dark))
+    if themed_key in _SVG_CACHE:
+        return _SVG_CACHE[themed_key]
+    shared_key = (name, None)
+    if shared_key in _SVG_CACHE:
+        return _SVG_CACHE[shared_key]
+
+    d = _icons_dir()
+    themed_path = d / f"{name}_{'light' if dark else 'dark'}.svg"
+    if themed_path.is_file():
+        ren = QtSvg.QSvgRenderer(str(themed_path))
+        _SVG_CACHE[themed_key] = ren if ren.isValid() else None
+        return _SVG_CACHE[themed_key]
+
+    base_path = d / f"{name}.svg"
+    if not base_path.is_file():
+        _SVG_CACHE[shared_key] = None
+        return None
+    ren = QtSvg.QSvgRenderer(str(base_path))
+    _SVG_CACHE[shared_key] = ren if ren.isValid() else None
+    return _SVG_CACHE[shared_key]
+
+
+def draw_svg_icon(p: QtGui.QPainter, rect: QtCore.QRectF, svg_key: str, dark: bool, opacity: float = 1.0) -> bool:
+    """在指定矩形内高 DPI 矢量渲染缓存的 SVG 图标（保持原始颜色）。"""
+    ren = get_notify_svg_renderer(svg_key, dark)
+    if ren is None:
+        return False
+    p.save()
+    p.setOpacity(max(0.0, min(1.0, opacity)))
+    ren.render(p, rect)
+    p.restore()
+    return True
 
 
 def _pen(color: QtGui.QColor, width: float = 1.6) -> QtGui.QPen:

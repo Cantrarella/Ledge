@@ -11,12 +11,14 @@ import time
 from PySide6 import QtCore, QtGui
 
 from .anim import clamp, ease_out
+from .icons import draw_svg_icon
 from .theme import KIND_COLORS, G, W, icon_font, theme, ui_font
 from .widgets import rounded_pixmap
 
 Qt = QtCore.Qt
 H_IDLE = 34
 H_MEDIA = 36
+H_NOTIFY = 36
 H_ACT = 40
 H_SUB = 60          # 实时字幕：上日语、下中文两行
 SUB_HOLD_S = 7.0    # 最后一句字幕之后保留多久再回到原来的视图
@@ -281,6 +283,8 @@ class CompactView:
         self.media: dict = {}
         self.cover: QtGui.QPixmap | None = None
         self.activity: dict | None = None
+        self._notify_dismiss_rect: QtCore.QRectF | None = None
+        self.notify_dismiss_hover: float = 0.0
         self.badges: dict[str, int] = {}
         self.weather: tuple | None = None   # (glyph, "18°", font_family)
         self._mode = "idle"
@@ -370,6 +374,13 @@ class CompactView:
         if self.activity:
             self.activity.update(kw)
 
+    def clear_activity(self, act_type: str | None = None):
+        if self.activity is None:
+            return
+        if act_type is None or self.activity.get("type") == act_type:
+            self.activity = None
+            self._notify_dismiss_rect = None
+
     def set_view(self, v: str):
         if v in self.views:
             self.view = v
@@ -411,6 +422,16 @@ class CompactView:
             t = a.get("type")
             if t == "volume":
                 return 280, H_ACT
+            if t == "notify":
+                fm_app = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
+                fm_sub = QtGui.QFontMetrics(ui_font(12))
+                app_w = min(108.0, float(math.ceil(fm_app.horizontalAdvance(a.get("title", ""))) + 2))
+                sub = a.get("sub", "") or "有新消息"
+                sep_w = float(fm_sub.horizontalAdvance(" · "))
+                sub_w = float(fm_sub.horizontalAdvance(sub))
+                # 左边距9 + 图标24 + 间距9 + 应用名 + 分隔 + 摘要 + 间距8 + 关闭按钮24 + 右边距6
+                w = 9 + 24 + 9 + app_w + sep_w + sub_w + 8 + 24 + 6
+                return clamp(w, 190.0, 360.0), H_NOTIFY
             fm = QtGui.QFontMetrics(ui_font(13, W.DemiBold))
             w = 70 + fm.horizontalAdvance(a.get("title", "")) + QtGui.QFontMetrics(ui_font(12)).horizontalAdvance(a.get("sub", ""))
             return clamp(w + 24, 220, 460), H_ACT
@@ -422,8 +443,10 @@ class CompactView:
             return max(300, self._lyr_w) + 34 + nb * 12, H_MEDIA
         if m == "pet":
             return 134 + nb * 13, H_IDLE
-        w = (134 if self.weather else 96) + nb * 13
-        return w, H_IDLE
+        base_w = 134 if self.weather else 96
+        # 对称扩展胶囊宽度：时间天气始终以整个胶囊中心居中，同时右侧预留色点空间
+        extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
+        return base_w + extra_w, H_IDLE
 
     # --- 绘制 ---
     def paint(self, p: QtGui.QPainter, r: QtCore.QRectF, alpha: float, peak: float):
@@ -513,16 +536,22 @@ class CompactView:
         self._badges(p, x, cy, a)
 
     def _badges(self, p, right: float, cy: float, a: float) -> float:
-        x = right
-        for kind in ("mail", "wechat", "qq"):
-            if self.badges.get(kind):
-                c = QtGui.QColor(KIND_COLORS.get(kind, KIND_COLORS["other"]))
-                c.setAlphaF(a)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(c)
-                p.drawEllipse(QtCore.QPointF(x - 4, cy), 4, 4)
-                x -= 13
-        return x
+        """在岛体最右侧按固定顺序（1. QQ  2. 微信  3. 邮件）绘制未读色点（直径约 3.8px，间距 5.5px）。"""
+        active = [k for k in ("qq", "wechat", "mail") if self.badges.get(k)]
+        if not active:
+            return right
+        dot_d = 3.8
+        gap = 5.5
+        total_w = len(active) * dot_d + max(0, len(active) - 1) * gap
+        x = right - total_w
+        p.setPen(Qt.PenStyle.NoPen)
+        for kind in active:
+            c = QtGui.QColor(KIND_COLORS.get(kind, KIND_COLORS["other"]))
+            c.setAlphaF(a)
+            p.setBrush(c)
+            p.drawEllipse(QtCore.QPointF(x + dot_d / 2.0, cy), dot_d / 2.0, dot_d / 2.0)
+            x += dot_d + gap
+        return right - total_w
 
     def _paint_idle(self, p, r, a):
         cy = r.center().y()
@@ -531,24 +560,19 @@ class CompactView:
         txt = time.strftime("%H:%M", now)
         fmt = QtGui.QFontMetrics(ft)
         tw_time = fmt.horizontalAdvance(txt)
-        has_badges = any(self.badges.values())
-        if not self.weather and not has_badges:
-            p.setFont(ft)
-            p.setPen(theme.text(a))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
-            return
-        right_edge = self._badges(p, r.right() - 14, cy, a) - 4 if has_badges else r.right()
-        avail = QtCore.QRectF(r.x(), r.y(), right_edge - r.x(), r.height())
+
+        # 时间 + 天气组始终以整个胶囊中心 r.center().x() 严格居中，绝不计入未读色点宽度
         if self.weather:
             glyph, temp = self.weather[0], self.weather[1]
             fam = self.weather[2] if len(self.weather) > 2 else None
             fw = ui_font(13, W.Medium, num=True)
             fmw = QtGui.QFontMetrics(fw)
             tw_temp = fmw.horizontalAdvance(temp)
-            icon_w = 18
-            mid_gap = 16
-            total_w = tw_time + mid_gap + icon_w + 3 + tw_temp
-            sx = avail.center().x() - total_w / 2
+            icon_w = 18.0
+            mid_gap = 14.0
+            weather_group_w = tw_time + mid_gap + icon_w + 3.0 + tw_temp
+            sx = r.center().x() - weather_group_w / 2.0
+
             p.setFont(ft)
             p.setPen(theme.text(a))
             p.drawText(QtCore.QRectF(sx, r.y(), tw_time + 4, r.height()),
@@ -561,12 +585,15 @@ class CompactView:
             p.setPen(theme.text2(a))
             p.drawText(QtCore.QRectF(wx, r.y(), icon_w, r.height()), Qt.AlignmentFlag.AlignCenter, glyph)
             p.setFont(fw)
-            p.drawText(QtCore.QRectF(wx + icon_w + 3, r.y(), tw_temp + 4, r.height()),
+            p.drawText(QtCore.QRectF(wx + icon_w + 3.0, r.y(), tw_temp + 4, r.height()),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, temp)
         else:
             p.setFont(ft)
             p.setPen(theme.text(a))
-            p.drawText(avail, Qt.AlignmentFlag.AlignCenter, txt)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+
+        # 未读色点固定在胶囊最右侧（约 12px 右边距）
+        self._badges(p, r.right() - 12.0, cy, a)
 
     def _paint_media(self, p, r, a):
         cy = r.center().y()
@@ -661,29 +688,33 @@ class CompactView:
         act = self.activity or {}
         cy = r.center().y()
         t = act.get("type")
+        is_notify = (t == "notify")
         enter = ease_out((time.monotonic() - act.get("start", 0)) / 0.35)
         color = act.get("color")
-        # 左侧图标圆
-        d = 26
+        # 左侧图标槽位 24×24px（左边距 9px、间距 9px）；微信/QQ SVG 在槽位内居中绘制 22×22px
+        d = 24 if is_notify else 26
         cr = QtCore.QRectF(r.x() + 9, cy - d / 2, d, d)
-        if color is not None:
-            c = QtGui.QColor(color)
-            c.setAlphaF(a)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(c)
-            p.drawEllipse(cr)
-            p.setPen(QtGui.QColor(255, 255, 255, round(255 * a)))
-        else:
-            p.setPen(theme.text(a))
-        img = act.get("icon")
-        if isinstance(img, QtGui.QPixmap):
-            p.setOpacity(a)
-            p.drawPixmap(cr.toRect(), img)
-            p.setOpacity(1)
-        else:
-            p.setFont(icon_font(13 if color is not None else 16))
-            p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
-        x = cr.right() + 10
+        svg_key = act.get("svg_key") if is_notify else ""
+        drew_svg = bool(svg_key) and draw_svg_icon(p, cr.adjusted(1.0, 1.0, -1.0, -1.0), svg_key, theme.dark, a)
+        if not drew_svg:
+            if color is not None:
+                c = QtGui.QColor(color)
+                c.setAlphaF(a)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c)
+                p.drawEllipse(cr)
+                p.setPen(QtGui.QColor(255, 255, 255, round(255 * a)))
+            else:
+                p.setPen(theme.text(a))
+            img = act.get("icon")
+            if isinstance(img, QtGui.QPixmap):
+                p.setOpacity(a)
+                p.drawPixmap(cr.toRect(), img)
+                p.setOpacity(1)
+            else:
+                p.setFont(icon_font((12 if is_notify else 13) if color is not None else 16))
+                p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
+        x = cr.right() + (9 if is_notify else 10)
         if t == "volume":
             v = clamp(act.get("value", 0.0), 0, 1)
             bw = r.right() - 52 - x
@@ -701,10 +732,58 @@ class CompactView:
             return
         title = act.get("title", "")
         sub = act.get("sub", "")
+        if is_notify:
+            dr = QtCore.QRectF(r.right() - 30, cy - 12, 24, 24)
+            self._notify_dismiss_rect = dr
+            if self.notify_dismiss_hover > 0.01:
+                hbg = QtGui.QColor(255, 255, 255) if theme.dark else QtGui.QColor(0, 0, 0)
+                hbg.setAlphaF(0.14 * self.notify_dismiss_hover * a)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(hbg)
+                p.drawEllipse(dr.adjusted(2, 2, -2, -2))
+            p.setFont(icon_font(8.5))
+            close_alpha = (0.65 + 0.32 * self.notify_dismiss_hover) * a
+            p.setPen(theme.text(close_alpha))
+            p.drawText(dr, Qt.AlignmentFlag.AlignCenter, G.CLOSE)
+
+            avail = dr.left() - 8 - x
+            f_app = ui_font(12.5, W.DemiBold)
+            fm_app = QtGui.QFontMetrics(f_app)
+            app_w = min(108.0, float(math.ceil(fm_app.horizontalAdvance(title)) + 2), max(20.0, avail))
+            p.setFont(f_app)
+            p.setPen(theme.text(a))
+            p.drawText(
+                QtCore.QRectF(x, r.y(), app_w + 1, r.height()),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                fm_app.elidedText(title, Qt.TextElideMode.ElideRight, int(app_w)),
+            )
+
+            sub_txt = sub or "有新消息"
+            f_sub = ui_font(12)
+            fm_sep = QtGui.QFontMetrics(f_sub)
+            sep_str = " · "
+            sep_w = float(fm_sep.horizontalAdvance(sep_str))
+            sx = x + app_w
+            if sx + sep_w + 12 <= dr.left() - 8:
+                p.setFont(f_sub)
+                p.setPen(theme.text3(0.75 * a))
+                p.drawText(QtCore.QRectF(sx, r.y(), sep_w + 1, r.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, sep_str)
+                sub_x = sx + sep_w
+                sub_w = max(10.0, dr.left() - 8 - sub_x)
+                p.setPen(theme.text2(a))
+                p.drawText(
+                    QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_sep.elidedText(sub_txt, Qt.TextElideMode.ElideRight, int(sub_w)),
+                )
+            return
+
+        self._notify_dismiss_rect = None
+        avail = r.right() - 14 - x
         p.setFont(ui_font(13, W.DemiBold))
         fm = QtGui.QFontMetrics(p.font())
         tw = fm.horizontalAdvance(title)
-        avail = r.right() - 14 - x
         tc = act.get("title_color")
         p.setPen(QtGui.QColor(tc) if tc else theme.text(a))
         p.drawText(QtCore.QRectF(x, r.y(), min(tw + 2, avail), r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,

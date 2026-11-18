@@ -10,12 +10,16 @@ datas = [
     (str(ROOT / "config.example.json"), "."),
     (str(ROOT / "wisland" / "icon.png"), "wisland"),
     (str(ROOT / "wisland" / "icon.ico"), "wisland"),
+    (str(ROOT / "wisland" / "assets"), "wisland/assets"),
 ]
 binaries = []
 hiddenimports = []
 
 datas += collect_data_files("comtypes")
+datas += collect_data_files("winrt", includes=["**/*.pywinrt"])
 hiddenimports += collect_submodules("winrt")
+hiddenimports += collect_submodules("winrt.windows.ui.notifications")
+hiddenimports += collect_submodules("winrt.windows.applicationmodel")
 tmp_ret = collect_all("sherpa_onnx")
 datas += tmp_ret[0]
 binaries += tmp_ret[1]

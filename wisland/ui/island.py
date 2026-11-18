@@ -245,6 +245,8 @@ class Island(QtWidgets.QWidget):
     mode_changed = QtCore.Signal(str)
 
     play_pause_requested = QtCore.Signal()      # 收起态音乐视图的播放 / 暂停键
+    notify_banner_clicked = QtCore.Signal()     # 点击收起态通知横幅
+    notify_banner_dismissed = QtCore.Signal()   # 关闭收起态通知横幅（不清未读）
 
     def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -1183,13 +1185,19 @@ class Island(QtWidgets.QWidget):
                 elif self.poke.target != 0.0:
                     self.poke.to(0.0, 260, 0.72)
                     self._kick()
-        on_btn = inside and self._on_play_button(QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin))
+        local_cur = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
+        on_btn = inside and self._on_play_button(local_cur)
         hv = 1.0 if on_btn and not self.passthrough() else 0.0
         if abs(self.compact.play_hover - hv) > 0.01:
             self.compact.play_hover += (hv - self.compact.play_hover) * 0.5
             self._kick()
-        if on_btn and not self.expanded:
-            self._hover_since = None              # 在播放键上停留不展开
+        _, on_dismiss = self._on_notify_banner(local_cur) if (inside and not self.passthrough()) else (False, False)
+        nhv = 1.0 if on_dismiss else 0.0
+        if abs(self.compact.notify_dismiss_hover - nhv) > 0.01:
+            self.compact.notify_dismiss_hover += (nhv - self.compact.notify_dismiss_hover) * 0.5
+            self._kick()
+        if (on_btn or on_dismiss) and not self.expanded:
+            self._hover_since = None              # 在播放键或通知关闭键上停留不展开
             return
         if inside and self.passthrough():
             inside = False                        # 可穿透：鼠标视为不在灵动岛上（只响应右键）
@@ -1240,12 +1248,36 @@ class Island(QtWidgets.QWidget):
         return (r is not None and not self.expanded and self.compact.mode() == "media"
                 and r.adjusted(-6, -8, 6, 8).contains(local))
 
+    def _on_notify_banner(self, pos: QtCore.QPointF) -> tuple[bool, bool]:
+        """返回 (is_notify_banner, is_dismiss_button)。"""
+        if self.expanded or self.compact.mode() != "activity":
+            return False, False
+        if (self.compact.activity or {}).get("type") != "notify":
+            return False, False
+        r = QtCore.QRectF(self.rect())
+        dr = self.compact._notify_dismiss_rect
+        if dr is not None and dr.adjusted(-5, -5, 5, 5).contains(pos):
+            return True, True
+        if r.contains(pos):
+            return True, False
+        return False, False
+
     def mouseReleaseEvent(self, e):
         self.lp_timer.stop()
         if self._press is not None and self._on_play_button(e.position()) and self._on_play_button(self._press):
             self._press = None
             self.play_pause_requested.emit()
             return
+        if self._press is not None:
+            is_nb, is_dismiss = self._on_notify_banner(e.position())
+            if is_nb:
+                self._press = None
+                if is_dismiss:
+                    self.notify_banner_dismissed.emit()
+                else:
+                    self.notify_banner_clicked.emit()
+                self._kick()
+                return
         if self._press is not None and self.mode == "anchored" and not self.expanded \
                 and self.expand_mode() != "never":
             self._click_timer.start(QtWidgets.QApplication.doubleClickInterval())

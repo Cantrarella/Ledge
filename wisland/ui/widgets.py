@@ -359,7 +359,14 @@ class WheelScrollArea(QtWidgets.QScrollArea):
         self.setWidget(self.inner)
         self.inner.setAutoFillBackground(False)   # setWidget 会强制打开
         theme.changed.connect(self._style_bar)
+        self.destroyed.connect(self._on_scroll_destroyed)
         self._style_bar()
+
+    def _on_scroll_destroyed(self):
+        try:
+            theme.changed.disconnect(self._style_bar)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _style_bar(self):
         c = theme.qss_color(theme.text(0.28))
