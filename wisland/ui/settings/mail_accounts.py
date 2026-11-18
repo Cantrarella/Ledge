@@ -256,11 +256,58 @@ class MailAccountsSettingsPage(SettingsPage):
             margins=(18, 12, 18, 14),
         ))
 
+        # ---- 3. 阅读与验证码偏好卡片 ----
+        self.prefs_card = Card(self, radius=14, alpha=1.0)
+        self.prefs_card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Minimum)
+
+        self.sw_otp_enabled = Switch()
+        self.sw_otp_enabled.toggled.connect(lambda *_: self.changed.emit())
+        self.cmb_otp_hide = ComboBox(width=330)
+        self.cmb_otp_hide.addItem("30 秒", 30)
+        self.cmb_otp_hide.addItem("60 秒（默认）", 60)
+        self.cmb_otp_hide.addItem("300 秒（5 分钟）", 300)
+        self.cmb_otp_hide.currentIndexChanged.connect(lambda *_: self.changed.emit())
+
+        self.sw_sync_seen = Switch()
+        self.sw_sync_seen.toggled.connect(lambda *_: self.changed.emit())
+
+        self.row_otp_enabled = _ResponsiveRow("开启验证码识别", "从邮件标题、纯文本和 HTML 文本中自动识别验证码", self.sw_otp_enabled, self.prefs_card)
+        self.row_otp_hide = _ResponsiveRow("默认隐藏时长", "未识别到邮件声明有效期时使用此默认时长", self.cmb_otp_hide, self.prefs_card)
+        self.row_sync_seen = _ResponsiveRow("同步已读状态到服务器", "默认关闭，仅在本机标记已读；开启后打开正文会回写服务器", self.sw_sync_seen, self.prefs_card)
+
+        self.privacy_box = QtWidgets.QWidget(self.prefs_card)
+        self.lbl_privacy_title = Label("隐私说明", 12.5, W.DemiBold, 1)
+        self.lbl_privacy_body = QtWidgets.QLabel(
+            "邮件正文仅在本机处理，不执行脚本、不自动加载远程图片、不下载附件，验证码也不会写入任何日志。",
+            self.privacy_box,
+        )
+        self.lbl_privacy_body.setWordWrap(True)
+        self.lbl_privacy_body.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Minimum)
+        priv_lay = QtWidgets.QVBoxLayout(self.privacy_box)
+        priv_lay.setContentsMargins(0, 8, 0, 4)
+        priv_lay.setSpacing(4)
+        priv_lay.addWidget(self.lbl_privacy_title)
+        priv_lay.addWidget(self.lbl_privacy_body)
+
+        self.prefs_card.setLayout(vbox(
+            self.row_otp_enabled,
+            _Divider(self.prefs_card),
+            self.row_otp_hide,
+            _Divider(self.prefs_card),
+            self.row_sync_seen,
+            _Divider(self.prefs_card),
+            self.privacy_box,
+            spacing=0,
+            margins=(18, 12, 18, 14),
+        ))
+
         self.finish_layout(
             self.section("已添加账号", "各账号独立状态与凭据隔离；修改或新加账号需点击底部「保存设置」后生效"),
             self.list_wrap,
             self.section("添加邮箱账号", "填写后先验证连接，再加入设置草稿"),
             self.form_card,
+            self.section("阅读与验证码", "控制正文已读同步与验证码识别行为"),
+            self.prefs_card,
         )
 
         self._mgr.task_finished.connect(self._on_task_finished, Qt.ConnectionType.UniqueConnection)
@@ -274,6 +321,7 @@ class MailAccountsSettingsPage(SettingsPage):
     def _apply_guide_style(self):
         fg = "#c9ceda" if theme.dark else "#3b4252"
         self.lbl_guide_body.setStyleSheet(f"background:transparent;border:none;font-size:12px;color:{fg};line-height:1.4;")
+        self.lbl_privacy_body.setStyleSheet(f"background:transparent;border:none;font-size:12px;color:{fg};line-height:1.4;")
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -285,12 +333,14 @@ class MailAccountsSettingsPage(SettingsPage):
         was_narrow = self._narrow_mode
         self._narrow_mode = narrow
         for row in (self.row_provider, self.row_email, self.row_alias, self.row_secret,
-                    self.row_host, self.row_port, self.row_sec, self.row_verify):
+                    self.row_host, self.row_port, self.row_sec, self.row_verify,
+                    self.row_otp_enabled, self.row_otp_hide, self.row_sync_seen):
             row.set_compact(narrow)
 
         ctrl_widgets = (
             self.cmb_provider, self.ed_email, self.ed_alias, self.ed_secret,
             self.ed_host, self.sp_port, self.cmb_security, self.action_bar,
+            self.cmb_otp_hide,
         )
         if narrow:
             for w in ctrl_widgets:
@@ -739,7 +789,15 @@ class MailAccountsSettingsPage(SettingsPage):
                 if acc is not None:
                     loaded.append(acc)
         self._draft_accounts = loaded
+        self.sw_otp_enabled.setChecked(bool(draft.get("mail.otp_enabled", True)))
+        hide_s = int(draft.get("mail.otp_hide_seconds", 60) or 60)
+        idx = self.cmb_otp_hide.findData(hide_s)
+        self.cmb_otp_hide.setCurrentIndex(idx if idx >= 0 else 1)
+        self.sw_sync_seen.setChecked(bool(draft.get("mail.sync_read_to_server", False)))
         self._rebuild_account_list()
 
     def save_to_draft(self, draft: ConfigDraft):
         draft.set("mail.accounts", [a.to_config_dict() for a in self._draft_accounts])
+        draft.set("mail.otp_enabled", bool(self.sw_otp_enabled.isChecked()))
+        draft.set("mail.otp_hide_seconds", int(self.cmb_otp_hide.currentData() or 60))
+        draft.set("mail.sync_read_to_server", bool(self.sw_sync_seen.isChecked()))

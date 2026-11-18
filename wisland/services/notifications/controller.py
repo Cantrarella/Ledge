@@ -53,6 +53,7 @@ class NotificationController(QtCore.QObject):
         self._max_dedupe = max(10, int(max_dedupe))
         self._enumerator = enumerator
         self._focuser = focuser
+        self.mail_opener = None
 
         self._dedupe: OrderedDict[tuple[str, str, int], str] = OrderedDict()
         self._queue: deque[NotificationEvent] = deque()
@@ -258,7 +259,15 @@ class NotificationController(QtCore.QObject):
             self.counts_changed.emit(dict(self.counts))
 
     def open_event(self, ev: NotificationEvent) -> bool:
-        """点击通知打开对应客户端窗口；成功才清该来源未读，失败则明确提示。"""
+        """点击通知打开对应客户端窗口或站内邮件页；成功才按来源/账号清未读，失败则明确提示。"""
+        if ev.source_key == "mail" and callable(self.mail_opener):
+            ok = bool(self.mail_opener(ev))
+            if ok:
+                if self.current_banner is not None and self.current_banner.event_id == ev.event_id:
+                    self.dismiss_current_banner()
+                return True
+            return False
+
         ok, msg = focus_event_target(ev, enumerator=self._enumerator, focuser=self._focuser)
         if ok:
             self.clear(ev.source_key)
@@ -296,7 +305,13 @@ class NotificationController(QtCore.QObject):
     # ---------------- 隐私格式化与兼容输出 ----------------
     @staticmethod
     def format_banner_sub(ev: NotificationEvent) -> str:
-        """默认隐藏正文；仅在开启摘要预览时展示脱敏摘要。"""
+        """默认隐藏正文；仅在开启摘要预览时展示脱敏摘要。邮件通知默认仅显示发件人/标题。"""
+        if ev.source_key == "mail":
+            sender = mask_sensitive_text(ev.sender, max_len=18) if ev.sender else ""
+            subj = mask_sensitive_text(ev.title, max_len=28) if ev.title else ""
+            if sender and subj:
+                return f"{sender} · {subj}"
+            return sender or subj or "有新邮件"
         if ev.raw_kind == "taskbar_flash":
             return "有新消息"
         preview_on = bool(cfg.get("notify.preview_enabled", False))

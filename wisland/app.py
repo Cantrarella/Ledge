@@ -150,6 +150,8 @@ def main():
     ctx.lyrics = LyricsService()
     ctx.mailcheck = MailCheckService()
     ctx.mail = MailAccountManager()
+    from .services.mail.monitor import MailMonitorService
+    ctx.mail_monitor = MailMonitorService(ctx.mail, controller=ctx.notify.controller)
     ctx.shelf = ShelfService()
     ctx.clipboard = ClipboardHistoryService()
     ctx.todo = TodoService()
@@ -291,11 +293,20 @@ def main():
     ctx.notify.banner_changed.connect(on_banner_changed)
     ctx.notify.counts_changed.connect(on_counts)
     ctx.notify.notice.connect(lambda t, _err: island.activity({"glyph": G.BELL, "title": t}, 3.2))
+    def open_mail_notification(ev):
+        meta = getattr(ev, "meta", None) or {}
+        acc_id = str(meta.get("account_id") or getattr(ev, "account_key", "") or "")
+        uid = str(meta.get("uid") or "")
+        uv = str(meta.get("uid_validity") or "")
+        if "mail" in P:
+            island.expand("mail")
+            return bool(P["mail"].open_notification_target(acc_id, uid, uv))
+        return False
+
+    ctx.notify.controller.mail_opener = open_mail_notification
     island.flash.connect(ctx.notify.on_flash)
     island.notify_banner_clicked.connect(ctx.notify.open_current_banner)
     island.notify_banner_dismissed.connect(ctx.notify.dismiss_current_banner)
-    ctx.mailcheck.new_mail.connect(lambda user, n: ctx.notify._emit(
-        {"kind": "mail", "name": "邮件", "source": "imap", "time": time.time()}))
 
     # ---------------- 天气 ----------------
     def on_weather(d):
@@ -485,7 +496,7 @@ def main():
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
+              ctx.weather, ctx.mail_monitor, ctx.clipboard, ctx.health):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -497,6 +508,7 @@ def main():
         fs_timer.stop()
         cycle_timer.stop()
         ctx.live.stop(wait=True)
+        ctx.mail_monitor.stop()
         ctx.mail.shutdown()
         for s in (ctx.media, ctx.audio, ctx.notify,
                   ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):

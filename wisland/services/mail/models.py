@@ -99,3 +99,25 @@ class MailHeader:
     subject: str
     received_at: float
     is_read: bool
+    uid_validity: str = ""
+
+
+@dataclass
+class MailBody:
+    """邮件纯文本正文（单封上限默认 2 MB，不执行 HTML/脚本，不加载远程图片，不下载附件）。"""
+    account_id: str
+    uid: str
+    text: str
+    source: str = "text/plain"          # "text/plain" | "text/html" | "empty"
+    truncated: bool = False
+    fetched_at: float = 0.0
+    uid_validity: str = ""
+    content_hash: str = ""
+
+
+@dataclass
+class VerificationCodeInfo:
+    """从邮件标题/正文识别出的验证码及声明有效期（绝不写入日志）。"""
+    code: str
+    ttl_seconds: int | None = None
+    source_hint: str = ""               # "subject" | "body"

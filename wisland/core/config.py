@@ -21,10 +21,11 @@ DATA_DIR.mkdir(exist_ok=True)
 DEFAULTS: dict = {
     "schema_version": 2,
     "pages": {
-        "order": ["home", "msg", "weather", "trans", "tools", "life"],
+        "order": ["home", "msg", "mail", "weather", "trans", "tools", "life"],
         "visible": {
             "home": True,
             "msg": True,
+            "mail": True,
             "weather": True,
             "trans": True,
             "tools": True,
@@ -130,6 +131,9 @@ DEFAULTS: dict = {
     },
     "mail": {
         "interval_s": 120,
+        "sync_read_to_server": False,
+        "otp_enabled": True,
+        "otp_hide_seconds": 60,
         # IMAP 账户（首次运行自动从 Thunderbird 读取服务器和用户名）；填入授权码 / 应用专用密码后才会检查
         "imap": [],
         # 多账号邮件元数据（凭据仅存 Windows 凭据管理器，这里只保存 credential_key 引用）
@@ -151,7 +155,7 @@ VALID_THEMES = ("auto", "light", "dark", "rouge", "sky")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
-REGISTERED_PAGE_KEYS = ("home", "msg", "weather", "trans", "tools", "life")
+REGISTERED_PAGE_KEYS = ("home", "msg", "mail", "weather", "trans", "tools", "life")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
 
@@ -398,6 +402,15 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
                 ml["interval_s"] = 120
         else:
             ml["interval_s"] = int(m_iv)
+        ml["sync_read_to_server"] = bool(ml.get("sync_read_to_server", False))
+        ml["otp_enabled"] = bool(ml.get("otp_enabled", True))
+        hide_s = ml.get("otp_hide_seconds", 60)
+        if isinstance(hide_s, bool) or not isinstance(hide_s, (int, float)) or int(hide_s) not in (30, 60, 300):
+            _err(f"验证码默认隐藏时长需为 30 / 60 / 300 秒: {hide_s}")
+            if not strict:
+                ml["otp_hide_seconds"] = 60
+        else:
+            ml["otp_hide_seconds"] = int(hide_s)
         raw_accs = ml.get("accounts", [])
         if not isinstance(raw_accs, list):
             _err("mail.accounts 必须是数组")
