@@ -152,6 +152,8 @@ def main():
     ctx.mail = MailAccountManager()
     from .services.mail.monitor import MailMonitorService
     ctx.mail_monitor = MailMonitorService(ctx.mail, controller=ctx.notify.controller)
+    from .services.quota import QuotaManager
+    ctx.quota = QuotaManager()
     ctx.shelf = ShelfService()
     ctx.clipboard = ClipboardHistoryService()
     ctx.todo = TodoService()
@@ -507,7 +509,7 @@ def main():
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.mail_monitor, ctx.clipboard, ctx.health):
+              ctx.weather, ctx.mail_monitor, ctx.quota, ctx.clipboard, ctx.health):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -522,6 +524,7 @@ def main():
         ctx.live.stop(wait=True)
         ctx.mail_monitor.stop()
         ctx.mail.shutdown()
+        ctx.quota.stop()
         for s in (ctx.media, ctx.audio, ctx.notify,
                   ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
             try:

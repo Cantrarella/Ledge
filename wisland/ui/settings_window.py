@@ -15,6 +15,7 @@ from .settings import (
     MailAccountsSettingsPage,
     NotifySettingsPage,
     PagesNavSettingsPage,
+    QuotaSettingsPage,
     SubtitlesSettingsPage,
     ToolsLifeSettingsPage,
     WeatherSettingsPage,
@@ -126,6 +127,7 @@ class SettingsWindow(QtWidgets.QWidget):
             WeatherSettingsPage(ctx, self),
             NotifySettingsPage(ctx, self),
             MailAccountsSettingsPage(ctx, self),
+            QuotaSettingsPage(ctx, self),
             SubtitlesSettingsPage(ctx, self),
             ToolsLifeSettingsPage(ctx, self),
             DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft),
@@ -297,6 +299,8 @@ class SettingsWindow(QtWidgets.QWidget):
             elif "天气刷新间隔" in err:
                 wth_pg.row_interval.set_error(err)
                 self.switch_category("weather")
+            elif "AI 额度" in err:
+                self.switch_category("quota")
 
     def save_settings(self) -> bool:
         """收集草稿 -> 显示保存中禁止重复点击 -> 严格校验 -> 原子写入 -> 平滑重建导航（不关闭设置窗口）。"""
@@ -310,12 +314,20 @@ class SettingsWindow(QtWidgets.QWidget):
         try:
             self.collect_to_draft()
             mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
+            quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
             if mail_pg is not None:
                 cred_ok, cred_err = mail_pg.commit_credentials()
                 if not cred_ok:
                     self.status_lbl.set_color(theme.up())
                     self.status_lbl.setText(f"保存失败：{cred_err}")
                     self.switch_category("mail_accounts")
+                    return False
+            if quota_pg is not None:
+                q_ok, q_err = quota_pg.commit_credentials()
+                if not q_ok:
+                    self.status_lbl.set_color(theme.up())
+                    self.status_lbl.setText(f"保存失败：{q_err}")
+                    self.switch_category("quota")
                     return False
 
             ok, errors = self.cfg_obj.commit_draft(self.draft, strict=True)
@@ -328,6 +340,8 @@ class SettingsWindow(QtWidgets.QWidget):
 
             if mail_pg is not None:
                 mail_pg.finalize_commit()
+            if quota_pg is not None:
+                quota_pg.finalize_commit()
 
             for pg in self.pages:
                 pg.clear_errors()
@@ -359,6 +373,9 @@ class SettingsWindow(QtWidgets.QWidget):
         mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
         if mail_pg is not None:
             mail_pg.discard_pending()
+        quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+        if quota_pg is not None:
+            quota_pg.discard_pending()
         self.draft = self.cfg_obj.create_draft()
         self._baseline_dict = self.draft.to_dict()
         self.status_lbl.setText("")
@@ -370,4 +387,7 @@ class SettingsWindow(QtWidgets.QWidget):
         mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
         if mail_pg is not None:
             mail_pg.discard_pending()
+        quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+        if quota_pg is not None:
+            quota_pg.discard_pending()
         super().closeEvent(e)

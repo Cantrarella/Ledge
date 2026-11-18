@@ -7,6 +7,7 @@ from .island_pet import IslandPetSettingsPage
 from .mail_accounts import MailAccountsSettingsPage
 from .notify import NotifySettingsPage
 from .pages_nav import PagesNavSettingsPage
+from .quota import QuotaSettingsPage
 from .subtitles import SubtitlesSettingsPage
 from .tools_life import ToolsLifeSettingsPage
 from .weather import WeatherSettingsPage
@@ -18,6 +19,7 @@ __all__ = [
     "WeatherSettingsPage",
     "NotifySettingsPage",
     "MailAccountsSettingsPage",
+    "QuotaSettingsPage",
     "SubtitlesSettingsPage",
     "ToolsLifeSettingsPage",
     "DataSettingsPage",

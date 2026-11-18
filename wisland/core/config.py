@@ -138,6 +138,11 @@ DEFAULTS: dict = {
         # 多账号邮件元数据（凭据仅存 Windows 凭据管理器，这里只保存 credential_key 引用）
         "accounts": [],
     },
+    "quota": {
+        "enabled": True,
+        "refresh_minutes": 3,
+        "accounts": [],
+    },
     "live": {
         "models_dir": "models",     # parakeet-ja-0.6b-int8/ 与 silero_vad.onnx 所在目录
         "audio": {"source": "loopback", "device": "", "block_ms": 80},
@@ -154,6 +159,7 @@ VALID_THEMES = ("auto", "light", "dark", "rouge", "sky")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
+VALID_QUOTA_PROVIDERS = ("deepseek", "workbuddy", "gemini", "grok_bot", "codex")
 REGISTERED_PAGE_KEYS = ("home", "mail", "weather", "trans", "tools", "life")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
@@ -493,6 +499,67 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
                     lf[lk] = ldef
             else:
                 lf[lk] = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+
+    # quota
+    qt = merged.get("quota")
+    if not isinstance(qt, dict):
+        _err("quota 配置必须是对象")
+        merged["quota"] = copy.deepcopy(DEFAULTS["quota"])
+    else:
+        # 清理旧 Daozai 废弃字段（收起时显示常驻账号等），不迁移
+        for _dep_key in ("compact_account_id", "compact_pinned_account", "show_in_compact", "resident_account_id"):
+            qt.pop(_dep_key, None)
+        qt["enabled"] = bool(qt.get("enabled", True))
+        r_min = qt.get("refresh_minutes", 3)
+        if not isinstance(r_min, (int, float)) or isinstance(r_min, bool) or not (1 <= int(r_min) <= 1440):
+            _err(f"AI 额度刷新间隔需在 1~1440 分钟之间: {r_min}")
+            if not strict:
+                qt["refresh_minutes"] = 3
+        else:
+            qt["refresh_minutes"] = int(r_min)
+
+        q_accs = qt.get("accounts", [])
+        if not isinstance(q_accs, list):
+            _err("quota.accounts 必须是数组")
+            if not strict:
+                qt["accounts"] = []
+        else:
+            _bad_q_keys = {
+                "api_key", "apikey", "key", "secret", "password", "passwd", "pwd",
+                "token", "access_token", "refresh_token", "oauth_token",
+                "cookie", "cookies", "auth_code", "authorization",
+            }
+            cleaned_q_accs: list[dict] = []
+            seen_q_dedupe: set[tuple[str, str, str]] = set()
+            seen_q_ids: set[str] = set()
+            for item in q_accs:
+                if not isinstance(item, dict):
+                    _err("quota.accounts 项必须是对象")
+                    continue
+                prov = str(item.get("provider") or "").strip().lower()
+                if prov not in VALID_QUOTA_PROVIDERS:
+                    _err(f"不支持的 AI 额度服务商: {item.get('provider')!r}")
+                    continue
+                sanitized = {
+                    k: v for k, v in item.items()
+                    if str(k).lower() not in _bad_q_keys
+                }
+                sanitized["provider"] = prov
+                acc_id = str(sanitized.get("id") or "").strip()
+                if acc_id and acc_id in seen_q_ids:
+                    continue
+                ident = str(sanitized.get("identity") or "").strip().lower()
+                src = str(sanitized.get("source") or "").strip().lower()
+                dkey = (prov, ident, src)
+                if ident and dkey in seen_q_dedupe:
+                    _err(f"重复的 AI 额度账号: {prov} ({ident})")
+                    continue
+                if acc_id:
+                    seen_q_ids.add(acc_id)
+                if ident:
+                    seen_q_dedupe.add(dkey)
+                cleaned_q_accs.append(sanitized)
+            qt["accounts"] = cleaned_q_accs
 
     return (len(errors) == 0), errors, merged
 
