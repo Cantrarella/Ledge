@@ -132,6 +132,7 @@ def main():
     from .services.todo import TodoService
     from .services.water import WaterService
     from .services.lyrics import LyricsService
+    from .services.mail import MailAccountManager
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
     from .ui.page_registry import PageRegistry
@@ -148,6 +149,7 @@ def main():
     ctx.weather = WeatherService()
     ctx.lyrics = LyricsService()
     ctx.mailcheck = MailCheckService()
+    ctx.mail = MailAccountManager()
     ctx.shelf = ShelfService()
     ctx.clipboard = ClipboardHistoryService()
     ctx.todo = TodoService()
@@ -495,6 +497,7 @@ def main():
         fs_timer.stop()
         cycle_timer.stop()
         ctx.live.stop(wait=True)
+        ctx.mail.shutdown()
         for s in (ctx.media, ctx.audio, ctx.notify,
                   ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
             try:

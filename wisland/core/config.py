@@ -132,6 +132,8 @@ DEFAULTS: dict = {
         "interval_s": 120,
         # IMAP 账户（首次运行自动从 Thunderbird 读取服务器和用户名）；填入授权码 / 应用专用密码后才会检查
         "imap": [],
+        # 多账号邮件元数据（凭据仅存 Windows 凭据管理器，这里只保存 credential_key 引用）
+        "accounts": [],
     },
     "live": {
         "models_dir": "models",     # parakeet-ja-0.6b-int8/ 与 silero_vad.onnx 所在目录
@@ -396,6 +398,17 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
                 ml["interval_s"] = 120
         else:
             ml["interval_s"] = int(m_iv)
+        raw_accs = ml.get("accounts", [])
+        if not isinstance(raw_accs, list):
+            _err("mail.accounts 必须是数组")
+            if not strict:
+                ml["accounts"] = []
+        else:
+            _bad_keys = {"password", "passwd", "pwd", "auth_code", "secret", "cookie", "cookies", "token", "oauth_token"}
+            ml["accounts"] = [
+                {k: v for k, v in x.items() if str(k).lower() not in _bad_keys}
+                for x in raw_accs if isinstance(x, dict)
+            ]
 
     # live
     lv = merged.get("live")

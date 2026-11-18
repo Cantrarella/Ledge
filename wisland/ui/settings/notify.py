@@ -78,18 +78,10 @@ class NotifySettingsPage(SettingsPage):
         self._notify_svc = getattr(ctx, "notify", None) if ctx is not None else None
         if self._notify_svc is not None and hasattr(self._notify_svc, "status_changed"):
             self._notify_svc.status_changed.connect(self._update_status_ui, QtCore.Qt.ConnectionType.UniqueConnection)
-            self.destroyed.connect(self._disconnect_status)
             if hasattr(self._notify_svc, "status_snapshot"):
                 self._update_status_ui(self._notify_svc.status_snapshot())
 
-    def _disconnect_status(self):
-        svc = getattr(self, "_notify_svc", None)
-        if svc is not None and hasattr(svc, "status_changed"):
-            try:
-                svc.status_changed.disconnect(self._update_status_ui)
-            except Exception:  # noqa: BLE001
-                pass
-
+    @QtCore.Slot(dict)
     def _update_status_ui(self, snap: dict):
         if not isinstance(snap, dict):
             return

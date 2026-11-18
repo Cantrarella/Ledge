@@ -4,6 +4,7 @@ from .about import AboutSettingsPage, get_process_memory_mb
 from .data import DataSettingsPage
 from .general import GeneralSettingsPage
 from .island_pet import IslandPetSettingsPage
+from .mail_accounts import MailAccountsSettingsPage
 from .notify import NotifySettingsPage
 from .pages_nav import PagesNavSettingsPage
 from .subtitles import SubtitlesSettingsPage
@@ -16,6 +17,7 @@ __all__ = [
     "PagesNavSettingsPage",
     "WeatherSettingsPage",
     "NotifySettingsPage",
+    "MailAccountsSettingsPage",
     "SubtitlesSettingsPage",
     "ToolsLifeSettingsPage",
     "DataSettingsPage",

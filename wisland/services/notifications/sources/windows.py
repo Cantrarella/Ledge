@@ -262,10 +262,6 @@ class WindowsNotificationSource(QtCore.QObject):
             self._thread = None
             self._baseline_done = False
             self.listening = False
-            try:
-                self._backend.release()
-            except Exception:  # noqa: BLE001
-                pass
         self.status_updated.emit(self.permission_status.value, False, self.last_error)
 
     def is_running(self) -> bool:
@@ -347,7 +343,11 @@ class WindowsNotificationSource(QtCore.QObject):
 
                 try:
                     records = loop.run_until_complete(self._backend.fetch_toasts())
+                    if self._stop_ev.is_set():
+                        break
                     events = [raw_record_to_event(r, self._wpndb_lookup) for r in records]
+                    if self._stop_ev.is_set():
+                        break
                     if not self._baseline_done:
                         self._baseline_done = True
                         self.baseline_captured.emit(events)
@@ -356,7 +356,8 @@ class WindowsNotificationSource(QtCore.QObject):
                     if not self.listening or self.last_error:
                         self._emit_status(PermissionStatus.ALLOWED, True, "")
                 except Exception as exc:  # noqa: BLE001
-                    self._emit_status(self.permission_status, False, f"读取通知失败: {type(exc).__name__}")
+                    if not self._stop_ev.is_set():
+                        self._emit_status(self.permission_status, False, f"读取通知失败: {type(exc).__name__}")
 
                 self._wake_ev.wait(timeout=POLL_INTERVAL_S)
                 self._wake_ev.clear()

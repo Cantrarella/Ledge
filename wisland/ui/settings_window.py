@@ -12,6 +12,7 @@ from .settings import (
     DataSettingsPage,
     GeneralSettingsPage,
     IslandPetSettingsPage,
+    MailAccountsSettingsPage,
     NotifySettingsPage,
     PagesNavSettingsPage,
     SubtitlesSettingsPage,
@@ -124,6 +125,7 @@ class SettingsWindow(QtWidgets.QWidget):
             PagesNavSettingsPage(ctx, self),
             WeatherSettingsPage(ctx, self),
             NotifySettingsPage(ctx, self),
+            MailAccountsSettingsPage(ctx, self),
             SubtitlesSettingsPage(ctx, self),
             ToolsLifeSettingsPage(ctx, self),
             DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft),
@@ -313,6 +315,15 @@ class SettingsWindow(QtWidgets.QWidget):
 
         try:
             self.collect_to_draft()
+            mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
+            if mail_pg is not None:
+                cred_ok, cred_err = mail_pg.commit_credentials()
+                if not cred_ok:
+                    self.status_lbl.set_color(theme.up())
+                    self.status_lbl.setText(f"保存失败：{cred_err}")
+                    self.switch_category("mail_accounts")
+                    return False
+
             ok, errors = self.cfg_obj.commit_draft(self.draft, strict=True)
             if not ok:
                 err_msg = errors[0] if errors else "配置校验未通过"
@@ -320,6 +331,9 @@ class SettingsWindow(QtWidgets.QWidget):
                 self.status_lbl.set_color(theme.up())
                 self.status_lbl.setText(f"保存失败：{err_msg}")
                 return False
+
+            if mail_pg is not None:
+                mail_pg.finalize_commit()
 
             for pg in self.pages:
                 pg.clear_errors()
@@ -348,9 +362,18 @@ class SettingsWindow(QtWidgets.QWidget):
                 confirm_text="放弃修改",
             ):
                 return False
+        mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
+        if mail_pg is not None:
+            mail_pg.discard_pending()
         self.draft = self.cfg_obj.create_draft()
         self._baseline_dict = self.draft.to_dict()
         self.status_lbl.setText("")
         self._load_all_from_draft()
         self.close()
         return True
+
+    def closeEvent(self, e):
+        mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
+        if mail_pg is not None:
+            mail_pg.discard_pending()
+        super().closeEvent(e)
