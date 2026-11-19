@@ -196,6 +196,8 @@ class WindowService(QtCore.QObject):
             hwnd = int(hwnd)
             if not _u32.IsWindow(hwnd):
                 return False
+            if not _u32.IsWindowVisible(hwnd):
+                return self._restore_hidden_main_window(hwnd)
             if _u32.IsIconic(hwnd):
                 _u32.ShowWindow(hwnd, SW_RESTORE)
             ok = bool(_u32.SetForegroundWindow(hwnd))
@@ -216,6 +218,24 @@ class WindowService(QtCore.QObject):
                         _u32.AttachThreadInput(cur_tid, t, False)
             _u32.BringWindowToTop(hwnd)
             return ok or _u32.GetForegroundWindow() == hwnd
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            return False
+
+    def _restore_hidden_main_window(self, hwnd: int) -> bool:
+        """通过客户端“显示窗口”热键恢复托盘隐藏窗口，禁止直接 SW_SHOW。"""
+        try:
+            exe = os.path.basename(self._exe_for(_pid(hwnd))).lower()
+            if not exe:
+                return False
+            from wisland.core.config import cfg
+            hk = str((cfg.get("apps.restore_hotkey") or {}).get(exe, "") or "").strip()
+            if not hk or not self._process_running(exe):
+                return False
+            if not send_hotkey(hk):
+                return False
+            QtCore.QTimer.singleShot(600, lambda e=exe, k=hk: self._focus_later(e, k))
+            return True
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             return False

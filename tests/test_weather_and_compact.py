@@ -100,7 +100,7 @@ def test_01_compact_clock_weather_centering_and_stability(qt_app):
         r = QtCore.QRectF(0, 0, w, 40)
         m = c._idle_layout_metrics(r)
         assert m["has_weather"] is True
-        assert 8.0 <= m["gap"] <= 10.0
+        assert 13.0 <= m["gap"] <= 15.0
         group_center = m["group_left"] + m["content_total"] / 2.0
         assert abs(group_center - r.center().x()) <= 2.0
         assert m["clock_rect"].right() <= m["icon_rect"].left()

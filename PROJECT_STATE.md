@@ -37,6 +37,7 @@ main
 最近已推送提交：
 
 ```text
+4f49679 (HEAD -> main, origin/main, origin/HEAD) fix(notifications,ui): restore hidden clients safely and tune spacing
 2da15be (HEAD -> main, origin/main, origin/HEAD) fix(ui,clipboard): center weather/toast layout and fix 64-bit clipboard ctypes
 cf43611 feat: finalize quota providers, themes, and life reminders
 f670261 feat(quota): complete AI provider integrations and release cleanup
@@ -207,6 +208,8 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 - 天气页网格：`419×232` 保持不变，页头城市按钮仅显示城市名 + 独立 `+` 按钮；左上当前天气改用单一 `QGridLayout`（52px 左列图标+温度，右列左对齐描述/温差/体感且隐藏时不跳动）；底部 `Facts` 改用固定 4 列（两行 `x` 坐标完全一致）。
 - 设置页与 Tooltip：11 个一级分类合并为 7 个（`外观与岛体`、`页面与导航`、`消息与邮件`、`天气`、`AI 与字幕`、`工具与生活`、`数据与关于`），保留全部原有设置项、深链、唯一“取消 / 保存设置”及凭据提交顺序；`SettingsWindow` 改用 `QApplication` 级带标记的 `QToolTip` QSS 规则随 `settings_theme` 切换并在关闭时恢复原样式。
 - 托盘修复：`populate_tray_menu` 使用 `lambda _checked=False: island.toggle()` 消除 `QAction.triggered(bool)` 误传 `False` 导致“收起 Wisland”无效果的问题。
+- 微信未读聚焦修复：通知点击改用 `WindowService.activate()`；可见/最小化窗口正常聚焦，隐藏到托盘的主窗口通过配置的显示窗口热键恢复，禁止直接 `ShowWindow(SW_SHOW)`。客户端候选增加 `WS_EX_NOACTIVATE` 过滤和 200×200 最小面积约束，并优先选择面积最大的可见主窗口；通知专项测试 13/13 通过。
+- 收起态间距微调：时间与天气间距由 9px 调整为 14px；微信/QQ 通知左侧内距由 9px 调整为 18px，两类通知共用同一布局，关闭按钮位置保持不变。收起态、通知和未读快捷区专项测试 16/16 通过。
 - 真实凭据闭环与稳定性增强：
   - 在交互式 Windows 会话中使用独立合成测试键通过真实 Windows Credential Manager 闭环验证（小凭据写入/读取/覆盖/删除、>8KB 大 JSON 分块保存与完整还原、分块与小凭据互转自动清理旧分块）；`WindowsQuotaCredentialStore._read_single` 与 `QuotaManager` 明确区分底层凭据读取错误（如 `WinError 1312`）与会话失效，保留旧有效快照为 `STALE`。
   - `tests/test_home_page.py` 改用 `QtTest.QTest.mouseClick`，消除全部 `QMouseEvent` 弃用警告。
@@ -234,6 +237,12 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 - 只有一个当前主客户端时应允许打开；多个真实客户端才保留歧义。
 - `notify.open.qq` 配置路径应作为 QQ 未运行时的启动入口。
 - 群聊和私聊不会创建新的 QQ 客户端账号，不应被误判为多实例。
+
+### 微信未读打开
+
+- 已修复点击微信未读快捷区时直接强制显示隐藏托盘窗口导致的界面卡死风险。
+- 隐藏窗口当前通过 `apps.restore_hotkey.weixin.exe`（默认 `Ctrl+Alt+W`）恢复。
+- 仍需在真实微信正常、最小化、托盘隐藏和异常退出状态下做最终实机复核。
 
 ### 未读前台清除
 

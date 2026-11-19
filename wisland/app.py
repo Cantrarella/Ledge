@@ -219,7 +219,7 @@ def main():
     ctx.health = HealthReminderService(ctx.water, ctx.todo)
     from .live.service import LiveService
     ctx.live = LiveService()
-    ctx.notify.opener = lambda path: ctx.windows.open_or_focus(path)
+    ctx.notify.controller.set_focuser(ctx.windows.activate)
     ctx.windows.notice.connect(lambda t: ctx.island and ctx.island.activity({"glyph": _G().MESSAGE, "title": t}, 5.0))
     ctx.island = None
 

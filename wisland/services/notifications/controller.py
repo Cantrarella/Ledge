@@ -75,6 +75,10 @@ class NotificationController(QtCore.QObject):
         self.win_source.events_sampled.connect(self._on_win_events)
         self.win_source.status_updated.connect(self._on_source_status)
 
+    def set_focuser(self, focuser):
+        """替换客户端窗口聚焦实现；生产环境使用 WindowService 的托盘恢复逻辑。"""
+        self._focuser = focuser
+
     # ---------------- 生命周期（幂等） ----------------
     def start(self):
         if self._running:

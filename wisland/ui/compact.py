@@ -23,6 +23,8 @@ H_ACT = 40
 H_SUB = 60          # 实时字幕：上日语、下中文两行
 SUB_HOLD_S = 7.0    # 最后一句字幕之后保留多久再回到原来的视图
 W_TEXT = 640        # 显示歌词 / 实时字幕时的胶囊宽度（约为普通收起态的 3 倍）
+_IDLE_WEATHER_GAP = 14.0
+_NOTIFY_LEFT_INSET = 18.0
 
 
 class PetFace:
@@ -438,8 +440,8 @@ class CompactView:
                 sub = a.get("sub", "") or "有新消息"
                 sep_w = float(fm_sub.horizontalAdvance(" · "))
                 sub_w = float(fm_sub.horizontalAdvance(sub))
-                # 左边距9 + 图标24 + 间距9 + 应用名 + 分隔 + 摘要 + 间距8 + 关闭按钮24 + 右边距6
-                w = 9 + 24 + 9 + app_w + sep_w + sub_w + 8 + 24 + 6
+                # 左边距 + 图标24 + 间距9 + 应用名 + 分隔 + 摘要 + 间距8 + 关闭按钮24 + 右边距6
+                w = _NOTIFY_LEFT_INSET + 24 + 9 + app_w + sep_w + sub_w + 8 + 24 + 6
                 return clamp(w, 190.0, 360.0), H_NOTIFY
             fm = QtGui.QFontMetrics(ui_font(13, W.DemiBold))
             tw = float(math.ceil(fm.horizontalAdvance(a.get("title", ""))) + 2)
@@ -600,7 +602,7 @@ class CompactView:
         icon_w = 14.0
         icon_temp_gap = 3.0
         weather_w = icon_w + icon_temp_gap + temp_w
-        gap = 9.0
+        gap = _IDLE_WEATHER_GAP
         content_total = clock_w + gap + weather_w
         group_left = r.center().x() - content_total / 2.0
         clock_rect = QtCore.QRectF(group_left, r.y(), clock_w + 1.0, r.height())
@@ -748,7 +750,7 @@ class CompactView:
         title = act.get("title", "")
         sub = act.get("sub", "")
         is_generic = not (is_notify or is_life or t == "volume")
-        # 左侧图标槽位 24×24px（左边距 9px、间距 9px）；通用轻提示按内容总宽整体居中
+        # 左侧通知图标槽位 24×24px；通知整体右侧留出呼吸空间，通用轻提示按内容总宽居中
         d = 24 if (is_notify or is_life) else (22 if is_generic else 26)
         gap = 9 if (is_notify or is_life) else (6 if is_generic else 10)
         if is_generic:
@@ -764,7 +766,8 @@ class CompactView:
             start_x = r.center().x() - content_w / 2.0
             cr = QtCore.QRectF(start_x, cy - d / 2, d, d)
         else:
-            cr = QtCore.QRectF(r.x() + 9, cy - d / 2, d, d)
+            left_inset = _NOTIFY_LEFT_INSET if is_notify else 9.0
+            cr = QtCore.QRectF(r.x() + left_inset, cy - d / 2, d, d)
         icon_rect = cr.adjusted(1.0, 1.0, -1.0, -1.0)
         if is_life:
             drew_svg = draw_life_svg_icon(p, icon_rect, str(act.get("kind") or ""), theme.dark, a)

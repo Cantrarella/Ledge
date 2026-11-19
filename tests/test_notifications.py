@@ -250,6 +250,75 @@ class TestNotifications(unittest.TestCase):
         self.assertFalse(ok4)
         self.assertIn("已退出", msg4)
 
+    def test_04b_main_window_selection_and_controller_focuser(self):
+        """选择面积最大的真实主窗，并让生产控制器使用注入的窗口服务聚焦器。"""
+        candidates = [
+            WindowCandidate(hwnd=11, pid=101, exe="weixin.exe", started_at=500.0, visible=False, title="微信", area=100 * 100),
+            WindowCandidate(hwnd=12, pid=101, exe="weixin.exe", started_at=500.0, visible=True, title="微信", area=900 * 700),
+        ]
+        binding = bind_client_target("wechat", enumerator=lambda _src: candidates)
+        self.assertTrue(binding.can_open)
+        self.assertEqual(binding.window_handle, 12)
+
+        focused: list[int] = []
+        ctrl = NotificationController(enumerator=lambda _src: candidates)
+        ctrl.set_focuser(lambda hwnd: focused.append(hwnd) or True)
+        ctrl.ingest_event(_make_ev(nid="main-window", pid=101, hwnd=12, started_at=500.0))
+        self.assertTrue(ctrl.open("wechat"))
+        self.assertEqual(focused, [12])
+        self.assertEqual(ctrl.counts.get("wechat", 0), 0)
+        ctrl.stop()
+
+    def test_04c_hidden_wechat_uses_restore_hotkey_without_showwindow(self):
+        """托盘隐藏微信通过配置热键恢复，禁止直接 ShowWindow 强制显示。"""
+        from wisland.services import system
+
+        class _FakeUser32:
+            @staticmethod
+            def IsWindow(_hwnd):
+                return True
+
+            @staticmethod
+            def IsWindowVisible(_hwnd):
+                return False
+
+            @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
+            @staticmethod
+            def ShowWindow(_hwnd, _cmd):
+                raise AssertionError("hidden WeChat must not use ShowWindow")
+
+        original_hotkeys = dict(cfg.get("apps.restore_hotkey") or {})
+        original_u32 = system._u32
+        original_pid = system._pid
+        original_send = system.send_hotkey
+        original_single = system.QtCore.QTimer.singleShot
+        calls: list[str] = []
+        try:
+            cfg.set(
+                "apps.restore_hotkey",
+                {**original_hotkeys, "weixin.exe": "Ctrl+Alt+W"},
+                save=False,
+            )
+            system._u32 = _FakeUser32()
+            system._pid = lambda _hwnd: 101
+            system.send_hotkey = lambda spec: calls.append(spec) or True
+            system.QtCore.QTimer.singleShot = staticmethod(lambda _delay, _fn: None)
+            svc = system.WindowService()
+            svc._exe_for = lambda _pid: r"C:\Tencent\Weixin\Weixin.exe"
+            svc._process_running = lambda exe: exe == "weixin.exe"
+
+            self.assertTrue(svc.activate(3001))
+            self.assertEqual(calls, ["Ctrl+Alt+W"])
+        finally:
+            cfg.set("apps.restore_hotkey", original_hotkeys, save=False)
+            system._u32 = original_u32
+            system._pid = original_pid
+            system.send_hotkey = original_send
+            system.QtCore.QTimer.singleShot = original_single
+
     def test_05_privacy_masking_and_preview_toggle(self):
         """测试默认隐藏正文与开启摘要后的敏感验证码脱敏。"""
         ev = _make_ev(nid="55", title="安全中心", body="您的登录验证码是 839201，请勿泄露。")

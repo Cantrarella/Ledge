@@ -34,10 +34,14 @@ _user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 _user32.GetWindowLongW.restype = ctypes.c_long
 _user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
 _user32.GetWindow.restype = wintypes.HWND
+_user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_user32.GetWindowRect.restype = wintypes.BOOL
 
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
 GW_OWNER = 4
+MIN_CLIENT_WINDOW_AREA = 200 * 200
 
 _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 _kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -175,6 +179,7 @@ class WindowCandidate:
     started_at: float | None
     visible: bool
     title: str = ""
+    area: int = 0
 
 
 def _source_exes(source_key: str) -> tuple[str, ...]:
@@ -208,9 +213,15 @@ def enumerate_client_windows(source_key: str) -> list[WindowCandidate]:
             return True
         # 过滤工具窗口（WS_EX_TOOLWINDOW）和带 owner 的附属弹窗
         ex_style = int(_user32.GetWindowLongW(hwnd, GWL_EXSTYLE) or 0)
-        if ex_style & WS_EX_TOOLWINDOW:
+        if ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE):
             return True
         if _user32.GetWindow(hwnd, GW_OWNER):
+            return True
+        rect = wintypes.RECT()
+        if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return True
+        area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+        if area < MIN_CLIENT_WINDOW_AREA:
             return True
 
         pid = wintypes.DWORD(0)
@@ -232,7 +243,15 @@ def enumerate_client_windows(source_key: str) -> list[WindowCandidate]:
             title = buf.value
         # 只收集真实可见主窗，或有有效标题的托盘隐藏主窗（过滤无标题隐藏辅助窗口）
         if title and title not in ("MSCTFIME UI", "Default IME") and (vis or title in ("微信", "WeChat", "QQ")):
-            found.append(WindowCandidate(hwnd=int(hwnd), pid=p, exe=exe, started_at=started, visible=vis, title=title))
+            found.append(WindowCandidate(
+                hwnd=int(hwnd),
+                pid=p,
+                exe=exe,
+                started_at=started,
+                visible=vis,
+                title=title,
+                area=area,
+            ))
         return True
 
     _user32.EnumWindows(_cb, 0)
@@ -244,10 +263,11 @@ def default_focus_hwnd(hwnd: int) -> bool:
     if not hwnd or not _user32.IsWindow(wintypes.HWND(int(hwnd))):
         return False
     hw = wintypes.HWND(int(hwnd))
+    if not _user32.IsWindowVisible(hw):
+        # 隐藏到托盘的主窗口不能靠 SW_SHOW 强制恢复：部分 Qt 客户端会卡死。
+        return False
     if _user32.IsIconic(hw):
         _user32.ShowWindow(hw, SW_RESTORE)
-    else:
-        _user32.ShowWindow(hw, SW_SHOW)
     return bool(_user32.SetForegroundWindow(hw))
 
 
@@ -289,7 +309,10 @@ def bind_client_target(
             matched = [c for c in matched if _same_started_at(c.started_at, process_started_at)]
         if not matched:
             return ClientBinding(pid=pid, window_handle=window_handle, process_started_at=process_started_at, can_open=False)
-        best = next((c for c in matched if c.hwnd == window_handle), None) or next((c for c in matched if c.visible), matched[0])
+        best = next((c for c in matched if c.hwnd == window_handle), None)
+        if best is None:
+            visible = [c for c in matched if c.visible]
+            best = max(visible or matched, key=lambda c: int(getattr(c, "area", 0) or 0))
         return ClientBinding(
             pid=best.pid,
             window_handle=best.hwnd,
@@ -308,7 +331,8 @@ def bind_client_target(
 
     only_pid = distinct_pids[0]
     matched = [c for c in candidates if c.pid == only_pid]
-    best = next((c for c in matched if c.visible), matched[0])
+    visible = [c for c in matched if c.visible]
+    best = max(visible or matched, key=lambda c: int(getattr(c, "area", 0) or 0))
     return ClientBinding(
         pid=best.pid,
         window_handle=best.hwnd,
@@ -371,7 +395,8 @@ def focus_event_target(
     distinct_pids = {c.pid for c in candidates}
     if len(distinct_pids) > 1:
         return False, "客户端已打开但无法识别账号"
-    best = next((c for c in candidates if c.visible), candidates[0])
+    visible = [c for c in candidates if c.visible]
+    best = max(visible or candidates, key=lambda c: int(getattr(c, "area", 0) or 0))
     if focus_fn(best.hwnd):
         return True, ""
     return False, f"无法恢复 {event.app_name} 窗口"
