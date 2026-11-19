@@ -37,7 +37,8 @@ main
 最近已推送提交：
 
 ```text
-4f49679 (HEAD -> main, origin/main, origin/HEAD) fix(notifications,ui): restore hidden clients safely and tune spacing
+e08b06a fix(live): harden capture shutdown and credential handling
+8d86ed0 fix(notifications,ui): restore hidden clients safely and tune spacing
 2da15be (HEAD -> main, origin/main, origin/HEAD) fix(ui,clipboard): center weather/toast layout and fix 64-bit clipboard ctypes
 cf43611 feat: finalize quota providers, themes, and life reminders
 f670261 feat(quota): complete AI provider integrations and release cleanup
