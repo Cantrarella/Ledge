@@ -2,6 +2,8 @@
 """实时字幕页（419×185 紧凑布局，中日双语纯展示模式，key 保持为 "trans"）。"""
 from __future__ import annotations
 
+from collections import deque
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..anim import clamp
@@ -22,6 +24,9 @@ class LiveView(QtWidgets.QWidget):
         self.rows: list[dict] = []          # {sid, jp, zh, final}
         self.partial = ""
         self.partial_zh = ""
+        self.partial_sid = ""
+        self._latest_live_seq = 0
+        self._closed_live_sids = deque(maxlen=16)
         self.hint = ""
         self.scroll = 0.0                   # 距离底部（最新一行）的滚动距离，0 = 跟随最新
         self._content_h = 0.0
@@ -50,13 +55,26 @@ class LiveView(QtWidgets.QWidget):
         r["jp"] = jp
         if not r["zh"] and self.partial_zh:
             r["zh"] = self.partial_zh
-        self.partial, self.partial_zh = "", ""
+        if self.partial_sid:
+            self._closed_live_sids.append(self.partial_sid)
+        self.partial, self.partial_zh, self.partial_sid = "", "", ""
         self._grow(before)
         self.update()
 
     def on_live(self, sid, zh):
+        if sid in self._closed_live_sids:
+            return
+        seq = 0
+        if isinstance(sid, str) and sid.startswith("L") and sid[1:].isdigit():
+            seq = int(sid[1:])
+            if seq < self._latest_live_seq:
+                return
         r = self._find(sid)
         if r is None:
+            if self.partial_sid and self.partial_sid != sid:
+                self._closed_live_sids.append(self.partial_sid)
+            self.partial_sid = sid
+            self._latest_live_seq = max(self._latest_live_seq, seq)
             self.partial_zh = zh
         elif not r["final"]:
             r["zh"] = zh
@@ -74,7 +92,7 @@ class LiveView(QtWidgets.QWidget):
         self.update()
 
     def clear(self):
-        self.rows, self.partial, self.partial_zh = [], "", ""
+        self.rows, self.partial, self.partial_zh, self.partial_sid = [], "", "", ""
         self.scroll = 0.0
         self.update()
 

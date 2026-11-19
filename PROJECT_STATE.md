@@ -172,6 +172,13 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 
 - 日语识别、中文译本。
 - 收起态支持最新字幕显示。
+- 音频设备断开或采集异常时自动停止流水线，不再让界面永久停在“正在聆听”。
+- 退出程序时等待流水线线程安全结束；单句原始音频缓存随 2~60 秒最大句长配置扩展。
+- 实时字幕 API Key 使用 Windows 凭据管理器 `Wisland/translate/deepseek`，旧版 `config.json` 明文 Key 首次读取自动迁移并清除。
+- 本地 `dist/Ledge` 开发目录优先复用源码根目录 `models/`，避免约 630MB 模型重复下载。
+- 翻译失败缓存限制为 128 条；HTTP 429 遵守 `Retry-After`（默认退避 2 秒）；迟到草稿按 `L1/L2...` 句号丢弃，不能覆盖新句。
+- 完整模型文件增加最低尺寸校验，避免空文件或损坏文件被误判为可用。
+- 回归：`tests/test_live_pipeline.py` 7/7 通过，相关设置/页面测试 10/10 通过；全量测试首次 92 passed / 8 failed，其中 2 项因剪贴板残留敏感内容导致，清空后单独复跑 2/2 通过；剩余 6 项均为受限桌面环境的注册表、凭据管理器或固定截图目录问题。新包已用 PyInstaller 重建并启动验证。
 - 不包含翻译页、词典、生词本和 Anki。
 
 ### 6.8 AI 额度基础服务与设置页
@@ -230,6 +237,12 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 
 ## 9. 已知问题与待验证项
 
+### 打包目录与用户数据
+
+- `Ledge.exe` 按设计使用自身所在目录下的 `config.json` 与 `data/`；根目录版本与 `dist/Ledge/Ledge.exe` 是两套独立数据目录，切换启动位置不会自动共享设置。
+- `scripts/build.ps1` 在重建前备份已有 `dist/Ledge/config.json` 与 `data/`，先生成不含个人数据的便携压缩包，再仅向本地 `dist/Ledge` 恢复原状态。
+- 排查“账号消失”时先确认实际启动的是哪一个 `Ledge.exe`，不要直接重新录入账号或覆盖配置。
+
 ### QQ 未读打开
 
 - 只有一个 QQ 主客户端时，旧通知绑定的 PID 可能已经失效。
@@ -258,7 +271,7 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 
 ### 安全与稳定
 
-- 实时字幕 API Key 仍保存在 `config.json`，建议后续迁移到 Windows 凭据管理器。
+- 实时字幕 API Key 已迁移到 Windows 凭据管理器，`config.json` 不再保留明文 Key。
 - 前台 WinEventHook 需要声明正确的 64 位 ctypes 签名，并在退出时释放。
 - 测试中的 PySide6 `QMouseEvent` 弃用警告建议改用 QTest。
 

@@ -16,6 +16,16 @@ $DistDir = Join-Path $RepoRoot "dist"
 $PortableDir = Join-Path $DistDir "Ledge"
 $ZipPath = Join-Path $DistDir "Ledge-portable.zip"
 $PythonExe = "C:\Users\User\AppData\Local\Programs\Python\Python313\python.exe"
+$StateBackupDir = Join-Path $env:TEMP ("Ledge-build-state-" + [guid]::NewGuid().ToString("N"))
+$HasPortableConfig = Test-Path (Join-Path $PortableDir "config.json")
+$HasPortableData = Test-Path (Join-Path $PortableDir "data")
+New-Item -ItemType Directory -Force $StateBackupDir | Out-Null
+if ($HasPortableConfig) {
+    Copy-Item -Force (Join-Path $PortableDir "config.json") (Join-Path $StateBackupDir "config.json")
+}
+if ($HasPortableData) {
+    Copy-Item -Recurse -Force (Join-Path $PortableDir "data") (Join-Path $StateBackupDir "data")
+}
 
 Write-Host "[1/4] 停止正在运行的 Ledge / WIsland 进程..." -ForegroundColor Cyan
 Get-Process -Name "Ledge","WIsland" -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -48,6 +58,15 @@ if (-not $SkipZip) {
     }
     Compress-Archive -Path "$PortableDir\*" -DestinationPath $ZipPath -CompressionLevel Optimal
 }
+
+# 打包压缩包必须保持无个人数据；仅在最终重建的本地目录中恢复原配置。
+if ($HasPortableConfig) {
+    Copy-Item -Force (Join-Path $StateBackupDir "config.json") (Join-Path $PortableDir "config.json")
+}
+if ($HasPortableData) {
+    Copy-Item -Recurse -Force (Join-Path $StateBackupDir "data\*") (Join-Path $PortableDir "data")
+}
+Remove-Item -Recurse -Force $StateBackupDir
 
 if ($RestartApp) {
     Write-Host "正在启动 Ledge.exe..." -ForegroundColor Green

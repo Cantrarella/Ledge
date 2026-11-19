@@ -127,6 +127,8 @@ class Translator:
         self.last_provider = "deepseek"
         self.last_error = ""
         self.last_usage: dict = {}
+        self.last_status = 0
+        self.last_retry_after: str | None = None
 
     @property
     def model(self) -> str:
@@ -136,6 +138,8 @@ class Translator:
         text = (text or "").strip()
         if not text:
             return ""
+        self.last_status = 0
+        self.last_retry_after = None
         key = str(self.config.get("translate.api_key", "") or "").strip()
         if not key:
             raise RuntimeError("未设置 DeepSeek API Key")
@@ -177,6 +181,9 @@ class Translator:
         except (TranslationCancelled, TranslationDeadlineExceeded):
             raise
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, httpx.HTTPStatusError):
+                self.last_status = int(e.response.status_code)
+                self.last_retry_after = e.response.headers.get("retry-after")
             self.last_error = friendly_error(e)
             raise RuntimeError(self.last_error) from e
         out = "".join(parts).strip()

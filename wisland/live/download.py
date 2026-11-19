@@ -30,7 +30,11 @@ FILES = [
 
 
 def missing() -> list[tuple[str, str, str, int]]:
-    return [f for f in FILES if not (MODELS / f[0]).exists()]
+    return [
+        f for f in FILES
+        if not (MODELS / f[0]).is_file()
+        or (MODELS / f[0]).stat().st_size < int(f[3] * 0.9)
+    ]
 
 
 def _endpoints() -> list[str]:

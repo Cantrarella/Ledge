@@ -23,6 +23,24 @@ from .translate import Translator, TranslationCancelled, TranslationStream
 DRAFT_CPU_BUDGET = 0.5
 # 实时草稿译文每跑 1 秒，至少留这么多秒给整句翻译，避免本地模型被草稿占满。
 LIVE_DUTY_GAP = 1.2
+FAILED_TRANSLATION_LIMIT = 128
+
+
+def raw_history_frames(max_segment_s: int, window: int = 512) -> int:
+    """原始音频环形缓存至少覆盖最大句长，并保留 0.5 秒以上预卷。"""
+    needed = int(max_segment_s * 16000 / max(1, window)) + 64
+    return max(1250, needed)
+
+
+def translation_retry_delay(status: int, retry_after: str | None) -> float:
+    """限流优先遵守 Retry-After；普通瞬时错误只做很短的退避。"""
+    if status == 429:
+        try:
+            wait = float(retry_after) if retry_after is not None else 2.0
+        except (TypeError, ValueError):
+            wait = 2.0
+        return max(1.0, min(10.0, wait))
+    return 0.2
 
 
 class Pipeline(QtCore.QThread):
@@ -56,14 +74,14 @@ class Pipeline(QtCore.QThread):
         self._translate_gate = threading.Lock()
         self._translation_state_lock = threading.Lock()
         self._pending_final = {}
-        self._failed_translations = {}
+        self._failed_translations: collections.OrderedDict[str, str] = collections.OrderedDict()
         self._live_task_inflight = False
         self._last_queue_report = 0.0
 
         # 运行状态
         self._fed = 0                    # 已处理样本数（16k）
         self._pre_roll: collections.deque = collections.deque(maxlen=18)   # ~0.56s 预卷
-        self._raw_frames: collections.deque = collections.deque(maxlen=1250)  # 40 秒原始音频
+        self._raw_frames: collections.deque = collections.deque(maxlen=raw_history_frames(10))
         self._vad_origin = 0
         self._active = False
         self._utterance: list[np.ndarray] = []
@@ -81,7 +99,6 @@ class Pipeline(QtCore.QThread):
         self._final: FinalASR | None = None
         self._vad = None
         self._level_counter = 0          # sig_level 降采样计数器
-        self._max_segment_samples = 0   # 在 _setup 里初始化，避免热路径每帧读配置
         self._vad_pending = np.zeros(0, dtype=np.float32)
         self._vad_window = 512
         self._queue_warned = False
@@ -106,7 +123,7 @@ class Pipeline(QtCore.QThread):
             except Exception:  # noqa: BLE001
                 pass
 
-    def stop(self, max_wait: float = 1.5) -> None:
+    def stop(self, max_wait: float = 1.5) -> bool:
         """请求停止。默认不等太久，避免界面在「停止 / 切换设置」时卡住。
 
         真正的收尾（关线程池、放掉模型）在流水线线程自己退出时做，所以哪怕它还在
@@ -115,7 +132,7 @@ class Pipeline(QtCore.QThread):
         self._stop.set()
         if self._capture:
             self._capture.stop()
-        self.wait(int(max_wait * 1000))
+        return self.wait(int(max_wait * 1000))
 
     def pause(self, flag: bool) -> None:
         if flag:
@@ -206,10 +223,12 @@ class Pipeline(QtCore.QThread):
         vcfg.silero_vad.threshold = float(cfg.get("vad.threshold", 0.5))
         vcfg.silero_vad.min_silence_duration = int(cfg.get("vad.min_silence_ms", 350)) / 1000.0
         vcfg.silero_vad.min_speech_duration = int(cfg.get("vad.min_speech_ms", 200)) / 1000.0
-        vcfg.silero_vad.max_speech_duration = float(cfg.get("asr.max_segment_s", 24))
+        max_segment_s = int(cfg.get("asr.max_segment_s", 10))
+        vcfg.silero_vad.max_speech_duration = float(max_segment_s)
         vcfg.sample_rate = 16000
         vcfg.num_threads = 1
         self._vad = sherpa_onnx.VoiceActivityDetector(vcfg, buffer_size_in_seconds=60)
+        self._raw_frames = collections.deque(maxlen=raw_history_frames(max_segment_s, self._vad_window))
         # 3) 整句校对引擎（异步预加载）
         if (self._draft_mode == "rolling" and self._draft_engine is not None
                 and self._same_engine(self._draft_engine.engine, engine)):
@@ -226,13 +245,22 @@ class Pipeline(QtCore.QThread):
             source=str(cfg.get("audio.source", "loopback")),
             device_name=str(cfg.get("audio.device", "") or ""),
             on_chunk=self._on_audio,
-            on_error=lambda m: self.sig_error.emit(m),
+            on_error=self._on_audio_error,
             block_ms=int(cfg.get("audio.block_ms", 80)),
             on_status=lambda m: self.sig_status.emit(m),
         )
         self._capture.start()
         self._fed = 0
-        self._max_segment_samples = int(cfg.get("asr.max_segment_s", 24)) * 1000 // 80
+
+    def _on_audio_error(self, message: str) -> None:
+        """音频线程退出后同步结束流水线，避免界面永久停在“正在聆听”。"""
+        if self._stop.is_set():
+            return
+        self.sig_error.emit(message)
+        self.sig_status.emit("音频设备异常，已停止")
+        self._stop.set()
+        if self._capture:
+            self._capture.stop()
 
     @staticmethod
     def _same_engine(a: str, b: str) -> bool:
@@ -474,12 +502,15 @@ class Pipeline(QtCore.QThread):
                 error = exc
                 # Retry the same configured service once; never silently change models.
                 if attempt or any(code in str(exc) for code in ("API Key", "余额", "无权限")):
-                    with self._translation_state_lock:
-                        self._failed_translations[sid] = str(exc)
+                    self._remember_translation_failure(sid, str(exc))
                     self.sig_translate_failed.emit(sid, str(exc))
                     self.sig_error.emit(f"翻译失败：{exc}")
                     return
-                if self._stop.wait(0.2):
+                delay = translation_retry_delay(
+                    int(getattr(translator, "last_status", 0) or 0),
+                    getattr(translator, "last_retry_after", None),
+                )
+                if self._stop.wait(delay):
                     return
         else:
             return
@@ -490,6 +521,13 @@ class Pipeline(QtCore.QThread):
         self.sig_final_zh.emit(sid, out)
         self.sig_translate_info.emit({"provider": "deepseek", "seconds": round(time.monotonic() - t0, 1),
                                       "sid": sid, "usage": translator.last_usage})
+
+    def _remember_translation_failure(self, sid: str, message: str) -> None:
+        with self._translation_state_lock:
+            self._failed_translations.pop(sid, None)
+            self._failed_translations[sid] = message
+            while len(self._failed_translations) > FAILED_TRANSLATION_LIMIT:
+                self._failed_translations.popitem(last=False)
 
     def _maybe_live_translate(self, now: float) -> None:
         if not self.cfg.get("translate.live", True) or not self.cfg.get("translate.enabled", True):

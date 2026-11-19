@@ -29,7 +29,9 @@ class _LiveConfig:
 
 
 def _api_key() -> str:
-    key = str(cfg.get("translate.api_key") or "").strip()
+    from .credentials import get_translate_api_key
+
+    key = get_translate_api_key()
     if key:
         return key
     src = expand(cfg.get("translate.import_from") or "")
@@ -57,13 +59,21 @@ class LiveService(QtCore.QObject):
         self.pipe = None
         self.running = False
         self._dl = None
+        self._stopping = None
+        self._last_error = ""
         # numpy / sherpa-onnx 导入要 0.5s 以上：启动后在后台预先导入，点「开始聆听」时不卡界面
         from ..core.bg import run_bg
         run_bg(lambda: __import__("wisland.live.pipeline"))
 
     def available(self) -> tuple[bool, str]:
         from .paths import MODELS
-        if not (MODELS / "parakeet-ja-0.6b-int8").exists() or not (MODELS / "silero_vad.onnx").exists():
+        model_dir = MODELS / "parakeet-ja-0.6b-int8"
+        required = (
+            (model_dir / "model.int8.onnx", 600_000_000),
+            (model_dir / "tokens.txt", 10_000),
+            (MODELS / "silero_vad.onnx", 500_000),
+        )
+        if not all(path.is_file() and path.stat().st_size >= minimum for path, minimum in required):
             return False, "缺少识别模型（约 630MB）"
         return True, ""
 
@@ -89,15 +99,16 @@ class LiveService(QtCore.QObject):
         from .pipeline import Pipeline       # 重依赖（numpy / sherpa-onnx）用到时才导入
         p = Pipeline(_LiveConfig())
         p.sig_status.connect(self.status)
-        p.sig_error.connect(self.error)
+        p.sig_error.connect(self._pipeline_error)
         p.sig_partial.connect(self.partial)
         p.sig_segment.connect(lambda seg: self.segment.emit(seg.sid, seg.jp))
         p.sig_live_zh.connect(self.live_zh)
         p.sig_final_zh.connect(self.final_zh)
         p.sig_level.connect(self.level)
-        p.finished.connect(lambda p=p: self._finished() if self.pipe is p else None)
+        p.finished.connect(lambda p=p: self._thread_finished(p))
         self.pipe = p
         self.running = True
+        self._last_error = ""
         p.start()
         self.running_changed.emit(True)
 
@@ -123,23 +134,37 @@ class LiveService(QtCore.QObject):
     def stop(self, wait: bool = False):
         """停止聆听。等待音频线程结束放到后台，不阻塞界面（退出程序时 wait=True）。"""
         p, self.pipe = self.pipe, None
+        self._last_error = ""
         self._finished()
         if p is None:
             return
+        self._stopping = p
         if wait:
             try:
-                p.stop()
+                if not p.stop(max_wait=20.0):
+                    p.wait()
             except Exception:  # noqa: BLE001
                 pass
             return
         from ..core.bg import run_bg
-        self._stopping = p                     # 保持引用直到线程结束
         run_bg(lambda: p.stop(), on_done=lambda _r: setattr(self, "_stopping", None))
+
+    def _thread_finished(self, pipe):
+        if self._stopping is pipe:
+            self._stopping = None
+        if self.pipe is pipe:
+            self._finished()
+
+    def _pipeline_error(self, message: str):
+        self._last_error = message
+        self.error.emit(message)
 
     def _finished(self):
         if self.running:
             self.running = False
             self.running_changed.emit(False)
+            if self._last_error:
+                self.status.emit(self._last_error)
         self.pipe = None
 
     def start(self):

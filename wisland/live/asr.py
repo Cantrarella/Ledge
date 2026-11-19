@@ -80,9 +80,13 @@ class FinalASR:
 
     @staticmethod
     def available(engine: str = "parakeet") -> bool:
-        return engine == "parakeet" and all(
+        if engine != "parakeet":
+            return False
+        required = {"model.int8.onnx": 600_000_000, "tokens.txt": 10_000}
+        return all(
             (MODEL_DIR / filename).is_file()
-            for filename in ("model.int8.onnx", "tokens.txt")
+            and (MODEL_DIR / filename).stat().st_size >= minimum
+            for filename, minimum in required.items()
         )
 
 

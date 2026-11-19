@@ -569,7 +569,9 @@ class SettingsWindow(QtWidgets.QWidget):
         auto_dirty = gen_pg.autostart_dirty() if isinstance(gen_pg, GeneralSettingsPage) else False
         quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
         quota_pending = quota_pg.has_pending_changes() if quota_pg is not None else False
-        return (self.draft.to_dict() != self._baseline_dict) or auto_dirty or quota_pending
+        sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
+        subtitle_pending = sub_pg.has_pending_credentials() if sub_pg is not None else False
+        return (self.draft.to_dict() != self._baseline_dict) or auto_dirty or quota_pending or subtitle_pending
 
     def _on_any_page_changed(self):
         if self._loading or self._saving:
@@ -633,6 +635,14 @@ class SettingsWindow(QtWidgets.QWidget):
             self.collect_to_draft()
             mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
             quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
+            sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
+            if sub_pg is not None and sub_pg.has_pending_credentials():
+                sub_ok, sub_err = sub_pg.commit_credentials()
+                if not sub_ok:
+                    self.status_lbl.set_color(settings_theme.up())
+                    self.status_lbl.setText(f"保存失败：{sub_err}")
+                    self.switch_category("subtitles")
+                    return False
             if mail_pg is not None:
                 cred_ok, cred_err = mail_pg.commit_credentials()
                 if not cred_ok:

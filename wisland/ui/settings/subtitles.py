@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ...core.config import ConfigDraft
+from ...live.credentials import get_translate_api_key, save_translate_api_key
 from ..theme import G
 from ..widgets import ComboBox, DoubleSpinBox, LineEdit, PasswordEdit, SettingRow, SpinBox, Switch
 from .base import SettingsPage
@@ -15,6 +16,7 @@ class SubtitlesSettingsPage(SettingsPage):
 
     def __init__(self, ctx=None, parent=None):
         super().__init__(ctx, parent)
+        self._loaded_api_key = ""
 
         self.cb_source = ComboBox([
             ("loopback", "系统声音内录 (Loopback)"),
@@ -43,7 +45,7 @@ class SubtitlesSettingsPage(SettingsPage):
             SettingRow("边说边译（流式草稿）", "在说话未结束前提前预测并刷新中文草稿译文", self.sw_tr_live),
             SettingRow("接口地址 (Base URL)", "兼容 OpenAI / DeepSeek 格式的 API 根地址", self.ed_base_url),
             SettingRow("模型名称 (Model)", "用于实时字幕翻译的模型名称（如 deepseek-chat 或 deepseek-flash）", self.ed_model),
-            SettingRow("接口密钥 (API Key)", "用于调用翻译接口的密钥（保存在本地 config.json）", self.ed_api_key),
+            SettingRow("接口密钥 (API Key)", "用于调用翻译接口的密钥（保存在 Windows 凭据管理器）", self.ed_api_key),
         )
 
     def load_from_draft(self, draft: ConfigDraft):
@@ -56,7 +58,8 @@ class SubtitlesSettingsPage(SettingsPage):
         self.sw_tr_live.setChecked(bool(draft.get("live.translate.live", True)))
         self.ed_base_url.setText(str(draft.get("translate.base_url", "https://api.deepseek.com") or ""))
         self.ed_model.setText(str(draft.get("translate.model", "deepseek-flash") or ""))
-        self.ed_api_key.setText(str(draft.get("translate.api_key", "") or ""))
+        self._loaded_api_key = get_translate_api_key()
+        self.ed_api_key.setText(self._loaded_api_key)
 
     def save_to_draft(self, draft: ConfigDraft):
         draft.set("live.audio.source", self.cb_source.current_value() or "loopback")
@@ -69,4 +72,14 @@ class SubtitlesSettingsPage(SettingsPage):
         draft.set("live.translate.live", self.sw_tr_live.isChecked())
         draft.set("translate.base_url", self.ed_base_url.text().strip() or "https://api.deepseek.com")
         draft.set("translate.model", self.ed_model.text().strip() or "deepseek-flash")
-        draft.set("translate.api_key", self.ed_api_key.text().strip())
+        draft.set("translate.api_key", "")
+
+    def commit_credentials(self) -> tuple[bool, str]:
+        """在配置提交前保存密钥；失败时不写 config.json。"""
+        if save_translate_api_key(self.ed_api_key.text()):
+            self._loaded_api_key = self.ed_api_key.text().strip()
+            return True, ""
+        return False, "API Key 无法写入 Windows 凭据管理器"
+
+    def has_pending_credentials(self) -> bool:
+        return self.ed_api_key.text().strip() != self._loaded_api_key
