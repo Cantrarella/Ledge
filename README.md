@@ -4,28 +4,16 @@
 
 ## 界面预览
 
-### 收起态（时间天气 / 小形象）
+### 收起态
 
 <p align="center">
-  <a href="docs/ledge-compact-clock.png"><img src="docs/ledge-compact-clock.png" width="229" alt="收起态时间天气"></a>&nbsp;&nbsp;
-  <a href="docs/ledge-compact-pet.png"><img src="docs/ledge-compact-pet.png" width="215" alt="收起态小形象"></a>
+  <a href="docs/ledge-compact-showcase.png"><img src="docs/ledge-compact-showcase.png" width="500" alt="时间天气与小形象收起态"></a>
 </p>
 
-### 展开态核心页面
+### 核心页面
 
 <p align="center">
-  <a href="docs/ledge-home.png"><img src="docs/ledge-home.png" width="400" alt="首页与媒体控制"></a>&nbsp;
-  <a href="docs/ledge-theme-classic.png"><img src="docs/ledge-theme-classic.png" width="400" alt="经典纯黑皮肤"></a>
-</p>
-<p align="center">
-  <a href="docs/ledge-quota.png"><img src="docs/ledge-quota.png" width="252" alt="AI 额度"></a>&nbsp;
-  <a href="docs/ledge-mail.png"><img src="docs/ledge-mail.png" width="252" alt="邮件与验证码预览"></a>&nbsp;
-  <a href="docs/ledge-weather.png"><img src="docs/ledge-weather.png" width="252" alt="天气与多城市预报"></a>
-</p>
-<p align="center">
-  <a href="docs/ledge-tools.png"><img src="docs/ledge-tools.png" width="252" alt="工具与置物架"></a>&nbsp;
-  <a href="docs/ledge-life.png"><img src="docs/ledge-life.png" width="252" alt="喝水与久坐提醒"></a>&nbsp;
-  <a href="docs/ledge-subtitles.png"><img src="docs/ledge-subtitles.png" width="252" alt="实时字幕"></a>
+  <a href="docs/ledge-showcase.png"><img src="docs/ledge-showcase.png" width="900" alt="Ledge 核心页面总览"></a>
 </p>
 
 ### 设置中心（7 个一级分类，独立浅色 / 深色主题）
