@@ -461,7 +461,10 @@ class QuotaPage(Page):
                 w.setParent(None)
                 w.deleteLater()
             elif item.layout() is not None:
-                self._clear_layout(item.layout())
+                sub = item.layout()
+                self._clear_layout(sub)
+                sub.setParent(None)
+                sub.deleteLater()
 
     def refresh(self):
         mgr = self._manager()

@@ -535,14 +535,12 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
         quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
         quota_pg.focus_account(acc.id)
 
-        # 1) 打开前未注入，打开后保留原有 base_qss 并注入唯一浅色 QToolTip 规则
+        # 1) 打开前未注入，打开后不修改全局 qt_app.styleSheet()（避免全应用控件样式重排卡顿）
         win.show()
         qt_app.processEvents()
-        qss_light = qt_app.styleSheet()
-        assert base_qss in qss_light
-        assert qss_light.count(_TOOLTIP_MARK_START) == 1
+        assert qt_app.styleSheet() == base_qss
+        assert win._tooltip_qss_active is True
         assert "SettingsWindow QToolTip" not in win.styleSheet()
-        assert "#FFFFFF" in qss_light and "#181A20" in qss_light
 
         # 触发原生 QToolTip 渲染并检查背景色（浅色白底，非系统黑框）
         card = quota_pg._cards[0]
@@ -560,6 +558,8 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
             None,
         )
         assert tip_widget is not None
+        assert _TOOLTIP_MARK_START in tip_widget.styleSheet()
+        assert "#FFFFFF" in tip_widget.styleSheet() and "#181A20" in tip_widget.styleSheet()
         tip_img_light = tip_widget.grab().toImage()
         assert tip_img_light.save(str(shot_dir / "settings-tooltip-light.png"))
         bg_px_light = tip_img_light.pixelColor(tip_img_light.width() // 2, 4)
@@ -569,14 +569,12 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
         # 2) 切换岛体皮肤（classic/rouge）不影响设置窗口 Tooltip
         island_theme.set_mode("classic")
         qt_app.processEvents()
-        assert "#FFFFFF" in qt_app.styleSheet()
+        assert settings_theme.dark is False
 
-        # 3) 切换设置窗口为深色主题，Tooltip 立即变为 #242630 + 白字，且不重复追加
+        # 3) 切换设置窗口为深色主题，Tooltip 立即变为 #242630 + 白字，且不污染全局 styleSheet
         settings_theme.set_mode("dark")
         qt_app.processEvents()
-        qss_dark = qt_app.styleSheet()
-        assert qss_dark.count(_TOOLTIP_MARK_START) == 1
-        assert "#242630" in qss_dark and "#F4F6FB" in qss_dark
+        assert qt_app.styleSheet() == base_qss
 
         tip_txt_dark = quota_pg.ed_alias.toolTip() or "修改此账号在岛上与设置中的显示名称"
         QtWidgets.QToolTip.showText(gpos, tip_txt_dark, win)
@@ -590,23 +588,30 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
             None,
         )
         assert tip_widget_dark is not None
+        assert "#242630" in tip_widget_dark.styleSheet() and "#F4F6FB" in tip_widget_dark.styleSheet()
         tip_img_dark = tip_widget_dark.grab().toImage()
         assert tip_img_dark.save(str(shot_dir / "settings-tooltip-dark.png"))
         bg_px_dark = tip_img_dark.pixelColor(tip_img_dark.width() // 2, 4)
         assert (bg_px_dark.red(), bg_px_dark.green(), bg_px_dark.blue()) == (36, 38, 48)
         QtWidgets.QToolTip.hideText()
 
-        # 4) 反复开关设置窗口：关闭恢复原 styleSheet，再打开不重复追加
+        # 4) 反复开关设置窗口：关闭卸载过滤器并清空 QTipLabel 样式，保持全局 styleSheet 不变
         win.close()
         qt_app.processEvents()
         assert qt_app.styleSheet() == base_qss
+        assert win._tooltip_qss_active is False
+        assert not any(
+            w.metaObject().className() == "QTipLabel" and _TOOLTIP_MARK_START in w.styleSheet()
+            for w in qt_app.topLevelWidgets()
+        )
 
         win.show()
         qt_app.processEvents()
-        assert qt_app.styleSheet().count(_TOOLTIP_MARK_START) == 1
+        assert win._tooltip_qss_active is True
         win.close()
         qt_app.processEvents()
         assert qt_app.styleSheet() == base_qss
+        assert win._tooltip_qss_active is False
     finally:
         QtWidgets.QToolTip.hideText()
         if win is not None:

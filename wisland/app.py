@@ -13,9 +13,20 @@ from types import SimpleNamespace
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .core import bg
+from .core.branding import (
+    APP_ID,
+    DISPLAY_NAME,
+    TRAY_COLLAPSE,
+    TRAY_EXPAND,
+    TRAY_OPEN_SETTINGS,
+    TRAY_QUIT,
+    TRAY_TOOLTIP,
+)
 from .core.config import DATA_DIR, ROOT, cfg
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_NAME = DISPLAY_NAME
+LEGACY_AUTOSTART_NAME = APP_ID
 
 
 def _G():
@@ -23,57 +34,102 @@ def _G():
     return G
 
 
-def autostart_enabled() -> bool:
+def _query_reg_value(key, name: str) -> str | None:
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-            winreg.QueryValueEx(k, "wisland")
-            return True
+        val, _ = winreg.QueryValueEx(key, name)
+        return str(val)
+    except OSError:
+        return None
+
+
+def autostart_enabled(run_key: str = RUN_KEY) -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key) as k:
+            return (_query_reg_value(k, AUTOSTART_NAME) is not None) or (
+                _query_reg_value(k, LEGACY_AUTOSTART_NAME) is not None
+            )
     except OSError:
         return False
 
 
-def _autostart_cmd() -> str:
+def _autostart_target_path() -> Path:
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}"'
-    """开机自启命令：通过 wisland.vbs 启动（它会选用不带控制台的 pythonw，不会弹出终端窗口）。"""
+        return Path(sys.executable)
+    ledge_vbs = ROOT / "Ledge.vbs"
+    return ledge_vbs if ledge_vbs.is_file() else (ROOT / "wisland.vbs")
+
+
+def _autostart_cmd() -> str:
+    target = _autostart_target_path()
+    if getattr(sys, "frozen", False):
+        return f'"{target}"'
+    # 开机自启命令：通过 Ledge.vbs 启动（它会选用不带控制台的 pythonw，不会弹出终端窗口）
     wscript = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wscript.exe")
-    return f'"{wscript}" "{ROOT / "wisland.vbs"}"'
+    return f'"{wscript}" "{target}"'
 
 
-def fix_autostart():
-    """旧版本直接用 .venv/Scripts/pythonw.exe 自启：在 uv 创建的环境里会弹出终端窗口，
-    关掉窗口灵动岛也会退出。检测到旧的命令就改成通过 wisland.vbs 启动。"""
+def fix_autostart(run_key: str = RUN_KEY):
+    """安全迁移并修复开机启动项：
+    - 将旧 wisland 启动项安全迁移为 Ledge（先确认目标存在并写入 Ledge，成功后再删除旧 wisland）
+    - 若 Ledge 与 wisland 同时存在，保留 Ledge 并删除旧 wisland 避免启动两次
+    - 写入失败时保留旧项，绝不破坏已有开机自启
+    """
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-            cur, _ = winreg.QueryValueEx(k, "wisland")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key) as k:
+            cur_new = _query_reg_value(k, AUTOSTART_NAME)
+            cur_old = _query_reg_value(k, LEGACY_AUTOSTART_NAME)
     except OSError:
         return
-    if cur != _autostart_cmd():
-        try:
-            set_autostart(True)
-        except OSError:
-            pass
+
+    if cur_new is None and cur_old is None:
+        return
+
+    target = _autostart_target_path()
+    want = _autostart_cmd()
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as kw:
+            if cur_new is None:
+                if not target.is_file():
+                    return
+                winreg.SetValueEx(kw, AUTOSTART_NAME, 0, winreg.REG_SZ, want)
+            elif cur_new != want:
+                if target.is_file():
+                    winreg.SetValueEx(kw, AUTOSTART_NAME, 0, winreg.REG_SZ, want)
+
+            if cur_old is not None:
+                try:
+                    winreg.DeleteValue(kw, LEGACY_AUTOSTART_NAME)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
-def set_autostart(on: bool):
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+def set_autostart(on: bool, run_key: str = RUN_KEY):
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as k:
         if on:
-            winreg.SetValueEx(k, "wisland", 0, winreg.REG_SZ, _autostart_cmd())
-        else:
+            winreg.SetValueEx(k, AUTOSTART_NAME, 0, winreg.REG_SZ, _autostart_cmd())
             try:
-                winreg.DeleteValue(k, "wisland")
+                winreg.DeleteValue(k, LEGACY_AUTOSTART_NAME)
             except OSError:
                 pass
+        else:
+            for name in (AUTOSTART_NAME, LEGACY_AUTOSTART_NAME):
+                try:
+                    winreg.DeleteValue(k, name)
+                except OSError:
+                    pass
 
 
 def populate_tray_menu(menu: QtWidgets.QMenu, island, open_settings_fn, quit_fn):
     """构建原生系统托盘与右键菜单（每次展开前动态刷新文案与勾选状态）。"""
     menu.clear()
-    toggle_label = "收起 Wisland" if island.expanded else "展开 Wisland"
+    toggle_label = TRAY_COLLAPSE if island.expanded else TRAY_EXPAND
     act_toggle = menu.addAction(toggle_label)
     act_toggle.triggered.connect(lambda _checked=False: island.toggle())
 
-    act_settings = menu.addAction("打开 Wisland 设置…")
+    act_settings = menu.addAction(TRAY_OPEN_SETTINGS)
     act_settings.triggered.connect(lambda: open_settings_fn())
 
     menu.addSeparator()
@@ -103,7 +159,7 @@ def populate_tray_menu(menu: QtWidgets.QMenu, island, open_settings_fn, quit_fn)
     ))
 
     menu.addSeparator()
-    act_quit = menu.addAction("退出 Wisland")
+    act_quit = menu.addAction(TRAY_QUIT)
     act_quit.triggered.connect(quit_fn)
 
 
@@ -111,13 +167,14 @@ def main():
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
     app = QtWidgets.QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    app.setApplicationName("wisland")
+    app.setApplicationName(DISPLAY_NAME)
+    app.setApplicationDisplayName(DISPLAY_NAME)
     bg.init()
 
     lock = QtCore.QLockFile(str(DATA_DIR / "wisland.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
-        print("wisland 已在运行")
+        print(f"{DISPLAY_NAME} 已在运行")
         return 0
     fix_autostart()
 
@@ -494,7 +551,7 @@ def main():
         app_icon = QtGui.QIcon(glyph_pixmap(G.APPS, 32, QtGui.QColor("#4f8cff")))
     app.setWindowIcon(app_icon)
     tray = QtWidgets.QSystemTrayIcon(app_icon, app)
-    tray.setToolTip("Wisland")
+    tray.setToolTip(TRAY_TOOLTIP)
     tmenu = QtWidgets.QMenu()
     tmenu.aboutToShow.connect(lambda: build_menu(tmenu))
     tray.setContextMenu(tmenu)

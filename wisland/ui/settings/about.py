@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ...core.branding import ABOUT_TITLE
 from ..theme import G, W
 from ..widgets import Card, Label, PillButton, SettingRow, hbox, rounded_pixmap, vbox
 from .base import SettingsPage
@@ -57,7 +58,7 @@ class AboutSettingsPage(SettingsPage):
             if pm:
                 icon_lbl.setPixmap(pm)
 
-        title_lbl = Label("Wisland 灵动岛", 17, W.Bold, 1)
+        title_lbl = Label(ABOUT_TITLE, 17, W.Bold, 1)
         ver_lbl = Label("版本 v1.0 (Baseline 2026-11-17) · Windows 原生桌面灵动岛", 12.5, W.Normal, 2)
         desc_lbl = Label("弹簧物理动效 · 实时背景毛玻璃 · 音乐歌词律动 · 日中实时双语字幕", 12, W.Normal, 3)
         hero.setLayout(hbox(icon_lbl, vbox(title_lbl, ver_lbl, desc_lbl, spacing=3), None, spacing=16, margins=(18, 16, 18, 16)))

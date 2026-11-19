@@ -6,6 +6,7 @@ import datetime as dt
 
 from PySide6 import QtCore, QtWidgets
 
+from ..core.branding import OPEN_SETTINGS_TOOLTIP
 from ..core.config import cfg
 from .theme import G, W, theme, ui_font
 from .widgets import IconButton, hbox
@@ -58,7 +59,7 @@ class PageHeader(QtWidgets.QWidget):
         if show_gear:
             btn_sz = min(26, max(18, height - 2))
             icon_px = 10 if btn_sz <= 21 else 11 if btn_sz <= 24 else 12
-            self.gear_btn = IconButton(G.GEAR, btn_sz, icon_px, "打开 Wisland 设置", parent=self.right_wrap)
+            self.gear_btn = IconButton(G.GEAR, btn_sz, icon_px, OPEN_SETTINGS_TOOLTIP, parent=self.right_wrap)
             self.gear_btn.clicked.connect(self._open_settings)
             self.right_lay.addWidget(self.gear_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 

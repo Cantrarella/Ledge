@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..core.branding import DISPLAY_NAME, SETTINGS_TITLE
 from ..core.config import ConfigDraft, cfg
 from .settings import (
     AboutSettingsPage,
@@ -46,7 +47,7 @@ def _build_tooltip_block(dark: bool) -> str:
         bg, fg, bd = "#FFFFFF", "#181A20", "rgba(0,0,0,28)"
     return (
         f"{_TOOLTIP_MARK_START}\n"
-        "QToolTip {\n"
+        "QTipLabel, QToolTip {\n"
         f"    background-color: {bg};\n"
         f"    color: {fg};\n"
         f"    border: 1px solid {bd};\n"
@@ -55,6 +56,39 @@ def _build_tooltip_block(dark: bool) -> str:
         "}\n"
         f"{_TOOLTIP_MARK_END}"
     )
+
+
+class _SettingsTooltipFilter(QtCore.QObject):
+    """仅对设置窗口触发的 QTipLabel 局部应用主题样式，避免调用 QApplication.setStyleSheet 引发全应用重排卡顿。"""
+
+    def __init__(self, win: SettingsWindow):
+        super().__init__(win)
+        self.win = win
+        self._last_dark: bool | None = None
+
+    def _belongs_to_settings(self) -> bool:
+        if not self.win.isVisible():
+            return False
+        w = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())
+        if w is not None:
+            return w.window() is self.win
+        return self.win.isActiveWindow()
+
+    def apply_to_tip(self, tip: QtWidgets.QWidget, force: bool = False):
+        if self._belongs_to_settings():
+            dark = bool(settings_theme.dark)
+            if force or self._last_dark != dark or _TOOLTIP_MARK_START not in tip.styleSheet():
+                tip.setStyleSheet(_build_tooltip_block(dark))
+                self._last_dark = dark
+        elif _TOOLTIP_MARK_START in tip.styleSheet():
+            tip.setStyleSheet("")
+            self._last_dark = None
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QtCore.QEvent.Type.Polish, QtCore.QEvent.Type.Show):
+            if isinstance(obj, QtWidgets.QWidget) and obj.metaObject().className() == "QTipLabel":
+                self.apply_to_tip(obj)
+        return False
 
 
 LEAF_TO_GROUP: dict[str, tuple[str, str]] = {
@@ -256,7 +290,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self._loading = False
         self._saving = False
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
-        self.setWindowTitle("Wisland 设置")
+        self.setWindowTitle(SETTINGS_TITLE)
         self.resize(820, 600)
         self.setMinimumSize(640, 480)
 
@@ -266,6 +300,9 @@ class SettingsWindow(QtWidgets.QWidget):
 
         self.draft: ConfigDraft = self.cfg_obj.create_draft()
         self._baseline_dict: dict = self.draft.to_dict()
+
+        # 先同步设置窗口主题，再构建子页面与绑定上下文，避免初始化阶段重复整树刷样式
+        settings_theme.set_mode(self.cfg_obj.get("settings_window.theme", "light"))
 
         # ---- 左侧导航栏（小型 logo + Wisland / 副标题“设置”） ----
         self.sidebar = QtWidgets.QFrame(self)
@@ -277,7 +314,7 @@ class SettingsWindow(QtWidgets.QWidget):
             pm = rounded_pixmap(QtGui.QPixmap(str(icon_path)), 28, 7)
             if pm:
                 logo_lbl.setPixmap(pm)
-        brand_title = Label("Wisland", 15, W.Bold, 1)
+        brand_title = Label(DISPLAY_NAME, 15, W.Bold, 1)
         brand_sub = Label("设置", 11.5, W.Normal, 3)
         brand_box = hbox(logo_lbl, vbox(brand_title, brand_sub, spacing=0), None, spacing=10, margins=(8, 4, 6, 10))
 
@@ -386,13 +423,12 @@ class SettingsWindow(QtWidgets.QWidget):
         self.footer.setLayout(hbox((self.status_lbl, 1), self.btn_cancel, self.btn_save, spacing=10, margins=(20, 10, 20, 12)))
 
         self._theme_context = settings_theme
-        self._saved_app_qss: str | None = None
+        self._tooltip_filter: _SettingsTooltipFilter | None = None
         self._tooltip_qss_active: bool = False
         right_lay = vbox(self.header, (self.stack, 1), self.footer, spacing=0, margins=(0, 0, 0, 0))
         self.setLayout(hbox(self.sidebar, (right_lay, 1), spacing=0, margins=(0, 0, 0, 0)))
 
         bind_theme_context(self, settings_theme)
-        settings_theme.set_mode(self.cfg_obj.get("settings_window.theme", "light"))
         settings_theme.changed.connect(self._apply_window_style)
         self._apply_window_style()
         self.switch_category("general")
@@ -426,17 +462,19 @@ class SettingsWindow(QtWidgets.QWidget):
 
     def _apply_tooltip_style(self):
         app = QtWidgets.QApplication.instance()
-        if app is None or not self._tooltip_qss_active:
+        if app is None or not self._tooltip_qss_active or self._tooltip_filter is None:
             return
-        base = _strip_tooltip_block(app.styleSheet())
-        block = _build_tooltip_block(settings_theme.dark)
-        app.setStyleSheet(f"{base}\n{block}" if base else block)
+        for tl in app.topLevelWidgets():
+            if tl.metaObject().className() == "QTipLabel":
+                self._tooltip_filter.apply_to_tip(tl, force=True)
 
     def _install_tooltip_style(self):
         app = QtWidgets.QApplication.instance()
         if app is None or self._tooltip_qss_active:
             return
-        self._saved_app_qss = _strip_tooltip_block(app.styleSheet())
+        if self._tooltip_filter is None:
+            self._tooltip_filter = _SettingsTooltipFilter(self)
+        app.installEventFilter(self._tooltip_filter)
         self._tooltip_qss_active = True
         self._apply_tooltip_style()
 
@@ -445,10 +483,15 @@ class SettingsWindow(QtWidgets.QWidget):
             return
         app = QtWidgets.QApplication.instance()
         if app is not None:
-            saved = self._saved_app_qss if self._saved_app_qss is not None else ""
-            app.setStyleSheet(saved)
+            if self._tooltip_filter is not None:
+                try:
+                    app.removeEventFilter(self._tooltip_filter)
+                except Exception:
+                    pass
+            for tl in app.topLevelWidgets():
+                if tl.metaObject().className() == "QTipLabel" and _TOOLTIP_MARK_START in tl.styleSheet():
+                    tl.setStyleSheet("")
         self._tooltip_qss_active = False
-        self._saved_app_qss = None
 
     def showEvent(self, e):
         self._install_tooltip_style()

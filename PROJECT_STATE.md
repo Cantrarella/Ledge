@@ -49,8 +49,15 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 
 ## 3. 产品总体方向
 
-- 最终产品以 Wisland 为主壳。
-- 岛体、小表情、弹簧动画、液桥、贴边和鼠标交互以 Wisland 为准。
+- 对外显示品牌：**Ledge**（主窗口/设置窗口/关于页/托盘菜单/Tooltip/`Ledge.exe`/`Ledge.vbs`/`setup.bat`）。
+- GitHub 仓库：
+  - `origin`：`https://github.com/Cantrarella/Ledge.git`（已通过 GitHub 原生重命名保留全部历史与 Fork 关系）
+  - `upstream`：`https://github.com/AsamiAkito/wisland.git`（保持不变）
+- 内部技术标识：`APP_ID = "wisland"`，保留 Python 包名 `wisland`、本地目录 `D:\Codex\wisland`、配置路径 `config.json`、数据目录 `data/`、日志路径 `data/wisland.log`、单实例锁 `data/wisland.lock`、凭据前缀 `Wisland/mail/*` 与 `Wisland/quota/*`、剪贴板格式 `Wisland.ClipboardHistoryCopy`、IMAP ID 与 HTTP User-Agent 等兼容协议，确保零数据迁移风险。
+- 开机启动由注册表 `HKCU\...\Run\wisland` 安全迁移至 `HKCU\...\Run\Ledge`（先验证目标存在并写入新项成功后再删旧项；兼容入口 `wisland.vbs` 静默转发至 `Ledge.vbs`）。
+- `README.md` 已按当前真实功能与 9 张全新 Ledge 截图全量重做。
+- 最终产品以 Ledge（原 Wisland）为主壳。
+- 岛体、小表情、弹簧动画、液桥、贴边和鼠标交互以现有主体为准。
 - Daozai 只提供业务功能、信息结构和必要的逻辑参考。
 - 不移植 Daozai 的小形象、egui UI 或岛体动画。
 - 不恢复已废弃的 Xland 主线。

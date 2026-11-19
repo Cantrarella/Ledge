@@ -170,8 +170,8 @@ class TestConfigAndSettings(unittest.TestCase):
             isl.close()
 
         repo_root = Path(__file__).resolve().parents[1]
-        portable_exe = repo_root / "dist" / "WIsland" / "WIsland.exe"
-        portable_zip = repo_root / "dist" / "WIsland-portable.zip"
+        portable_exe = repo_root / "dist" / "Ledge" / "Ledge.exe"
+        portable_zip = repo_root / "dist" / "Ledge-portable.zip"
         if portable_exe.exists():
             self.assertGreater(portable_exe.stat().st_size, 1_000_000)
         if portable_zip.exists():
@@ -196,8 +196,8 @@ class TestConfigAndSettings(unittest.TestCase):
             populate_tray_menu(menu, isl, lambda: None, lambda: None)
             acts = menu.actions()
             self.assertEqual(len(acts), 8)
-            self.assertEqual(acts[0].text(), "展开 Wisland")
-            self.assertEqual(acts[1].text(), "打开 Wisland 设置…")
+            self.assertEqual(acts[0].text(), "展开 Ledge")
+            self.assertEqual(acts[1].text(), "打开 Ledge 设置…")
             self.assertTrue(acts[2].isSeparator())
             self.assertEqual(acts[3].text(), "可穿透")
             self.assertTrue(acts[3].isCheckable())
@@ -206,7 +206,7 @@ class TestConfigAndSettings(unittest.TestCase):
             self.assertEqual(acts[5].text(), "开机启动")
             self.assertTrue(acts[5].isCheckable())
             self.assertTrue(acts[6].isSeparator())
-            self.assertEqual(acts[7].text(), "退出 Wisland")
+            self.assertEqual(acts[7].text(), "退出 Ledge")
 
             # 确保无子菜单、无旧维护项
             for a in acts:
@@ -216,7 +216,7 @@ class TestConfigAndSettings(unittest.TestCase):
             # 2) 岛展开态动态文案刷新
             isl.expanded = True
             populate_tray_menu(menu, isl, lambda: None, lambda: None)
-            self.assertEqual(menu.actions()[0].text(), "收起 Wisland")
+            self.assertEqual(menu.actions()[0].text(), "收起 Ledge")
         finally:
             isl.close()
 
@@ -1371,28 +1371,28 @@ class SettingsConsolidationAndTrayToggleTests(unittest.TestCase):
         isl = _FakeIsland()
         menu = QtWidgets.QMenu()
         try:
-            # 1) 收起态 -> 文案“展开 Wisland”，act.trigger()（底层发射 triggered(False)）触发展开且不传 False
+            # 1) 收起态 -> 文案“展开 Ledge”，act.trigger()（底层发射 triggered(False)）触发展开且不传 False
             populate_tray_menu(menu, isl, lambda: None, lambda: None)
             act = menu.actions()[0]
-            self.assertEqual(act.text(), "展开 Wisland")
+            self.assertEqual(act.text(), "展开 Ledge")
             act.trigger()
             self.assertTrue(isl.expanded)
             self.assertEqual(isl._page_key, "quota")
 
-            # 2) 展开态 -> 刷新菜单文案“收起 Wisland”，act.trigger() 立即收起
+            # 2) 展开态 -> 刷新菜单文案“收起 Ledge”，act.trigger() 立即收起
             populate_tray_menu(menu, isl, lambda: None, lambda: None)
             act = menu.actions()[0]
-            self.assertEqual(act.text(), "收起 Wisland")
+            self.assertEqual(act.text(), "收起 Ledge")
             act.trigger()
             self.assertFalse(isl.expanded)
             self.assertEqual(isl._page_key, "quota")
 
-            # 3) 常驻展开态 (pinned=True) -> 触发“收起 Wisland”先取消常驻再收起
+            # 3) 常驻展开态 (pinned=True) -> 触发“收起 Ledge”先取消常驻再收起
             isl.expanded = True
             isl._pinned = True
             populate_tray_menu(menu, isl, lambda: None, lambda: None)
             act = menu.actions()[0]
-            self.assertEqual(act.text(), "收起 Wisland")
+            self.assertEqual(act.text(), "收起 Ledge")
             act.trigger()
             self.assertFalse(isl._pinned)
             self.assertFalse(isl.expanded)

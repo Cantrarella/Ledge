@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6 import QtWidgets
 
+from ...core.branding import DISPLAY_NAME
 from ...core.config import CONFIG_PATH, DATA_DIR, DEFAULTS, ConfigDraft, _merge, cfg
 from ..theme import G
 from ..widgets import ConfirmDialog, PillButton, SettingRow
@@ -45,7 +46,7 @@ class DataSettingsPage(SettingsPage):
         self.finish_layout(
             self.section("配置文件与维护", "直接编辑或从磁盘重新加载 config.json，或打开本地数据存储目录"),
             SettingRow("编辑配置 config.json", str(CONFIG_PATH), btn_open_cfg),
-            SettingRow("重新加载配置", "从磁盘重新读取 config.json 并立即应用到正在运行的 Wisland", btn_reload_cfg),
+            SettingRow("重新加载配置", f"从磁盘重新读取 config.json 并立即应用到正在运行的 {DISPLAY_NAME}", btn_reload_cfg),
             SettingRow("打开数据目录", str(DATA_DIR), btn_open_dir),
             self.section("配置备份与恢复", "导入或恢复默认后将载入当前草稿，点击右下角「保存设置」后正式写入生效"),
             SettingRow("导出当前配置", "将当前已保存的 config.json 导出备份为独立的 JSON 文件", btn_export),

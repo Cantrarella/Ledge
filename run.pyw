@@ -72,12 +72,12 @@ except ImportError as e:
     traceback.print_exc()
     import ctypes
     if getattr(sys, "frozen", False):
-        help_text = "请确认 WIsland.exe 和随附的 _internal 文件夹仍在同一目录。"
+        help_text = "请确认 Ledge.exe 和随附的 _internal 文件夹仍在同一目录。"
     else:
         help_text = "请双击项目文件夹里的 setup.bat，它会把依赖安装进 .venv。"
     ctypes.windll.user32.MessageBoxW(
         None, f"缺少依赖：{e}\n\n{help_text}\n\n日志：{os.path.join(ROOT, 'data', 'wisland.log')}",
-        "WIsland 启动失败", 0x10)
+        "Ledge 启动失败", 0x10)
     sys.exit(1)
 except Exception:
     traceback.print_exc()

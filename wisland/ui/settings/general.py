@@ -2,6 +2,7 @@
 """常规设置页：主题、开机启动、展开方式、可穿透、在截图中显示、全屏隐藏、热键。"""
 from __future__ import annotations
 
+from ...core.branding import DISPLAY_NAME
 from ...core.config import ConfigDraft
 from ..theme import G, ISLAND_THEME_NAMES, SETTINGS_THEME_NAMES
 from ..widgets import ComboBox, LineEdit, SettingRow, Switch
@@ -45,7 +46,7 @@ class GeneralSettingsPage(SettingsPage):
                 "settings_window.theme",
                 SettingRow("设置窗口主题", "独立控制设置中心窗口本身的浅色或深色外观", self.cb_settings_theme),
             ),
-            SettingRow("开机启动", "登录 Windows 时自动在后台启动 Wisland", self.sw_autostart),
+            SettingRow("开机启动", f"登录 Windows 时自动在后台启动 {DISPLAY_NAME}", self.sw_autostart),
             self.section("交互与可见性", "控制灵动岛的展开触发、鼠标穿透、截图显示与全屏避让"),
             SettingRow("展开方式", "控制鼠标移入灵动岛时的展开策略（也可在灵动岛上双击快速切换长关）", self.cb_expand),
             SettingRow("可穿透", "开启后鼠标点击直接穿透给下方窗口，灵动岛仅响应右键菜单与收起态滚轮", self.sw_passthrough),

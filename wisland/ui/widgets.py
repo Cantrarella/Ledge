@@ -46,14 +46,9 @@ def _bind_theme_slot(widget: QtCore.QObject, slot) -> None:
         bound_map[id(slot)] = t
 
     if not hasattr(widget, "_rebind_theme"):
-        def _rebind(target_theme, _w=widget):
-            cur_slots = list(getattr(_w, "_theme_slots", ()))
-            bmap = getattr(_w, "_bound_themes", None)
-            if bmap is None:
-                bmap = {}
-                setattr(_w, "_bound_themes", bmap)
-            for cb in cur_slots:
-                prev_t = bmap.get(id(cb))
+        def _rebind(target_theme, _slots=slots, _bmap=bound_map):
+            for cb in list(_slots):
+                prev_t = _bmap.get(id(cb))
                 if prev_t is not target_theme:
                     if prev_t is not None:
                         try:
@@ -61,13 +56,32 @@ def _bind_theme_slot(widget: QtCore.QObject, slot) -> None:
                         except (RuntimeError, TypeError):
                             pass
                     target_theme.changed.connect(cb)
-                    bmap[id(cb)] = target_theme
+                    _bmap[id(cb)] = target_theme
                 try:
                     cb()
                 except RuntimeError:
                     pass
 
+        def _cleanup_theme_slots(_obj=None, _slots=slots, _bmap=bound_map):
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                for cb in list(_slots):
+                    prev_t = _bmap.pop(id(cb), None)
+                    if prev_t is not None:
+                        try:
+                            prev_t.changed.disconnect(cb)
+                        except (RuntimeError, TypeError):
+                            pass
+            _slots.clear()
+            _bmap.clear()
+
         setattr(widget, "_rebind_theme", _rebind)
+        if hasattr(widget, "destroyed"):
+            try:
+                widget.destroyed.connect(_cleanup_theme_slots)
+            except (RuntimeError, TypeError):
+                pass
 
 
 class Themed:

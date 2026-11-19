@@ -111,8 +111,9 @@ def test_01_registry_dimensions_and_svg_icons(qt_app, tmp_path):
         for dark in (False, True):
             ren = get_ai_svg_renderer(prov, dark=dark)
             assert ren is not None and ren.isValid()
-    spec = (pathlib.Path(__file__).resolve().parents[1] / "WIsland.spec").read_text(encoding="utf-8")
+    spec = (pathlib.Path(__file__).resolve().parents[1] / "Ledge.spec").read_text(encoding="utf-8")
     assert 'ROOT / "wisland" / "assets"' in spec
+    assert 'name="Ledge"' in spec
 
     # 2) 无账号空状态，点击去添加与齿轮均打开设置 quota 分类
     pg.resize(419, 176)

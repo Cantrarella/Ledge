@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 <#
 .SYNOPSIS
-    Wisland 便携版 onedir 打包脚本（生成 dist/WIsland 便携目录、dist/WIsland-portable.zip 并同步根目录 WIsland.exe）
+    Ledge 便携版 onedir 打包脚本（生成 dist/Ledge 便携目录、dist/Ledge-portable.zip 并同步根目录 Ledge.exe）
 #>
 param(
     [switch]$SkipZip = $false,
@@ -13,12 +13,12 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $BuildEnvSite = "D:\Codex\wisland-exe\build\site-packages"
 $WorkDir = "D:\Codex\wisland-exe\build\work"
 $DistDir = Join-Path $RepoRoot "dist"
-$PortableDir = Join-Path $DistDir "WIsland"
-$ZipPath = Join-Path $DistDir "WIsland-portable.zip"
+$PortableDir = Join-Path $DistDir "Ledge"
+$ZipPath = Join-Path $DistDir "Ledge-portable.zip"
 $PythonExe = "C:\Users\User\AppData\Local\Programs\Python\Python313\python.exe"
 
-Write-Host "[1/4] 停止正在运行的 WIsland 进程..." -ForegroundColor Cyan
-Get-Process -Name "WIsland" -ErrorAction SilentlyContinue | Stop-Process -Force
+Write-Host "[1/4] 停止正在运行的 Ledge / WIsland 进程..." -ForegroundColor Cyan
+Get-Process -Name "Ledge","WIsland" -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 400
 
 if (Test-Path "D:\Codex\wisland-exe\build\frozen\wisland") {
@@ -28,7 +28,7 @@ if (Test-Path "D:\Codex\wisland-exe\build\frozen\wisland") {
 
 Write-Host "[2/4] 运行 PyInstaller (onedir)..." -ForegroundColor Cyan
 $env:PYTHONPATH = "$RepoRoot;$BuildEnvSite"
-& $PythonExe -m PyInstaller --noconfirm --distpath $DistDir --workpath $WorkDir (Join-Path $RepoRoot "WIsland.spec")
+& $PythonExe -m PyInstaller --noconfirm --distpath $DistDir --workpath $WorkDir (Join-Path $RepoRoot "Ledge.spec")
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller 打包失败 (ExitCode: $LASTEXITCODE)"
 }
@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force (Join-Path $PortableDir "data") | Out-Null
 
 Write-Host "[3/4] 同步可执行文件至仓库根目录与 wisland-exe..." -ForegroundColor Cyan
-Copy-Item -Force (Join-Path $PortableDir "WIsland.exe") (Join-Path $RepoRoot "WIsland.exe")
+Copy-Item -Force (Join-Path $PortableDir "Ledge.exe") (Join-Path $RepoRoot "Ledge.exe")
 New-Item -ItemType Directory -Force (Join-Path $RepoRoot "_internal") | Out-Null
 Copy-Item -Recurse -Force (Join-Path $PortableDir "_internal\*") (Join-Path $RepoRoot "_internal")
 
@@ -50,9 +50,9 @@ if (-not $SkipZip) {
 }
 
 if ($RestartApp) {
-    Write-Host "正在启动 WIsland.exe..." -ForegroundColor Green
+    Write-Host "正在启动 Ledge.exe..." -ForegroundColor Green
     Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-        CommandLine = (Join-Path $RepoRoot "WIsland.exe")
+        CommandLine = (Join-Path $RepoRoot "Ledge.exe")
         CurrentDirectory = $RepoRoot
     } | Out-Null
 }

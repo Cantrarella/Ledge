@@ -20,6 +20,7 @@ from ctypes import wintypes
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..core.branding import DISPLAY_NAME
 from ..core.config import cfg
 from .anim import Spring, clamp, lerp, smooth
 from .compact import CompactView
@@ -364,7 +365,7 @@ class Island(QtWidgets.QWidget):
     def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.NoDropShadowWindowHint)
-        self.setWindowTitle("wisland")
+        self.setWindowTitle(DISPLAY_NAME)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setMouseTracking(True)

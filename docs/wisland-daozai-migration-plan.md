@@ -1,5 +1,6 @@
 # Wisland x Daozai 合并方案
 
+> 说明：Wisland 后续对外品牌更名为 Ledge。
 > 更新时间：2026-11-17  
 > 目标：废弃 Xland 主线，以 Wisland 的窗口、绘制和动画架构为主，分阶段迁移 Daozai 功能。
 
