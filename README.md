@@ -7,51 +7,66 @@
 ### 收起态（时间天气 / 小形象）
 
 <p align="center">
-  <img src="docs/ledge-compact-clock.png" height="58" alt="收起态时间天气">&nbsp;&nbsp;
-  <img src="docs/ledge-compact-pet.png" height="58" alt="收起态小形象">
+  <a href="docs/ledge-compact-clock.png"><img src="docs/ledge-compact-clock.png" width="229" alt="收起态时间天气"></a>&nbsp;&nbsp;
+  <a href="docs/ledge-compact-pet.png"><img src="docs/ledge-compact-pet.png" width="215" alt="收起态小形象"></a>
 </p>
 
 ### 展开态核心页面
 
 <p align="center">
-  <img src="docs/ledge-home.png" width="400" alt="首页 419×140">&nbsp;
-  <img src="docs/ledge-theme-classic.png" width="400" alt="经典纯黑皮肤">
+  <a href="docs/ledge-home.png"><img src="docs/ledge-home.png" width="400" alt="首页与媒体控制"></a>&nbsp;
+  <a href="docs/ledge-theme-classic.png"><img src="docs/ledge-theme-classic.png" width="400" alt="经典纯黑皮肤"></a>
 </p>
 <p align="center">
-  <img src="docs/ledge-quota.png" width="400" alt="AI 额度页">&nbsp;
-  <img src="docs/ledge-mail.png" width="400" alt="邮件与验证码预览">
+  <a href="docs/ledge-quota.png"><img src="docs/ledge-quota.png" width="252" alt="AI 额度"></a>&nbsp;
+  <a href="docs/ledge-mail.png"><img src="docs/ledge-mail.png" width="252" alt="邮件与验证码预览"></a>&nbsp;
+  <a href="docs/ledge-weather.png"><img src="docs/ledge-weather.png" width="252" alt="天气与多城市预报"></a>
 </p>
 <p align="center">
-  <img src="docs/ledge-weather.png" width="400" alt="天气页">&nbsp;
-  <img src="docs/ledge-life.png" width="400" alt="生活页">
+  <a href="docs/ledge-tools.png"><img src="docs/ledge-tools.png" width="252" alt="工具与置物架"></a>&nbsp;
+  <a href="docs/ledge-life.png"><img src="docs/ledge-life.png" width="252" alt="喝水与久坐提醒"></a>&nbsp;
+  <a href="docs/ledge-subtitles.png"><img src="docs/ledge-subtitles.png" width="252" alt="实时字幕"></a>
 </p>
 
 ### 设置中心（7 个一级分类，独立浅色 / 深色主题）
 
 <p align="center">
-  <img src="docs/ledge-settings.png" width="760" alt="Ledge 设置窗口">
+  <a href="docs/ledge-settings.png"><img src="docs/ledge-settings.png" width="720" alt="Ledge 设置窗口"></a>
 </p>
 
 ## 快速开始
 
-所有个人配置、本地历史与凭据均仅保存在本机，不上传至任何自有云端服务器。
+配置、本地历史与授权凭据只在本机持久化。Ledge 不包含遥测，也不会把数据上传至自有云端服务器；仅在用户启用相应功能时，向天气、邮件、AI 额度、字幕翻译及模型下载服务发起必要请求。
 
-### 方式 A：使用发布包（推荐）
+### 系统要求
 
-1. 前往 GitHub **Releases** 下载 `Ledge-x.y.z.zip`（或便携包 `Ledge-portable.zip`）并解压到任意目录。
-2. 确认解压目录中 `Ledge.exe` 与 `_internal` 文件夹位于同一目录。
-3. 双击 **`Ledge.exe`** 即可启动。
+- Windows 10 / 11 64 位。
+- 从源码运行时需要 Python 3.10 或更新版本。
+- 实时字幕首次使用需要下载约 630 MB 的本地识别模型。
+- 天气、邮件、AI 额度、字幕翻译和模型下载需要联网。
+
+### 方式 A：使用发布包
+
+1. 打开 GitHub **Releases**，确认存在最新的 Ledge 构建。
+2. 下载对应 `.zip` 并解压到任意目录。
+3. 确认 `Ledge.exe` 与 `_internal` 文件夹位于同一目录。
+4. 双击 `Ledge.exe` 启动。
+
+如果 Releases 暂未提供 Ledge 构建，请使用下面的源码运行方式。
 
 ### 方式 B：从源码运行
 
-1. 安装 **Python 3.10 或更新版本**（安装时勾选 **Add python.exe to PATH**）。
-2. 克隆仓库：
+1. 安装 Python 3.10 或更新版本，并勾选 **Add python.exe to PATH**。
+2. 克隆当前维护仓库：
    ```powershell
    git clone https://github.com/Cantrarella/Ledge.git
    cd Ledge
    ```
-3. 双击 **`setup.bat`** 自动创建 `.venv` 并安装依赖（连不上 PyPI 时自动回退国内镜像）。
-4. 双击 **`Ledge.vbs`** 无控制台窗口启动。
+3. 双击 `setup.bat`，创建 `.venv` 并安装运行依赖。
+4. 双击 `Ledge.vbs` 无控制台窗口启动；或执行：
+   ```powershell
+   .\.venv\Scripts\python.exe run.pyw
+   ```
 
 开机启动可在系统托盘右键菜单或「设置 → 外观与岛体 → 常规」中一键开启。
 
@@ -61,7 +76,7 @@
 - 液态外形与表面张力连接，支持按住拖动、拉断液桥并吸附到屏幕上、下、左、右任意边缘。
 - 弹性展开与收起动画，自适应帧率（交互/动画 60 FPS，空闲静止 30 FPS）。
 - 收起态在时间天气与小形象之间轮换（默认每 30 秒，可配置）。
-- 支持多显示器与高 DPI 缩放（100% / 125% / 150% / 200%）。
+- 已针对常见 100% / 125% / 200% 缩放进行适配；混合 DPI 多显示器仍在持续实机验证。
 - 内置 5 套岛体皮肤：深色毛玻璃、浅色毛玻璃、晴空渐变、胭脂撞色、经典纯黑（`classic`）。
 
 ### 首页（419×140）
@@ -129,9 +144,16 @@
 ## 隐私与存储
 
 - **本地配置**：保存于程序目录下的 `config.json`，本地运行数据与日志保存于 `data/`（日志路径为 `data/wisland.log`）。
-- **敏感凭据**：邮箱授权码与 AI 额度 API Key / Cookie / Token 均通过 Windows 原生 API 加密存储于 **Windows Credential Manager**。
+- **Windows 凭据管理器**：邮箱授权码与 AI 额度 API Key / Cookie / Token 使用 Windows 原生凭据接口存储，不写入 `config.json`、额度缓存或日志。
+- **实时字幕翻译密钥**：当前保存在本机 `config.json` 中；后续计划迁移到 Windows Credential Manager。
 - **零遥测**：不包含任何使用统计、埋点或遥测上传。
 - **最小网络访问**：外部网络请求仅用于你主动启用的天气查询、IMAP 邮件同步、AI 额度刷新、字幕翻译与首次模型下载。
+
+### 数据与卸载
+
+- `config.json` 与 `data/` 可以直接备份。
+- 恢复默认设置会重置配置，不会自动删除已有的邮件缓存、剪贴板历史和生活数据。
+- 彻底卸载时，删除程序目录，并按需清理 Windows 凭据管理器中兼容保留的 `Wisland/mail/*` 与 `Wisland/quota/*` 条目。
 
 ## 服务与账号
 
@@ -147,25 +169,27 @@
 - 邮件模块仅用于只读提醒与正文预览，不处理附件。
 - 不包含日程、日历、翻译词典或生词本功能。
 - 第三方网页或服务端接口变更可能导致对应 AI 额度连接器暂时失效。
-- 多显示器热插拔、高 DPI 混合缩放及长时间睡眠唤醒恢复仍在持续实机验证中。
+- 多显示器热插拔、混合 DPI 缩放、睡眠唤醒及长时间驻留仍在持续实机验证中。
+- 发布包尚未经过当前机器的 Windows 10 实机验证；正式发布前需完成跨系统回归。
 
 ## 开发与构建
 
 - **源码运行**：
   ```powershell
-  python run.pyw
+  .\.venv\Scripts\python.exe run.pyw
   ```
 - **运行测试**：
   ```powershell
-  python -m pytest tests -q
+  .\.venv\Scripts\python.exe -m pytest tests -q
   ```
-- **构建便携版可执行文件**（需已安装 PyInstaller 与项目依赖）：
+- **构建便携版可执行文件**（需在 `.venv` 中额外安装 PyInstaller）：
   ```powershell
-  python -m PyInstaller --noconfirm Ledge.spec
+  .\.venv\Scripts\python.exe -m PyInstaller --noconfirm Ledge.spec
   ```
   构建产物位于 `dist/Ledge/Ledge.exe`，配套打包脚本 [scripts/build.ps1](scripts/build.ps1) 会同步生成便携压缩包 `dist/Ledge-portable.zip`。
 
 ## 致谢与许可
 
+- 产品功能、信息架构及部分业务实现思路参考了 [岛仔 Daozai（Renly1994/xiaotang-daozai）](https://github.com/Renly1994/xiaotang-daozai)，其代码使用 MIT License。Ledge 保留 Wisland 的岛体与动画架构，不包含 Daozai 的小形象、egui 界面或岛体动画资源。相关许可声明见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。
 - 本项目基于 [AsamiAkito/wisland](https://github.com/AsamiAkito/wisland) 的液态灵动岛窗口与动画架构演进重构，当前维护仓库位于 [Cantrarella/Ledge](https://github.com/Cantrarella/Ledge)。
 - 使用 [MIT License](LICENSE) 开源许可。
