@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 
 from wisland.ui.pages import home as home_mod
 from wisland.ui.pages.home import HomePage
@@ -225,14 +225,12 @@ def test_04_media_card_states_controls_and_bounds(qt_app):
         assert calls["play_pause"] == 1
         assert calls["next"] == 1
 
-        ev = QtGui.QMouseEvent(
-            QtCore.QEvent.Type.MouseButtonRelease,
-            QtCore.QPointF(m.prog.width() * 0.5, m.prog.height() * 0.5),
-            QtCore.Qt.MouseButton.LeftButton,
+        QtTest.QTest.mouseClick(
+            m.prog,
             QtCore.Qt.MouseButton.LeftButton,
             QtCore.Qt.KeyboardModifier.NoModifier,
+            QtCore.QPoint(int(m.prog.width() * 0.5), int(m.prog.height() * 0.5)),
         )
-        m.prog.mouseReleaseEvent(ev)
         assert len(calls["seek"]) == 1
         assert 1000.0 <= calls["seek"][0] <= 4000.0
     finally:

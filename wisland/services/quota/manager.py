@@ -723,7 +723,19 @@ class QuotaManager(QtCore.QObject):
 
         def _worker():
             raw_secret = self._creds.read_secret(cred_key)
-            if prov in (Provider.GEMINI.value, Provider.WORKBUDDY.value):
+            read_win_err = int(getattr(self._creds, "last_error", 0) or 0)
+            if read_win_err != 0:
+                snap = QuotaSnapshot(
+                    account_id=acc_id,
+                    fetched_at=time.time(),
+                    status=AccountStatus.NETWORK_ERROR.value,
+                    last_error=f"读取系统凭据管理器失败 (WinError {read_win_err})，请检查 Windows 凭据服务",
+                )
+                if not self._stopping:
+                    self._internal_refresh_done.emit(acc_id, snap)
+                return
+
+            if prov in (Provider.GEMINI.value, Provider.WORKBUDDY.value, Provider.GROK_BOT.value):
                 if raw_secret is None:
                     snap = QuotaSnapshot(
                         account_id=acc_id,

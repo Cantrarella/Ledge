@@ -129,7 +129,11 @@ class WindowsQuotaCredentialStore:
         if not target:
             return None
         p_cred = ctypes.POINTER(_CREDENTIALW)()
+        ctypes.set_last_error(0)
         if not _advapi32.CredReadW(target, CRED_TYPE_GENERIC, 0, ctypes.byref(p_cred)):
+            err_code = int(ctypes.get_last_error() or 0)
+            if err_code and err_code != ERROR_NOT_FOUND:
+                self._record_win_error("CredReadW 失败")
             return None
         try:
             cred = p_cred.contents
@@ -238,6 +242,7 @@ class WindowsQuotaCredentialStore:
         return True
 
     def read_secret(self, target: str) -> str | None:
+        self._clear_error()
         if not target:
             return None
         raw = self._read_single(target)
@@ -247,6 +252,7 @@ class WindowsQuotaCredentialStore:
         if not is_manifest:
             return raw
         if manifest is None:
+            self.last_error_message = "保存的分块凭据清单损坏"
             return ""
         prefix = str(manifest.get("prefix") or f"{target}/chunk")
         count = int(manifest["chunks"])
@@ -256,12 +262,15 @@ class WindowsQuotaCredentialStore:
         for idx in range(count):
             part = self._read_single(f"{prefix}/{idx}")
             if part is None:
+                if not self.last_error_message:
+                    self.last_error_message = f"保存的分块凭据缺失 (chunk {idx})"
                 return ""
             parts.append(part)
 
         joined = "".join(parts)
         actual_sha256 = hashlib.sha256(joined.encode("utf-8")).hexdigest()
         if actual_sha256 != expected_sha256:
+            self.last_error_message = "保存的分块凭据校验和不一致"
             return ""
         return joined
 

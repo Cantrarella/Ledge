@@ -46,6 +46,11 @@ GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TRANSPARENT = 0x00000020
 WM_HOTKEY = 0x0312
+WM_DISPLAYCHANGE = 0x007E
+WM_POWERBROADCAST = 0x0218
+WM_DPICHANGED = 0x02E0
+PBT_APMRESUMESUSPEND = 0x0007
+PBT_APMRESUMEAUTOMATIC = 0x0012
 HSHELL_FLASH = 0x8006
 MOD = {"alt": 0x1, "ctrl": 0x2, "control": 0x2, "shift": 0x4, "win": 0x8}
 MOD_NOREPEAT = 0x4000
@@ -354,6 +359,7 @@ class Island(QtWidgets.QWidget):
     notify_banner_clicked = QtCore.Signal()     # 点击收起态通知横幅
     notify_banner_dismissed = QtCore.Signal()   # 关闭收起态通知横幅（不清未读）
     life_reminder_clicked = QtCore.Signal(str)  # 点击生活提醒 ("water"|"sit")
+    resumed_from_sleep = QtCore.Signal()        # 系统从睡眠/休眠唤醒
 
     def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -376,7 +382,9 @@ class Island(QtWidgets.QWidget):
         if self.edge not in ("top", "bottom", "left", "right"):
             self.edge = "top"
         self.pos_frac: float = float(cfg.get("island.pos", 0.5))
+        self._hooked_screens: set[int] = set()
         self.scr: QtGui.QScreen = self._pick_screen()
+        self._hook_screen_signals(self.scr)
         self.mode = "anchored"
         self.expanded = False
         cw, ch = self.compact.size_hint()
@@ -457,7 +465,15 @@ class Island(QtWidgets.QWidget):
         self.lp_timer = QtCore.QTimer(self, singleShot=True, interval=420, timeout=self._long_press)
         self._click_timer = QtCore.QTimer(self, singleShot=True, timeout=self._single_click)
         self._dbl_filter = _BlankDoubleClick(self)
-        QtWidgets.QApplication.instance().installEventFilter(self._dbl_filter)
+        app_inst = QtWidgets.QApplication.instance()
+        if app_inst is not None:
+            app_inst.installEventFilter(self._dbl_filter)
+            if hasattr(app_inst, "screenAdded"):
+                app_inst.screenAdded.connect(self._on_screens_changed)
+            if hasattr(app_inst, "screenRemoved"):
+                app_inst.screenRemoved.connect(self._on_screens_changed)
+            if hasattr(app_inst, "primaryScreenChanged"):
+                app_inst.primaryScreenChanged.connect(self._on_screens_changed)
         self.backdrop.ready.connect(self._on_backdrop)
         theme.changed.connect(self.update)
 
@@ -465,12 +481,69 @@ class Island(QtWidgets.QWidget):
 
     # ================================================================ 屏幕 / 位置
     def _pick_screen(self) -> QtGui.QScreen:
-        screens = QtGui.QGuiApplication.screens()
+        screens = list(QtGui.QGuiApplication.screens() or [])
         i = int(cfg.get("island.screen", 0) or 0)
-        return screens[i] if 0 <= i < len(screens) else QtGui.QGuiApplication.primaryScreen()
+        if 0 <= i < len(screens):
+            return screens[i]
+        prim = QtGui.QGuiApplication.primaryScreen()
+        if prim is not None:
+            return prim
+        return screens[0] if screens else None  # type: ignore[return-value]
+
+    def _hook_screen_signals(self, scr: QtGui.QScreen | None):
+        if scr is None:
+            return
+        sid = id(scr)
+        if sid in self._hooked_screens:
+            return
+        self._hooked_screens.add(sid)
+        for sig_name in ("availableGeometryChanged", "geometryChanged", "logicalDotsPerInchChanged"):
+            sig = getattr(scr, sig_name, None)
+            if sig is not None:
+                try:
+                    sig.connect(self._on_screens_changed)
+                except Exception:
+                    pass
+
+    def _ensure_valid_screen(self) -> QtGui.QScreen | None:
+        screens = list(QtGui.QGuiApplication.screens() or [])
+        if self.scr is None or (screens and self.scr not in screens):
+            self.scr = self._pick_screen()
+            self._hook_screen_signals(self.scr)
+        return self.scr
+
+    def _on_screens_changed(self, *_args):
+        """显示器热插拔、主屏切换、分辨率或 DPI 变化时，自动恢复目标屏幕与停靠几何并清空旧毛玻璃帧。"""
+        self.scr = self._pick_screen()
+        self._hook_screen_signals(self.scr)
+        self._bd_shown = None
+        self._bd_prev = None
+        self.neck_edge = self.edge
+        self._place_nav()
+        self._update_geometry(force=True)
+        self._kick()
 
     def _avail(self) -> QtCore.QRectF:
-        return QtCore.QRectF(self.scr.availableGeometry())
+        scr = self._ensure_valid_screen()
+        if scr is None:
+            return QtCore.QRectF(0, 0, 1920, 1080)
+        try:
+            r = QtCore.QRectF(scr.availableGeometry())
+            return r if (r.width() > 0 and r.height() > 0) else QtCore.QRectF(0, 0, 1920, 1080)
+        except RuntimeError:
+            self.scr = self._pick_screen()
+            return QtCore.QRectF(self.scr.availableGeometry()) if self.scr else QtCore.QRectF(0, 0, 1920, 1080)
+
+    def _screen_geom(self) -> QtCore.QRect:
+        scr = self._ensure_valid_screen()
+        if scr is None:
+            return QtCore.QRect(0, 0, 1920, 1080)
+        try:
+            r = scr.geometry()
+            return r if (r.width() > 0 and r.height() > 0) else QtCore.QRect(0, 0, 1920, 1080)
+        except RuntimeError:
+            self.scr = self._pick_screen()
+            return self.scr.geometry() if self.scr else QtCore.QRect(0, 0, 1920, 1080)
 
     def _line(self, edge: str, R: QtCore.QRectF | None = None) -> float:
         R = R or self._avail()
@@ -1027,7 +1100,7 @@ class Island(QtWidgets.QWidget):
                     self.neck_s.to(1, 520, 1.0)
 
         # ---- 窗口位置：让本体大致居中，并夹在屏幕内（避免跨屏缩放） ----
-        sg = self.scr.geometry()
+        sg = self._screen_geom()
         if self.mode == "anchored":
             # 吸附时窗口贴住吸附边、位置固定：展开 / 收起 / 切页都不移动窗口
             # （移动分层窗口与重绘不是原子操作，会出现内容错位、没有玻璃底的帧）
@@ -1823,6 +1896,13 @@ class Island(QtWidgets.QWidget):
                 if name:
                     self.hotkey.emit(name)
                     return True, 0
+            elif msg.message == WM_POWERBROADCAST:
+                if int(msg.wParam) in (PBT_APMRESUMESUSPEND, PBT_APMRESUMEAUTOMATIC):
+                    self._last = time.perf_counter()
+                    self._on_screens_changed()
+                    self.resumed_from_sleep.emit()
+            elif msg.message in (WM_DISPLAYCHANGE, WM_DPICHANGED):
+                self._on_screens_changed()
             elif self._shell_msg and msg.message == self._shell_msg:
                 if int(msg.wParam) == HSHELL_FLASH:
                     self.flash.emit(int(msg.lParam or 0))
@@ -1849,10 +1929,20 @@ class Island(QtWidgets.QWidget):
             user32.DeregisterShellHookWindow(hwnd)
         except Exception:  # noqa: BLE001
             pass
+        self.timer.stop()
+        self.poll.stop()
+        self.lp_timer.stop()
+        self._click_timer.stop()
         self._life_timer.stop()
         self.unread_dock._timer.stop()
         self.backdrop.stop()
         self._rhook.remove()
+        app_inst = QtWidgets.QApplication.instance()
+        if app_inst is not None:
+            try:
+                app_inst.removeEventFilter(self._dbl_filter)
+            except Exception:
+                pass
         cfg.save()
         super().closeEvent(e)
 

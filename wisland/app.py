@@ -388,6 +388,21 @@ def main():
             island.toggle()
     island.hotkey.connect(on_hotkey)
 
+    def on_resume_from_sleep():
+        try:
+            ctx.weather.refresh()
+        except Exception:
+            pass
+        try:
+            ctx.quota.refresh_all()
+        except Exception:
+            pass
+        try:
+            ctx.mail_monitor.apply_config()
+        except Exception:
+            pass
+    island.resumed_from_sleep.connect(on_resume_from_sleep)
+
     # ---------------- 菜单 / 托盘 / 设置窗口 ----------------
     def open_settings(category: str | None = None, account_id: str | None = None):
         SettingsWindow.open_instance(ctx, category=category, account_id=account_id)
@@ -523,6 +538,10 @@ def main():
     def shutdown():
         fs_timer.stop()
         cycle_timer.stop()
+        try:
+            island.close()
+        except Exception:
+            pass
         fg_watcher.stop()
         ctx.live.stop(wait=True)
         ctx.mail_monitor.stop()
