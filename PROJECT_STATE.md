@@ -37,15 +37,15 @@ main
 最近已推送提交：
 
 ```text
-f670261 (HEAD -> main, origin/main, origin/HEAD) feat(quota): complete AI provider integrations and release cleanup
+2da15be (HEAD -> main, origin/main, origin/HEAD) fix(ui,clipboard): center weather/toast layout and fix 64-bit clipboard ctypes
+cf43611 feat: finalize quota providers, themes, and life reminders
+f670261 feat(quota): complete AI provider integrations and release cleanup
 97c9bdc feat(quota): add in-island AI quota page and themed AI SVG icons
 807ca38 feat(quota): add quota service foundation, credentials, DeepSeek adapter and settings page
 e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and align header gear
-7ae0d2f feat(mail,settings): remove msg page, always show OTP for 180s, fix mail list render and polish settings UI
-6c1c1dc feat(mail): add mail list/detail UI, OTP preview card, body cache, and IDLE monitor
 ```
 
-当前阶段已收尾完成（主题拆分、经典纯黑皮肤、喝水/久坐岛内提醒与 22×22 主题图标）。
+当前阶段已收尾完成（首页 `419×140` 紧凑布局与单行标题适配、收起态时间天气居中、天气页 `419×232` 网格重构、7 个设置分类合并、Tooltip 主题适配及托盘收起修复）。
 
 ## 3. 产品总体方向
 
@@ -84,6 +84,7 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 
 | 页面 | 尺寸 |
 |---|---:|
+| 首页 | 419×140 |
 | 邮件列表 | 419×140 |
 | 邮件详情 | 419×236 |
 | AI 额度 | 419×176 |
@@ -92,7 +93,7 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 | 工具 | 419×140 |
 | 生活 | 419×140 |
 
-首页仍保留 Wisland 原布局，是否压缩或重排尚未最终决定。
+首页已完成 `419×140` 紧凑双栏布局（左侧 `MediaCard` + 48×48 静态封面 + 单行自适应 `NowPlayingLine`；右侧 126px 小形象区）。
 
 ## 6. 已完成功能
 
@@ -189,24 +190,30 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 
 ## 7. 当前阶段（已完成）
 
-### AI 额度、主题拆分、经典皮肤、生活提醒
+### 视觉与交互收尾（首页、天气、设置与托盘）
 
-- 阶段：AI 额度、主题拆分、经典皮肤、生活提醒
+- 阶段：视觉与交互收尾（首页 419×140、收起态时间天气、天气页 419×232 网格、设置页 7 分类、Tooltip 主题适配、托盘切换修复）
 - 状态：完成
-- 测试结果：全量测试 `tests/` 72/72 通过；`python -m compileall -q wisland tests` 与 `git diff --check` 通过。
-- 打包结果：PyInstaller 6.22.3 使用 `WIsland.spec` 构建成功，包内已包含 5 个 `ai-icons`、4 个 `life-icons`、5 个 `quota.adapters.*` 及 `wisland.ui.theme`，EXE 启动冒烟驻留正常。
-- 修改文件：`wisland/core/config.py`、`wisland/ui/theme.py`、`wisland/ui/widgets.py`、`wisland/ui/pages/system.py`、`wisland/ui/settings_window.py`、`wisland/ui/settings/*`、`wisland/ui/island.py`、`wisland/ui/compact.py`、`wisland/ui/icons.py`、`wisland/app.py`、`wisland/assets/life-icons/*`、`tests/test_config_and_settings.py`、`PROJECT_STATE.md`
-- 已知风险：受限测试环境未写入真实 Windows Credential Manager（采用隔离内存凭据存储验证）；真实线上 AI 账号（WorkBuddy/Codex/Gemini/Grok Bot）及长期运行稳定性仍需结合实机环境进一步观察。
+- 提交：afc46d5
+- 首页布局：`419×140`（`height=98`），移除旧 745px 宽布局、首页标题与右侧快捷操作；封面固定 `48×48` 无 hover 缩放/发光；采用单行 `NowPlayingLine` 同行左对齐连续显示标题与歌手并自左向右省略；右侧小形象区 `126px`（表情 `~54–60px`）。
+- 收起态时间天气：`CompactView._idle_layout_metrics` 基于 `QFontMetrics` 将时间与天气作为整体严格水平居中（间距 `9px`，无竖线/圆点/胶囊，使用等宽数字避免负数或三位温度跳动）。
+- 天气页网格：`419×232` 保持不变，页头城市按钮仅显示城市名 + 独立 `+` 按钮；左上当前天气改用单一 `QGridLayout`（52px 左列图标+温度，右列左对齐描述/温差/体感且隐藏时不跳动）；底部 `Facts` 改用固定 4 列（两行 `x` 坐标完全一致）。
+- 设置页与 Tooltip：11 个一级分类合并为 7 个（`外观与岛体`、`页面与导航`、`消息与邮件`、`天气`、`AI 与字幕`、`工具与生活`、`数据与关于`），保留全部原有设置项、深链、唯一“取消 / 保存设置”及凭据提交顺序；`SettingsWindow` 改用 `QApplication` 级带标记的 `QToolTip` QSS 规则随 `settings_theme` 切换并在关闭时恢复原样式。
+- 托盘修复：`populate_tray_menu` 使用 `lambda _checked=False: island.toggle()` 消除 `QAction.triggered(bool)` 误传 `False` 导致“收起 Wisland”无效果的问题。
+- 测试结果：专项 `31 passed`、设置/额度/邮件回归 `40 passed`、全量测试 `tests/` `84 passed`；`python -m compileall -q wisland tests` 与 `git diff --check` 通过。
+- 打包结果：PyInstaller 6.22.3 使用 `WIsland.spec` 构建成功，`WIsland.exe` 与包内资源（5 个 `ai-icons`、4 个 `life-icons`）完整，EXE 启动驻留 4s 冒烟通过。
+- 修改文件：`wisland/app.py`、`wisland/ui/compact.py`、`wisland/ui/pages/home.py`、`wisland/ui/pages/info.py`、`wisland/ui/settings_window.py`、`tests/test_home_page.py`、`tests/test_weather_and_compact.py`、`tests/test_config_and_settings.py`、`tests/test_quota_settings.py`、`tests/test_mail_infra.py`、`PROJECT_STATE.md`
+- 已知风险：
+  1. 跨版本/真实多显示器与 125%/200% 缩放、睡眠唤醒、断网重连及长时运行稳定性仍需实机持续验证。
+  2. 测试中 `tests/test_home_page.py` 存在 1 条 PySide6 `QMouseEvent` 弃用警告；受限环境未写入真实 Windows Credential Manager。
 - 下一阶段：
-  1. 首页最终布局确认。
-  2. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长时间稳定性测试。
-  3. 版本号、崩溃日志、诊断信息和正式发布包。
+  1. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长期运行稳定性测试。
+  2. 版本号、更新检查、崩溃日志、诊断信息和正式发布包。
 
 ## 8. 后续计划
 
-1. 首页最终布局确认。
-2. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长时间稳定性测试。
-3. 版本号、崩溃日志、诊断信息和正式发布包。
+1. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长期运行稳定性测试。
+2. 版本号、更新检查、崩溃日志、诊断信息和正式发布包。
 
 ## 9. 已知问题与待验证项
 

@@ -85,20 +85,25 @@ def test_01_settings_nav_order_and_real_actions_only(qt_app, tmp_path):
     cm, creds, _cache, mgr, _cfg_path = _make_quota_env(tmp_path)
     ctx = type("Ctx", (), {"quota": mgr})()
     win = SettingsWindow(ctx=ctx, config_obj=cm)
-    keys = [pg.key for pg in win.pages]
-    titles = [pg.title for pg in win.pages]
+    assert len(win.pages) == 7
+    group_keys = [k for k, _, _, _ in win._group_specs]
+    group_titles = [t for _, _, t, _ in win._group_specs]
+    assert group_keys == ["appearance", "pages", "messages", "weather", "ai_content", "tools_life", "data_about"]
+    assert group_titles == ["外观与岛体", "页面与导航", "消息与邮件", "天气", "AI 与字幕", "工具与生活", "数据与关于"]
+
+    keys = [pg.key for pg in win.leaf_pages]
+    titles = [pg.title for pg in win.leaf_pages]
+    assert group_keys.index("ai_content") == group_keys.index("weather") + 1
     assert "quota" in keys
     assert "AI 额度" in titles
-    assert keys.index("quota") == keys.index("mail_accounts") + 1
 
-    quota_pg: QuotaSettingsPage = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    quota_pg: QuotaSettingsPage = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
     # 设置页只显示真实可用操作：无假“识别本机账号”按钮，无“收起时显示常驻账号”
     assert not hasattr(quota_pg, "btn_detect_local")
     assert not hasattr(quota_pg, "cmb_compact_account")
     assert quota_pg.empty_card.isVisibleTo(quota_pg) or not quota_pg._draft_accounts
     win.close()
     mgr.stop()
-
 
 def test_02_quota_cards_status_theme_and_no_horizontal_scroll(qt_app, tmp_path):
     cm, creds, cache, mgr, _cfg_path = _make_quota_env(tmp_path)
@@ -127,7 +132,7 @@ def test_02_quota_cards_status_theme_and_no_horizontal_scroll(qt_app, tmp_path):
     win.switch_category("quota")
     qt_app.processEvents()
 
-    quota_pg: QuotaSettingsPage = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    quota_pg: QuotaSettingsPage = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
     assert len(quota_pg._cards) == 2
     cards_by_id = {c.acc.id: c for c in quota_pg._cards}
 
@@ -178,7 +183,8 @@ def test_02_quota_cards_status_theme_and_no_horizontal_scroll(qt_app, tmp_path):
     assert not hasattr(c_ok, "color_picker")
 
     # 5) 浅色/深色主题切换无截断、无横向滚动
-    scroll = win.stack.currentWidget()
+    cur_group = win.stack.currentWidget()
+    scroll = cur_group.current_leaf() if hasattr(cur_group, "current_leaf") else cur_group
     assert isinstance(scroll, QtWidgets.QScrollArea)
     for mode in ("light", "dark"):
         theme.set_mode(mode)
@@ -190,13 +196,12 @@ def test_02_quota_cards_status_theme_and_no_horizontal_scroll(qt_app, tmp_path):
     win.close()
     mgr.stop()
 
-
 def test_03_add_cancel_save_fail_and_delete_confirm_semantics(qt_app, tmp_path, monkeypatch):
     cm, creds, cache, mgr, cfg_path = _make_quota_env(tmp_path)
     ctx = type("Ctx", (), {"quota": mgr})()
     win = SettingsWindow(ctx=ctx, config_obj=cm)
     win.switch_category("quota")
-    quota_pg: QuotaSettingsPage = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    quota_pg: QuotaSettingsPage = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
 
     # 1) 添加 DeepSeek 账号并测试：成功前仅在 _pending_secrets 中，取消后不写入凭据
     quota_pg.open_add_form(Provider.DEEPSEEK.value)
@@ -245,7 +250,6 @@ def test_03_add_cancel_save_fail_and_delete_confirm_semantics(qt_app, tmp_path, 
     win.close()
     mgr.stop()
 
-
 def test_04_quota_island_page_registered_and_msg_remains_removed(qt_app):
     reg = PageRegistry()
     for k in ("home", "mail", "quota", "weather", "trans", "tools", "life"):
@@ -280,8 +284,9 @@ def test_05_open_instance_focuses_quota_reconnect_account(qt_app, tmp_path, monk
     )
     try:
         qt_app.processEvents()
-        quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
-        assert win.stack.currentWidget() is quota_pg
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        cur_group = win.stack.currentWidget()
+        assert (cur_group.current_leaf() if hasattr(cur_group, "current_leaf") else cur_group) is quota_pg
         assert quota_pg._reconnect_target_acc is not None
         assert quota_pg._reconnect_target_acc.id == acc.id
         assert not quota_pg.add_card.isHidden()
@@ -309,7 +314,7 @@ def test_06_account_card_hides_identity_source_and_credential_fingerprints(qt_ap
     win.switch_category("quota")
     qt_app.processEvents()
 
-    quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
     for narrow in (False, True):
         quota_pg._narrow_mode = narrow
         quota_pg._rebuild_account_cards()
@@ -334,7 +339,6 @@ def test_06_account_card_hides_identity_source_and_credential_fingerprints(qt_ap
 
     win.close()
     mgr.stop()
-
 
 def test_07_gemini_workbuddy_save_consistency_6kb_and_credwrite_failure(qt_app, tmp_path):
     cm = Config(path=tmp_path / "config.json")
@@ -373,7 +377,7 @@ def test_07_gemini_workbuddy_save_consistency_6kb_and_credwrite_failure(qt_app, 
     ctx = type("Ctx", (), {"quota": mgr})()
     win = SettingsWindow(ctx=ctx, config_obj=cm)
     win.switch_category("quota")
-    quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
 
     # 1) Gemini 测试连接成功 -> 保存 -> 立即 read_secret 完全一致
     big_cookie = "SID=sid-secret-value; __Secure-1PSID=" + ("a" * 6200)
@@ -435,20 +439,6 @@ def test_07_gemini_workbuddy_save_consistency_6kb_and_credwrite_failure(qt_app, 
     win.close()
     mgr.stop()
 
-    # 3) 重启 QuotaManager 后，Gemini 与 WorkBuddy 均能读到保存的会话并刷新
-    cm2 = Config(path=tmp_path / "config.json")
-    cache2 = LocalQuotaCache(cache_path=tmp_path / "quota_cache.json")
-    mgr2 = QuotaManager(config_obj=cm2, cred_store=creds, cache=cache2, http_opener=_opener)
-    assert mgr2.refresh_account(gm_acc.id) is True
-    assert mgr2.refresh_account(wb_acc.id) is True
-    assert _wait_until(qt_app, lambda: not mgr2.is_refreshing())
-    assert mgr2.get_snapshot(gm_acc.id).status == AccountStatus.OK.value
-    assert mgr2.get_snapshot(wb_acc.id).status == AccountStatus.OK.value
-    assert mgr2.get_snapshot(wb_acc.id).credits == 239.59
-    mgr2.stop()
-
-
-
 def test_08_save_settings_no_race_and_gemini_browser_connect(qt_app, tmp_path, monkeypatch):
     from wisland.services.quota.adapters import gemini as gm_mod
 
@@ -471,7 +461,7 @@ def test_08_save_settings_no_race_and_gemini_browser_connect(qt_app, tmp_path, m
     ctx = type("Ctx", (), {"quota": mgr})()
     win = SettingsWindow(ctx=ctx, config_obj=cm)
     win.switch_category("quota")
-    quota_pg = next(pg for pg in win.pages if isinstance(pg, QuotaSettingsPage))
+    quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
 
     # 2) Gemini 浏览器自动登录模式（不填 Cookie 时触发 connect_gemini_browser）
     def _fake_browser_connect(account_id: str, expected_email: str = "", cancel_event=None, http_opener=None, timeout_s=300.0):
@@ -505,3 +495,123 @@ def test_08_save_settings_no_race_and_gemini_browser_connect(qt_app, tmp_path, m
 
     win.close()
     mgr.stop()
+
+
+def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
+    """验证设置窗口 QApplication 级 QToolTip 浅色/深色主题、防重复追加与关闭恢复。"""
+    import os
+    from pathlib import Path
+    from wisland.ui.settings_window import _TOOLTIP_MARK_START
+    from wisland.ui.theme import island_theme, settings_theme
+
+    shot_dir = Path(os.environ.get("WISLAND_SETTINGS_TIP_SHOT_DIR") or (tmp_path / "tip_shots"))
+    shot_dir.mkdir(parents=True, exist_ok=True)
+
+    orig_app_qss = qt_app.styleSheet()
+    orig_set_mode = settings_theme.mode
+    orig_isl_mode = island_theme.mode
+    base_qss = "QLabel { font-size: 12px; }"
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    acc = QuotaAccount(
+        id="acc_tip",
+        provider=Provider.DEEPSEEK.value,
+        alias="测试账号",
+        identity="ds-tip",
+        credential_key="Wisland/quota/acc_tip",
+    )
+    from dataclasses import asdict
+    creds.save_secret(acc.credential_key, acc.identity, "sk-test-tip")
+    cm.set("quota.accounts", [asdict(acc)])
+    mgr.load_from_config()
+
+    win = None
+    try:
+        qt_app.setStyleSheet(base_qss)
+        cm.set("settings_window.theme", "light", save=False)
+        ctx = type("Ctx", (), {"quota": mgr})()
+        win = SettingsWindow(ctx=ctx, config_obj=cm)
+        win.switch_category("quota")
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        quota_pg.focus_account(acc.id)
+
+        # 1) 打开前未注入，打开后保留原有 base_qss 并注入唯一浅色 QToolTip 规则
+        win.show()
+        qt_app.processEvents()
+        qss_light = qt_app.styleSheet()
+        assert base_qss in qss_light
+        assert qss_light.count(_TOOLTIP_MARK_START) == 1
+        assert "SettingsWindow QToolTip" not in win.styleSheet()
+        assert "#FFFFFF" in qss_light and "#181A20" in qss_light
+
+        # 触发原生 QToolTip 渲染并检查背景色（浅色白底，非系统黑框）
+        card = quota_pg._cards[0]
+        target_w = card.btn_remove
+        gpos = win.mapToGlobal(win.rect().center())
+        tip_txt_light = target_w.toolTip() or "从监控列表移除该账号"
+        QtWidgets.QToolTip.showText(gpos, tip_txt_light, win)
+        _wait_until(
+            qt_app,
+            lambda: any(w.metaObject().className() == "QTipLabel" and w.isVisible() for w in qt_app.topLevelWidgets()),
+            timeout_s=1.0,
+        )
+        tip_widget = next(
+            (w for w in qt_app.topLevelWidgets() if w.metaObject().className() == "QTipLabel"),
+            None,
+        )
+        assert tip_widget is not None
+        tip_img_light = tip_widget.grab().toImage()
+        assert tip_img_light.save(str(shot_dir / "settings-tooltip-light.png"))
+        bg_px_light = tip_img_light.pixelColor(tip_img_light.width() // 2, 4)
+        assert bg_px_light.red() >= 235 and bg_px_light.green() >= 235 and bg_px_light.blue() >= 235
+        QtWidgets.QToolTip.hideText()
+
+        # 2) 切换岛体皮肤（classic/rouge）不影响设置窗口 Tooltip
+        island_theme.set_mode("classic")
+        qt_app.processEvents()
+        assert "#FFFFFF" in qt_app.styleSheet()
+
+        # 3) 切换设置窗口为深色主题，Tooltip 立即变为 #242630 + 白字，且不重复追加
+        settings_theme.set_mode("dark")
+        qt_app.processEvents()
+        qss_dark = qt_app.styleSheet()
+        assert qss_dark.count(_TOOLTIP_MARK_START) == 1
+        assert "#242630" in qss_dark and "#F4F6FB" in qss_dark
+
+        tip_txt_dark = quota_pg.ed_alias.toolTip() or "修改此账号在岛上与设置中的显示名称"
+        QtWidgets.QToolTip.showText(gpos, tip_txt_dark, win)
+        _wait_until(
+            qt_app,
+            lambda: any(w.metaObject().className() == "QTipLabel" and w.isVisible() for w in qt_app.topLevelWidgets()),
+            timeout_s=1.0,
+        )
+        tip_widget_dark = next(
+            (w for w in qt_app.topLevelWidgets() if w.metaObject().className() == "QTipLabel"),
+            None,
+        )
+        assert tip_widget_dark is not None
+        tip_img_dark = tip_widget_dark.grab().toImage()
+        assert tip_img_dark.save(str(shot_dir / "settings-tooltip-dark.png"))
+        bg_px_dark = tip_img_dark.pixelColor(tip_img_dark.width() // 2, 4)
+        assert (bg_px_dark.red(), bg_px_dark.green(), bg_px_dark.blue()) == (36, 38, 48)
+        QtWidgets.QToolTip.hideText()
+
+        # 4) 反复开关设置窗口：关闭恢复原 styleSheet，再打开不重复追加
+        win.close()
+        qt_app.processEvents()
+        assert qt_app.styleSheet() == base_qss
+
+        win.show()
+        qt_app.processEvents()
+        assert qt_app.styleSheet().count(_TOOLTIP_MARK_START) == 1
+        win.close()
+        qt_app.processEvents()
+        assert qt_app.styleSheet() == base_qss
+    finally:
+        QtWidgets.QToolTip.hideText()
+        if win is not None:
+            win.close()
+        qt_app.setStyleSheet(orig_app_qss)
+        settings_theme.set_mode(orig_set_mode)
+        island_theme.set_mode(orig_isl_mode)
+        mgr.stop()

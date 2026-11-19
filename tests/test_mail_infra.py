@@ -301,7 +301,7 @@ class TestMailInfra(unittest.TestCase):
         mgr = MailAccountManager(config_obj=self.cfg, cred_store=creds, client_factory=lambda *a: _FakeIMAP(*a))
         win = SettingsWindow(ctx=type("Ctx", (), {"mail": mgr})(), config_obj=self.cfg)
         win.switch_category("mail_accounts")
-        page: MailAccountsSettingsPage = next(pg for pg in win.pages if isinstance(pg, MailAccountsSettingsPage))
+        page: MailAccountsSettingsPage = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
         win.resize(840, 620)
         win.show()
         self.app.processEvents()
@@ -407,7 +407,7 @@ class TestMailInfra(unittest.TestCase):
                 win.resize(860, 740)
                 win.show()
                 self.app.processEvents()
-                page = next(pg for pg in win.pages if isinstance(pg, MailAccountsSettingsPage))
+                page = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
                 # 验证所有控件列左边缘与宽度一致 (330px)
                 xs = {
                     page.cmb_provider.mapTo(page.form_card, page.cmb_provider.rect().topLeft()).x(),

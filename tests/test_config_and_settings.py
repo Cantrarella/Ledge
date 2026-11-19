@@ -59,8 +59,8 @@ class TestConfigAndSettings(unittest.TestCase):
 
         win = SettingsWindow(ctx=None, config_obj=c)
         # 在 UI 控件中修改多个值
-        gen_page = win.pages[0]
-        isl_page = win.pages[1]
+        gen_page = win.leaf_pages[0]
+        isl_page = win.leaf_pages[1]
         gen_page.cb_theme.set_value("rouge")
         isl_page.cb_edge.set_value("left")
         isl_page.sp_pos.setValue(80)
@@ -118,7 +118,7 @@ class TestConfigAndSettings(unittest.TestCase):
 
         # 通过设置窗口保存新设置后，未知字段依然保留
         win = SettingsWindow(ctx=None, config_obj=c)
-        win.pages[0].cb_theme.set_value("dark")
+        win.leaf_pages[0].cb_theme.set_value("dark")
         saved = win.save_settings()
         self.assertTrue(saved)
 
@@ -231,20 +231,20 @@ class TestConfigAndSettings(unittest.TestCase):
             self.assertEqual(win.dirty_lbl.text(), "")
 
             # 2) 修改任意设置项后：is_dirty 为 True，保存按钮启用，顶栏显示“● 有未保存修改”
-            win.pages[0].sw_passthrough.setChecked(True, emit=True)
+            win.leaf_pages[0].sw_passthrough.setChecked(True, emit=True)
             self.assertTrue(win.is_dirty())
             self.assertTrue(win.btn_save.isEnabled())
             self.assertIn("有未保存修改", win.dirty_lbl.text())
 
             # 3) 校验错误就地显示在对应 SettingRow
-            win.pages[0].ed_hotkey.setText("Bad++Hotkey")
+            win.leaf_pages[0].ed_hotkey.setText("Bad++Hotkey")
             ok = win.save_settings()
             self.assertFalse(ok)
-            self.assertFalse(win.pages[0].row_hotkey.err_lbl.isHidden())
-            self.assertIn("热键", win.pages[0].row_hotkey.err_lbl.text())
+            self.assertFalse(win.leaf_pages[0].row_hotkey.err_lbl.isHidden())
+            self.assertIn("热键", win.leaf_pages[0].row_hotkey.err_lbl.text())
 
             # 4) 检查天气页 API Key 占位符、说明与已保存城市（不直接显示经纬度，经纬度在 tooltip）
-            pg_map = {pg.key: pg for pg in win.pages}
+            pg_map = {pg.key: pg for pg in win.leaf_pages}
             wth_page = pg_map["weather"]
             self.assertEqual(wth_page.ed_api_key.edit.placeholderText(), "粘贴 API Key（可选）")
             self.assertEqual(wth_page.row_api.sub_lbl.text(), "留空时使用免费的 Open-Meteo 服务")
@@ -292,7 +292,7 @@ class TestConfigAndSettings(unittest.TestCase):
         win = SettingsWindow(ctx=ctx, config_obj=c)
         win.show()
         try:
-            pg_map = {pg.key: pg for pg in win.pages}
+            pg_map = {pg.key: pg for pg in win.leaf_pages}
             nav_pg = pg_map["pages_nav"]
 
             # 1) 设置中只列出 4 个真实页面，不出现 msg / ai_quota 等页面
@@ -1151,7 +1151,7 @@ class ThemeDecouplingAndClassicSkinTests(unittest.TestCase):
                 win.show()
                 self.app.processEvents()
 
-                gen_pg = next(pg for pg in win.pages if isinstance(pg, GeneralSettingsPage))
+                gen_pg = next(pg for pg in win.leaf_pages if isinstance(pg, GeneralSettingsPage))
                 self.assertIs(resolve_theme(gen_pg), settings_theme)
                 self.assertIs(resolve_theme(gen_pg.cb_theme), settings_theme)
                 self.assertIs(resolve_theme(gen_pg.cb_settings_theme), settings_theme)
@@ -1246,6 +1246,159 @@ class ThemeDecouplingAndClassicSkinTests(unittest.TestCase):
                 win.close()
             island_theme.set_mode(orig_isl)
             settings_theme.set_mode(orig_set)
+
+
+class SettingsConsolidationAndTrayToggleTests(unittest.TestCase):
+    """7 个一级分类合并、二级标签、深链兼容、防重复 load/save 与托盘收起修复回归测试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_01_seven_groups_subtabs_deep_links_and_single_load_save(self):
+        import tempfile
+        from wisland.ui.settings_window import LEAF_TO_GROUP, SettingsGroupPage
+
+        with tempfile.TemporaryDirectory() as td:
+            c = Config(path=Path(td) / "config.json")
+            win = SettingsWindow(ctx=None, config_obj=c)
+            win.show()
+            self.app.processEvents()
+            try:
+                # 1) 固定 7 个一级分类、11 个叶子页面
+                self.assertEqual(len(win.pages), 7)
+                self.assertEqual(len(win.leaf_pages), 11)
+                self.assertEqual(
+                    [t for _, _, t, _ in win._group_specs],
+                    ["外观与岛体", "页面与导航", "消息与邮件", "天气", "AI 与字幕", "工具与生活", "数据与关于"],
+                )
+                self.assertEqual(len(win.nav_buttons), 7)
+
+                # 2) 无双层纵向 QScrollArea 嵌套
+                for grp in win.pages:
+                    if isinstance(grp, SettingsGroupPage):
+                        outer_scrolls = [sa for sa in grp.findChildren(QtWidgets.QScrollArea) if sa.parent() is grp]
+                        self.assertEqual(outer_scrolls, [])
+
+                # 3) 所有旧叶子 key 深链均正确定位到对应一级分类与二级标签
+                for leaf_key, (grp_key, exp_leaf) in LEAF_TO_GROUP.items():
+                    win.switch_category(leaf_key)
+                    self.app.processEvents()
+                    self.assertTrue(win.nav_buttons[grp_key].selected)
+                    cur = win.stack.currentWidget()
+                    if isinstance(cur, SettingsGroupPage):
+                        self.assertEqual(cur.current_leaf().key, exp_leaf)
+                    else:
+                        self.assertEqual(cur.key, exp_leaf)
+
+                # 4) 切换二级标签不改变窗口尺寸、不丢失草稿、不自动保存
+                win.resize(820, 600)
+                orig_sz = win.size()
+                win.switch_category("general")
+                gen_pg = win.leaf_pages[0]
+                gen_pg.sw_passthrough.setChecked(True, emit=True)
+                self.assertTrue(win.is_dirty())
+                win.switch_category("island_pet")
+                self.app.processEvents()
+                self.assertEqual(win.size(), orig_sz)
+                self.assertTrue(win.is_dirty())
+                self.assertFalse(c.get("island.passthrough"))  # 未点保存不得落盘
+
+                # 5) 每次 _load_all_from_draft / collect_to_draft 只调用每个叶子页面一次
+                load_counts = {pg.key: 0 for pg in win.leaf_pages}
+                save_counts = {pg.key: 0 for pg in win.leaf_pages}
+                for pg in win.leaf_pages:
+                    orig_l = pg.load_from_draft
+                    orig_s = pg.save_to_draft
+                    pg.load_from_draft = lambda d, k=pg.key, fn=orig_l: (load_counts.__setitem__(k, load_counts[k] + 1), fn(d))[1]
+                    pg.save_to_draft = lambda d, k=pg.key, fn=orig_s: (save_counts.__setitem__(k, save_counts[k] + 1), fn(d))[1]
+
+                win._load_all_from_draft()
+                self.assertTrue(all(v == 1 for v in load_counts.values()))
+                for k in save_counts:
+                    save_counts[k] = 0
+                win.collect_to_draft()
+                self.assertTrue(all(v == 1 for v in save_counts.values()))
+            finally:
+                win.close()
+
+    def test_02_tray_menu_toggle_never_passes_false_and_collapses_pinned(self):
+        from wisland.app import populate_tray_menu
+
+        class _FakeIsland:
+            def __init__(self):
+                self.expanded = False
+                self._pinned = False
+                self.locks: set[str] = set()
+                self.calls: list[tuple[str, object]] = []
+                self._page_key = "quota"
+
+            def pinned(self) -> bool:
+                return self._pinned
+
+            def set_pinned(self, on: bool):
+                self._pinned = bool(on)
+                self.calls.append(("set_pinned", on))
+
+            def expand(self, page=None):
+                self.calls.append(("expand", page))
+                if page is False:
+                    raise AssertionError("page 不得接收 QAction.triggered 的 False 参数")
+                self.expanded = True
+
+            def collapse(self):
+                self.calls.append(("collapse", None))
+                self.expanded = False
+
+            def toggle(self, page: str | None = None):
+                self.calls.append(("toggle", page))
+                if page is False:
+                    raise AssertionError("toggle 不得接收 QAction.triggered 的 False 参数")
+                if self.expanded and (page is None or page == self._page_key):
+                    if self.pinned():
+                        self.set_pinned(False)
+                    self.collapse()
+                else:
+                    self.expand(page)
+                    self.locks.add("pin")
+
+            def passthrough(self) -> bool:
+                return False
+
+            def capture_visible(self) -> bool:
+                return False
+
+        isl = _FakeIsland()
+        menu = QtWidgets.QMenu()
+        try:
+            # 1) 收起态 -> 文案“展开 Wisland”，act.trigger()（底层发射 triggered(False)）触发展开且不传 False
+            populate_tray_menu(menu, isl, lambda: None, lambda: None)
+            act = menu.actions()[0]
+            self.assertEqual(act.text(), "展开 Wisland")
+            act.trigger()
+            self.assertTrue(isl.expanded)
+            self.assertEqual(isl._page_key, "quota")
+
+            # 2) 展开态 -> 刷新菜单文案“收起 Wisland”，act.trigger() 立即收起
+            populate_tray_menu(menu, isl, lambda: None, lambda: None)
+            act = menu.actions()[0]
+            self.assertEqual(act.text(), "收起 Wisland")
+            act.trigger()
+            self.assertFalse(isl.expanded)
+            self.assertEqual(isl._page_key, "quota")
+
+            # 3) 常驻展开态 (pinned=True) -> 触发“收起 Wisland”先取消常驻再收起
+            isl.expanded = True
+            isl._pinned = True
+            populate_tray_menu(menu, isl, lambda: None, lambda: None)
+            act = menu.actions()[0]
+            self.assertEqual(act.text(), "收起 Wisland")
+            act.trigger()
+            self.assertFalse(isl._pinned)
+            self.assertFalse(isl.expanded)
+            self.assertNotIn("menu", isl.locks)
+        finally:
+            menu.close()
 
 
 if __name__ == "__main__":

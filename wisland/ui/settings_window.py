@@ -25,6 +25,163 @@ from .widgets import ConfirmDialog, Hoverable, Label, PillButton, hbox, painter,
 
 Qt = QtCore.Qt
 
+_TOOLTIP_MARK_START = "/* WISLAND_SETTINGS_TOOLTIP_START */"
+_TOOLTIP_MARK_END = "/* WISLAND_SETTINGS_TOOLTIP_END */"
+
+
+def _strip_tooltip_block(qss: str) -> str:
+    """移除已有的设置窗口 Tooltip 标记段，保留其他全局样式不变。"""
+    s = qss or ""
+    while _TOOLTIP_MARK_START in s and _TOOLTIP_MARK_END in s:
+        i0 = s.index(_TOOLTIP_MARK_START)
+        i1 = s.index(_TOOLTIP_MARK_END, i0) + len(_TOOLTIP_MARK_END)
+        s = (s[:i0].rstrip("\n") + "\n" + s[i1:].lstrip("\n")).strip("\n")
+    return s
+
+
+def _build_tooltip_block(dark: bool) -> str:
+    if dark:
+        bg, fg, bd = "#242630", "#F4F6FB", "rgba(255,255,255,36)"
+    else:
+        bg, fg, bd = "#FFFFFF", "#181A20", "rgba(0,0,0,28)"
+    return (
+        f"{_TOOLTIP_MARK_START}\n"
+        "QToolTip {\n"
+        f"    background-color: {bg};\n"
+        f"    color: {fg};\n"
+        f"    border: 1px solid {bd};\n"
+        "    border-radius: 6px;\n"
+        "    padding: 4px 8px;\n"
+        "}\n"
+        f"{_TOOLTIP_MARK_END}"
+    )
+
+
+LEAF_TO_GROUP: dict[str, tuple[str, str]] = {
+    "general": ("appearance", "general"),
+    "island_pet": ("appearance", "island_pet"),
+    "pages_nav": ("pages", "pages_nav"),
+    "notify": ("messages", "notify"),
+    "mail_accounts": ("messages", "mail_accounts"),
+    "weather": ("weather", "weather"),
+    "quota": ("ai_content", "quota"),
+    "subtitles": ("ai_content", "subtitles"),
+    "tools_life": ("tools_life", "tools_life"),
+    "data": ("data_about", "data"),
+    "about": ("data_about", "about"),
+}
+
+
+class _SubTabButton(Hoverable):
+    """组合页顶部二级标签按钮：紧凑胶囊态，不触发保存、不改变窗口尺寸。"""
+
+    def __init__(self, key: str, title: str, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.title = title
+        self.selected = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        fm = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
+        self.setFixedSize(max(68, fm.horizontalAdvance(title) + 26), 28)
+
+    def set_selected(self, on: bool):
+        if self.selected != on:
+            self.selected = on
+            self.update()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(e)
+
+    def paintEvent(self, e):
+        p = painter(self)
+        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self.selected:
+            bg = QtGui.QColor(settings_theme.on_color())
+            bg.setAlphaF(0.20 if settings_theme.dark else 0.14)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(r, 8, 8)
+            fg = settings_theme.text(0.98) if settings_theme.dark else settings_theme.on_color()
+        else:
+            if self._hover.x > 0.01:
+                bg = QtGui.QColor(settings_theme.hover())
+                bg.setAlphaF(bg.alphaF() * self._hover.x)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(bg)
+                p.drawRoundedRect(r, 8, 8)
+            fg = settings_theme.text2(0.92)
+        if self.hasFocus():
+            p.setPen(QtGui.QPen(settings_theme.on_color(), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r, 8, 8)
+        p.setPen(fg)
+        p.setFont(ui_font(12.5, W.DemiBold if self.selected else W.Normal))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.title)
+
+
+class SettingsGroupPage(QtWidgets.QWidget):
+    """一级组合设置页：固定二级标签栏 + QStackedWidget 承载原有独立滚动的叶子页面。"""
+    leaf_changed = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        key: str,
+        glyph: str,
+        title: str,
+        tabs: list[tuple[str, QtWidgets.QWidget]],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.key = key
+        self.glyph = glyph
+        self.title = title
+        self._theme_context = settings_theme
+        self.sub_pages: list[QtWidgets.QWidget] = [pg for _, pg in tabs]
+        self._leaf_keys: list[str] = [pg.key for pg in self.sub_pages]  # type: ignore[attr-defined]
+        self._tab_buttons: dict[str, _SubTabButton] = {}
+
+        self.tab_bar = QtWidgets.QFrame(self)
+        self.tab_bar.setFixedHeight(44)
+        tab_items: list = []
+        for tab_title, pg in tabs:
+            lkey = pg.key  # type: ignore[attr-defined]
+            btn = _SubTabButton(lkey, tab_title, self.tab_bar)
+            btn.clicked.connect(lambda k=lkey: self.show_leaf(k))
+            self._tab_buttons[lkey] = btn
+            tab_items.append(btn)
+        tab_items.append(None)
+        self.tab_bar.setLayout(hbox(*tab_items, spacing=8, margins=(20, 8, 20, 6)))
+
+        self.sub_stack = QtWidgets.QStackedWidget(self)
+        for pg in self.sub_pages:
+            self.sub_stack.addWidget(pg)
+
+        self.setLayout(vbox(self.tab_bar, (self.sub_stack, 1), spacing=0, margins=(0, 0, 0, 0)))
+        settings_theme.changed.connect(self._apply_tab_bar_style)
+        self._apply_tab_bar_style()
+        if self._leaf_keys:
+            self.show_leaf(self._leaf_keys[0])
+
+    def _apply_tab_bar_style(self):
+        sep = "rgba(255,255,255,14)" if settings_theme.dark else "rgba(0,0,0,12)"
+        self.tab_bar.setStyleSheet(f"QFrame{{background:transparent;border-bottom:1px solid {sep};}}")
+
+    def current_leaf(self) -> QtWidgets.QWidget:
+        return self.sub_stack.currentWidget()
+
+    def show_leaf(self, key: str) -> bool:
+        if key not in self._leaf_keys:
+            return False
+        idx = self._leaf_keys.index(key)
+        self.sub_stack.setCurrentIndex(idx)
+        for k, btn in self._tab_buttons.items():
+            btn.set_selected(k == key)
+        self.leaf_changed.emit(key)
+        return True
+
 
 class _CategoryButton(Hoverable):
     """左侧分类导航项：选中态采用低饱和主色背景 + 左侧 3px 强调线，与普通悬停态明显区分。"""
@@ -124,27 +281,84 @@ class SettingsWindow(QtWidgets.QWidget):
         brand_sub = Label("设置", 11.5, W.Normal, 3)
         brand_box = hbox(logo_lbl, vbox(brand_title, brand_sub, spacing=0), None, spacing=10, margins=(8, 4, 6, 10))
 
-        self.pages = [
-            GeneralSettingsPage(ctx, self),
-            IslandPetSettingsPage(ctx, self),
-            PagesNavSettingsPage(ctx, self),
-            WeatherSettingsPage(ctx, self),
-            NotifySettingsPage(ctx, self),
-            MailAccountsSettingsPage(ctx, self),
-            QuotaSettingsPage(ctx, self),
-            SubtitlesSettingsPage(ctx, self),
-            ToolsLifeSettingsPage(ctx, self),
-            DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft),
-            AboutSettingsPage(ctx, self),
+        gen_pg = GeneralSettingsPage(ctx, self)
+        pet_pg = IslandPetSettingsPage(ctx, self)
+        nav_pg = PagesNavSettingsPage(ctx, self)
+        notify_pg = NotifySettingsPage(ctx, self)
+        mail_pg = MailAccountsSettingsPage(ctx, self)
+        weather_pg = WeatherSettingsPage(ctx, self)
+        quota_pg = QuotaSettingsPage(ctx, self)
+        sub_pg = SubtitlesSettingsPage(ctx, self)
+        tl_pg = ToolsLifeSettingsPage(ctx, self)
+        data_pg = DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft)
+        about_pg = AboutSettingsPage(ctx, self)
+
+        self.leaf_pages = [
+            gen_pg,
+            pet_pg,
+            nav_pg,
+            notify_pg,
+            mail_pg,
+            weather_pg,
+            quota_pg,
+            sub_pg,
+            tl_pg,
+            data_pg,
+            about_pg,
         ]
+        for lpg in self.leaf_pages:
+            lpg.changed.connect(self._on_any_page_changed)
+
+        grp_appearance = SettingsGroupPage(
+            "appearance",
+            G.SLIDERS,
+            "外观与岛体",
+            [("常规", gen_pg), ("岛体与表情", pet_pg)],
+            self,
+        )
+        grp_messages = SettingsGroupPage(
+            "messages",
+            G.MAIL,
+            "消息与邮件",
+            [("通知", notify_pg), ("邮件账号", mail_pg)],
+            self,
+        )
+        grp_ai = SettingsGroupPage(
+            "ai_content",
+            G.CPU,
+            "AI 与字幕",
+            [("AI 额度", quota_pg), ("实时字幕", sub_pg)],
+            self,
+        )
+        grp_data_about = SettingsGroupPage(
+            "data_about",
+            G.GEAR,
+            "数据与关于",
+            [("数据维护", data_pg), ("关于", about_pg)],
+            self,
+        )
+        grp_data_about.leaf_changed.connect(
+            lambda k: about_pg.load_from_draft(self.draft) if k == "about" else None
+        )
+
+        # 一级导航固定 7 项：外观与岛体、页面与导航、消息与邮件、天气、AI 与字幕、工具与生活、数据与关于
+        self._group_specs: list[tuple[str, str, str, QtWidgets.QWidget]] = [
+            ("appearance", G.SLIDERS, "外观与岛体", grp_appearance),
+            ("pages", G.APPS, "页面与导航", nav_pg),
+            ("messages", G.MAIL, "消息与邮件", grp_messages),
+            ("weather", G.SUN, "天气", weather_pg),
+            ("ai_content", G.CPU, "AI 与字幕", grp_ai),
+            ("tools_life", G.CLIP, "工具与生活", tl_pg),
+            ("data_about", G.GEAR, "数据与关于", grp_data_about),
+        ]
+        self.pages = [pg for _, _, _, pg in self._group_specs]
 
         self.nav_buttons: dict[str, _CategoryButton] = {}
         nav_items = [brand_box]
-        for pg in self.pages:
-            btn = _CategoryButton(pg.key, pg.glyph, pg.title, self.sidebar)
-            btn.clicked.connect(lambda k=pg.key: self.switch_category(k))
-            pg.changed.connect(self._on_any_page_changed)
-            self.nav_buttons[pg.key] = btn
+        for gkey, gglyph, gtitle, _pg in self._group_specs:
+            btn = _CategoryButton(gkey, gglyph, gtitle, self.sidebar)
+            btn.clicked.connect(lambda k=gkey: self.switch_category(k))
+            self.nav_buttons[gkey] = btn
             nav_items.append(btn)
         nav_items.append(None)
         self.sidebar.setLayout(vbox(*nav_items, spacing=4, margins=(12, 14, 12, 14)))
@@ -152,7 +366,7 @@ class SettingsWindow(QtWidgets.QWidget):
         # ---- 右侧纵向三段式：顶部标题栏 + 可伸缩 QStackedWidget(QScrollArea) + 独立底部操作栏 ----
         self.header = QtWidgets.QFrame(self)
         self.header.setFixedHeight(50)
-        self.header_title = Label("常规", 16, W.Bold, 1)
+        self.header_title = Label("外观与岛体", 16, W.Bold, 1)
         self.dirty_lbl = Label("", 12, W.DemiBold, 2)
         self.header.setLayout(hbox(self.header_title, None, self.dirty_lbl, spacing=10, margins=(24, 10, 24, 8)))
 
@@ -172,6 +386,8 @@ class SettingsWindow(QtWidgets.QWidget):
         self.footer.setLayout(hbox((self.status_lbl, 1), self.btn_cancel, self.btn_save, spacing=10, margins=(20, 10, 20, 12)))
 
         self._theme_context = settings_theme
+        self._saved_app_qss: str | None = None
+        self._tooltip_qss_active: bool = False
         right_lay = vbox(self.header, (self.stack, 1), self.footer, spacing=0, margins=(0, 0, 0, 0))
         self.setLayout(hbox(self.sidebar, (right_lay, 1), spacing=0, margins=(0, 0, 0, 0)))
 
@@ -198,7 +414,7 @@ class SettingsWindow(QtWidgets.QWidget):
             cls._instance.switch_category(category)
         if category == "quota" and account_id:
             quota_pg = next(
-                (pg for pg in cls._instance.pages if isinstance(pg, QuotaSettingsPage)),
+                (pg for pg in cls._instance.leaf_pages if isinstance(pg, QuotaSettingsPage)),
                 None,
             )
             if quota_pg is not None:
@@ -208,6 +424,40 @@ class SettingsWindow(QtWidgets.QWidget):
         cls._instance.activateWindow()
         return cls._instance
 
+    def _apply_tooltip_style(self):
+        app = QtWidgets.QApplication.instance()
+        if app is None or not self._tooltip_qss_active:
+            return
+        base = _strip_tooltip_block(app.styleSheet())
+        block = _build_tooltip_block(settings_theme.dark)
+        app.setStyleSheet(f"{base}\n{block}" if base else block)
+
+    def _install_tooltip_style(self):
+        app = QtWidgets.QApplication.instance()
+        if app is None or self._tooltip_qss_active:
+            return
+        self._saved_app_qss = _strip_tooltip_block(app.styleSheet())
+        self._tooltip_qss_active = True
+        self._apply_tooltip_style()
+
+    def _restore_tooltip_style(self):
+        if not self._tooltip_qss_active:
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            saved = self._saved_app_qss if self._saved_app_qss is not None else ""
+            app.setStyleSheet(saved)
+        self._tooltip_qss_active = False
+        self._saved_app_qss = None
+
+    def showEvent(self, e):
+        self._install_tooltip_style()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self._restore_tooltip_style()
+        super().hideEvent(e)
+
     def _apply_window_style(self):
         if settings_theme.dark:
             win_bg = "#181920"
@@ -215,23 +465,18 @@ class SettingsWindow(QtWidgets.QWidget):
             head_bg = "#181920"
             foot_bg = "#15161c"
             sep = "rgba(255,255,255,18)"
-            tip_bg, tip_fg, tip_bd = "#242630", "#f4f6fb", "rgba(255,255,255,28)"
         else:
             win_bg = "#f3f5f9"
             side_bg = "#eaedf4"
             head_bg = "#f3f5f9"
             foot_bg = "#edf0f6"
             sep = "rgba(0,0,0,16)"
-            tip_bg, tip_fg, tip_bd = "#ffffff", "#181a20", "rgba(0,0,0,24)"
-        self.setStyleSheet(
-            f"SettingsWindow{{background:{win_bg};}}"
-            f"SettingsWindow QToolTip{{background:{tip_bg};color:{tip_fg};"
-            f"border:1px solid {tip_bd};border-radius:6px;padding:4px 8px;}}"
-        )
+        self.setStyleSheet(f"SettingsWindow{{background:{win_bg};}}")
         self.sidebar.setStyleSheet(f"QFrame{{background:{side_bg};border-right:1px solid {sep};}}")
         self.header.setStyleSheet(f"QFrame{{background:{head_bg};border-bottom:1px solid {sep};}}")
         self.footer.setStyleSheet(f"QFrame{{background:{foot_bg};border-top:1px solid {sep};}}")
         self.dirty_lbl.set_color(settings_theme.on_color())
+        self._apply_tooltip_style()
         self.update()
 
     def paintEvent(self, e):
@@ -240,15 +485,18 @@ class SettingsWindow(QtWidgets.QWidget):
         p.fillRect(self.rect(), bg)
 
     def switch_category(self, key: str):
-        for i, pg in enumerate(self.pages):
-            on = (pg.key == key)
-            if pg.key in self.nav_buttons:
-                self.nav_buttons[pg.key].set_selected(on)
+        group_key, leaf_key = LEAF_TO_GROUP.get(key, (key, ""))
+        for i, (gkey, _gglyph, gtitle, pg) in enumerate(self._group_specs):
+            on = (gkey == group_key)
+            if gkey in self.nav_buttons:
+                self.nav_buttons[gkey].set_selected(on)
             if on:
-                self.header_title.setText(pg.title)
+                self.header_title.setText(gtitle)
                 self.stack.setCurrentIndex(i)
-                if pg.key == "about":
-                    pg.load_from_draft(self.draft)
+                if isinstance(pg, SettingsGroupPage) and leaf_key:
+                    pg.show_leaf(leaf_key)
+                elif leaf_key == "about" or getattr(pg, "key", "") == "about":
+                    pg.load_from_draft(self.draft)  # type: ignore[attr-defined]
 
     def reload_draft_from_config(self):
         """放弃未保存草稿，重新从当前生效配置创建新草稿并刷新控件。"""
@@ -260,7 +508,7 @@ class SettingsWindow(QtWidgets.QWidget):
     def _load_all_from_draft(self):
         self._loading = True
         try:
-            for pg in self.pages:
+            for pg in self.leaf_pages:
                 pg.load_from_draft(self.draft)
             self._baseline_dict = self.collect_to_draft().to_dict()
         finally:
@@ -268,15 +516,15 @@ class SettingsWindow(QtWidgets.QWidget):
         self._update_dirty_state()
 
     def collect_to_draft(self) -> ConfigDraft:
-        for pg in self.pages:
+        for pg in self.leaf_pages:
             pg.save_to_draft(self.draft)
         return self.draft
 
     def is_dirty(self) -> bool:
         self.collect_to_draft()
-        gen_pg = self.pages[0]
+        gen_pg = self.leaf_pages[0]
         auto_dirty = gen_pg.autostart_dirty() if isinstance(gen_pg, GeneralSettingsPage) else False
-        quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+        quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
         quota_pending = quota_pg.has_pending_changes() if quota_pg is not None else False
         return (self.draft.to_dict() != self._baseline_dict) or auto_dirty or quota_pending
 
@@ -300,9 +548,9 @@ class SettingsWindow(QtWidgets.QWidget):
             self.btn_save.set_text("保存设置")
 
     def _route_field_errors(self, errors: list[str]):
-        for pg in self.pages:
+        for pg in self.leaf_pages:
             pg.clear_errors()
-        pg_map = {pg.key: pg for pg in self.pages}
+        pg_map = {pg.key: pg for pg in self.leaf_pages}
         gen_pg: GeneralSettingsPage = pg_map["general"]  # type: ignore[assignment]
         wth_pg: WeatherSettingsPage = pg_map["weather"]  # type: ignore[assignment]
         nav_pg: PagesNavSettingsPage = pg_map["pages_nav"]  # type: ignore[assignment]
@@ -340,8 +588,8 @@ class SettingsWindow(QtWidgets.QWidget):
 
         try:
             self.collect_to_draft()
-            mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
-            quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+            mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
+            quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
             if mail_pg is not None:
                 cred_ok, cred_err = mail_pg.commit_credentials()
                 if not cred_ok:
@@ -382,10 +630,10 @@ class SettingsWindow(QtWidgets.QWidget):
                 if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                     quota_mgr.set_commit_sync_suppressed(False)
 
-            for pg in self.pages:
+            for pg in self.leaf_pages:
                 pg.clear_errors()
 
-            gen_page = self.pages[0]
+            gen_page = self.leaf_pages[0]
             if isinstance(gen_page, GeneralSettingsPage):
                 gen_page.apply_autostart_if_changed()
 
@@ -410,10 +658,10 @@ class SettingsWindow(QtWidgets.QWidget):
                 confirm_text="放弃修改",
             ):
                 return False
-        mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
+        mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
         if mail_pg is not None:
             mail_pg.discard_pending()
-        quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+        quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
         if quota_pg is not None:
             quota_pg.discard_pending()
         self.draft = self.cfg_obj.create_draft()
@@ -424,10 +672,11 @@ class SettingsWindow(QtWidgets.QWidget):
         return True
 
     def closeEvent(self, e):
-        mail_pg = next((pg for pg in self.pages if isinstance(pg, MailAccountsSettingsPage)), None)
+        self._restore_tooltip_style()
+        mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
         if mail_pg is not None:
             mail_pg.discard_pending()
-        quota_pg = next((pg for pg in self.pages if isinstance(pg, QuotaSettingsPage)), None)
+        quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
         if quota_pg is not None:
             quota_pg.discard_pending()
         super().closeEvent(e)

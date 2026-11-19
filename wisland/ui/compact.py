@@ -455,7 +455,7 @@ class CompactView:
             return max(300, self._lyr_w) + 34 + nb * 12, H_MEDIA
         if m == "pet":
             return 134 + nb * 13, H_IDLE
-        base_w = 134 if self.weather else 96
+        base_w = 146 if self.weather else 96
         # 对称扩展胶囊宽度：时间天气始终以整个胶囊中心居中，同时右侧预留色点空间
         extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
         return base_w + extra_w, H_IDLE
@@ -565,44 +565,85 @@ class CompactView:
             x += dot_d + gap
         return right - total_w
 
+    @staticmethod
+    def _tabular_font(px: float, weight: QtGui.QFont.Weight) -> QtGui.QFont:
+        f = ui_font(px, weight, num=True)
+        try:
+            f.setFeature(QtGui.QFont.Tag.fromString("tnum"), 1)
+        except Exception:
+            pass
+        return f
+
+    def _idle_layout_metrics(self, r: QtCore.QRectF) -> dict:
+        """基于 QFontMetrics 计算收起态时间与天气整体居中的几何参数。"""
+        txt = getattr(self, "_clock_override", None) or time.strftime("%H:%M", time.localtime())
+        ft = self._tabular_font(15, W.DemiBold)
+        fmt = QtGui.QFontMetrics(ft)
+        clock_w = float(math.ceil(fmt.horizontalAdvance(txt)))
+        if not self.weather:
+            sx = r.center().x() - clock_w / 2.0
+            return {
+                "txt": txt,
+                "ft": ft,
+                "clock_w": clock_w,
+                "clock_rect": QtCore.QRectF(sx, r.y(), clock_w + 1.0, r.height()),
+                "has_weather": False,
+                "group_left": sx,
+                "content_total": clock_w,
+                "gap": 0.0,
+            }
+        glyph, temp = self.weather[0], self.weather[1]
+        fam = self.weather[2] if len(self.weather) > 2 else None
+        fw = self._tabular_font(14.5, W.DemiBold)
+        fmw = QtGui.QFontMetrics(fw)
+        temp_w = float(math.ceil(fmw.horizontalAdvance(temp)))
+        icon_w = 14.0
+        icon_temp_gap = 3.0
+        weather_w = icon_w + icon_temp_gap + temp_w
+        gap = 9.0
+        content_total = clock_w + gap + weather_w
+        group_left = r.center().x() - content_total / 2.0
+        clock_rect = QtCore.QRectF(group_left, r.y(), clock_w + 1.0, r.height())
+        wx = group_left + clock_w + gap
+        icon_rect = QtCore.QRectF(wx, r.y(), icon_w, r.height())
+        temp_rect = QtCore.QRectF(wx + icon_w + icon_temp_gap, r.y(), temp_w + 1.0, r.height())
+        return {
+            "txt": txt,
+            "ft": ft,
+            "fw": fw,
+            "fam": fam,
+            "glyph": glyph,
+            "temp": temp,
+            "clock_w": clock_w,
+            "weather_w": weather_w,
+            "gap": gap,
+            "content_total": content_total,
+            "group_left": group_left,
+            "clock_rect": clock_rect,
+            "icon_rect": icon_rect,
+            "temp_rect": temp_rect,
+            "has_weather": True,
+        }
+
     def _paint_idle(self, p, r, a):
         cy = r.center().y()
-        now = time.localtime()
-        ft = ui_font(15, W.DemiBold, num=True)
-        txt = time.strftime("%H:%M", now)
-        fmt = QtGui.QFontMetrics(ft)
-        tw_time = fmt.horizontalAdvance(txt)
+        m = self._idle_layout_metrics(r)
 
         # 时间 + 天气组始终以整个胶囊中心 r.center().x() 严格居中，绝不计入未读色点宽度
-        if self.weather:
-            glyph, temp = self.weather[0], self.weather[1]
-            fam = self.weather[2] if len(self.weather) > 2 else None
-            fw = ui_font(13, W.Medium, num=True)
-            fmw = QtGui.QFontMetrics(fw)
-            tw_temp = fmw.horizontalAdvance(temp)
-            icon_w = 18.0
-            mid_gap = 14.0
-            weather_group_w = tw_time + mid_gap + icon_w + 3.0 + tw_temp
-            sx = r.center().x() - weather_group_w / 2.0
+        p.setFont(m["ft"])
+        p.setPen(theme.text(a))
+        p.drawText(m["clock_rect"], Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, m["txt"])
 
-            p.setFont(ft)
-            p.setPen(theme.text(a))
-            p.drawText(QtCore.QRectF(sx, r.y(), tw_time + 4, r.height()),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
-            wx = sx + tw_time + mid_gap
-            f = icon_font(13)
-            if fam:
-                f.setFamilies([fam, "Segoe Fluent Icons", "Segoe UI Symbol"])
+        if m["has_weather"]:
+            f = icon_font(13.5)
+            if m["fam"]:
+                f.setFamilies([m["fam"], "Segoe Fluent Icons", "Segoe UI Symbol"])
             p.setFont(f)
-            p.setPen(theme.text2(a))
-            p.drawText(QtCore.QRectF(wx, r.y(), icon_w, r.height()), Qt.AlignmentFlag.AlignCenter, glyph)
-            p.setFont(fw)
-            p.drawText(QtCore.QRectF(wx + icon_w + 3.0, r.y(), tw_temp + 4, r.height()),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, temp)
-        else:
-            p.setFont(ft)
-            p.setPen(theme.text(a))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+            p.setPen(theme.text(0.88 * a))
+            p.drawText(m["icon_rect"], Qt.AlignmentFlag.AlignCenter, m["glyph"])
+            p.setFont(m["fw"])
+            p.setPen(theme.text(0.95 * a))
+            p.drawText(m["temp_rect"], Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, m["temp"])
 
         # 未读色点固定在胶囊最右侧（约 12px 右边距）
         self._badges(p, r.right() - 12.0, cy, a)

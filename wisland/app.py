@@ -71,7 +71,7 @@ def populate_tray_menu(menu: QtWidgets.QMenu, island, open_settings_fn, quit_fn)
     menu.clear()
     toggle_label = "收起 Wisland" if island.expanded else "展开 Wisland"
     act_toggle = menu.addAction(toggle_label)
-    act_toggle.triggered.connect(island.toggle)
+    act_toggle.triggered.connect(lambda _checked=False: island.toggle())
 
     act_settings = menu.addAction("打开 Wisland 设置…")
     act_settings.triggered.connect(lambda: open_settings_fn())
@@ -463,30 +463,12 @@ def main():
         m.setFocus(QtCore.Qt.FocusReason.PopupFocusReason)
     island.menu_requested.connect(show_menu)
 
-    # 主页的「保持展开」「可穿透」按钮
-    home = P["home"]
-    MODE_UI = {"hover": (G.EYE, "悬停展开"), "always": (G.PIN, "常驻展开"), "never": (G.EYE_OFF, "长关")}
-    NEXT = {"hover": "always", "always": "never", "never": "hover"}
-    # 按钮只在 常驻展开 ↔ 悬停展开 之间切换；长关用双击灵动岛切换
-    home.a_pin.clicked.connect(lambda: island.set_expand_mode("hover" if island.expand_mode() == "always" else "always"))
-    home.a_pt.clicked.connect(lambda: island.set_passthrough(not island.passthrough()))
-
-    def on_mode(mode):
-        # 按钮只表示 常驻展开 / 悬停展开；长关不在按钮上显示
-        if mode == "never":
-            mode = "hover"
-        g, label = MODE_UI.get(mode, MODE_UI["hover"])
-        home.a_pin.set_on(mode == "always", g, label)
-
+    # 可穿透时收起态直接显示小形象（首页不再提供快捷按钮，保留运行时同步）
     def on_pt(on):
-        home.a_pt.set_on(on, None, "可穿透")
         if on:
             compact.set_view("pet")            # 穿透时直接显示小形象
             island._kick()
-    island.mode_changed.connect(on_mode)
     island.passthrough_changed.connect(on_pt)
-    on_mode(island.expand_mode())
-    home.a_pt.set_on(island.passthrough(), None, "可穿透")
     if island.passthrough():
         compact.set_view("pet")
 

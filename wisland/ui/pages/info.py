@@ -163,7 +163,7 @@ class Daily(QtWidgets.QWidget, Themed):
 
 
 class Facts(QtWidgets.QWidget, Themed):
-    """两行紧凑详情网格：体感、湿度、风、气压、能见度、云量、日出、日落。"""
+    """两行紧凑详情网格：湿度、能见度、风、气压、云量、日出、日落（不再重复体感温度）。"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.items: list[tuple[str, str]] = []
@@ -171,31 +171,41 @@ class Facts(QtWidgets.QWidget, Themed):
         self._hook_theme()
 
     def set_items(self, items):
-        self.items = items
-        tip = "  |  ".join(f"{k}: {v}" for k, v in items)
+        self.items = list(items)
+        tip = "  |  ".join(f"{k}: {v}" for k, v in self.items)
         self.setToolTip(tip)
         self.update()
 
+    def _cell_rect(self, row_idx: int, col_idx: int) -> QtCore.QRectF:
+        cw = self.width() / 4.0
+        rh = self.height() / 2.0
+        return QtCore.QRectF(col_idx * cw, row_idx * rh, cw, rh)
+
     def paintEvent(self, e):
+        if not self.items:
+            return
         p = painter(self)
         cols = 4
-        cw = self.width() / cols
-        rh = self.height() / 2
-        for i, (k, v) in enumerate(self.items[:8]):
-            x, y = (i % cols) * cw, (i // cols) * rh
-            p.setFont(ui_font(10.5))
-            p.setPen(theme.text3())
-            kw = 34 if len(k) >= 3 else 26
-            p.drawText(QtCore.QRectF(x, y, kw, rh), Qt.AlignmentFlag.AlignVCenter, k)
-            p.setFont(ui_font(11, W.Medium, num=True))
-            p.setPen(theme.text())
-            fm = QtGui.QFontMetrics(p.font())
-            vw = max(10, int(cw - kw - 4))
-            p.drawText(
-                QtCore.QRectF(x + kw, y, vw, rh),
-                Qt.AlignmentFlag.AlignVCenter,
-                fm.elidedText(v, Qt.TextElideMode.ElideRight, vw),
-            )
+        rows = (self.items[:cols], self.items[cols:cols * 2])
+        for row_idx, row_items in enumerate(rows):
+            if not row_items:
+                continue
+            for col_idx, (k, v) in enumerate(row_items):
+                cell = self._cell_rect(row_idx, col_idx)
+                x, y, cw, rh = cell.x(), cell.y(), cell.width(), cell.height()
+                p.setFont(ui_font(10.5))
+                p.setPen(theme.text3())
+                kw = 36 if len(k) >= 3 else (16 if len(k) == 1 else 24)
+                p.drawText(QtCore.QRectF(x, y, kw, rh), Qt.AlignmentFlag.AlignVCenter, k)
+                p.setFont(ui_font(10.5, W.Medium, num=True))
+                p.setPen(theme.text())
+                fm = QtGui.QFontMetrics(p.font())
+                vw = max(10, int(cw - kw - 4))
+                p.drawText(
+                    QtCore.QRectF(x + kw, y, vw, rh),
+                    Qt.AlignmentFlag.AlignVCenter,
+                    fm.elidedText(v, Qt.TextElideMode.ElideRight, vw),
+                )
 
 
 def _fmt_clock(ts, tz_off):
@@ -207,7 +217,7 @@ def _fmt_clock(ts, tz_off):
 def _wind_dir(deg):
     if deg is None:
         return ""
-    return ["北", "东北", "东", "东南", "南", "西南", "西", "西北"][int(((deg + 22.5) % 360) // 45)] + "风"
+    return ["北", "东北", "东", "东南", "南", "西南", "西", "西北"][int(((deg + 22.5) % 360) // 45)] + " "
 
 
 class WeatherPage(Page):
@@ -220,8 +230,8 @@ class WeatherPage(Page):
 
         # ---- 统一 Header：左(城市选择+添加) | 中(日期时间) | 右(刷新+齿轮) ----
         self.header = PageHeader(ctx, self, height=26)
-        self.city_btn = PillButton("上海", G.SUN, height=22)
-        self.city_btn.setMaximumWidth(104)
+        self.city_btn = PillButton("选择城市", height=22)
+        self.city_btn.setMaximumWidth(116)
         self.city_btn.clicked.connect(self._open_city_menu)
 
         self.add_btn = IconButton(G.ADD, 22, 10, "添加城市")
@@ -246,23 +256,36 @@ class WeatherPage(Page):
         self.msg = Label("", 10.5, level=3)
         self.msg.hide()
 
-        # ---- 左栏：当前天气（水平与垂直居中） ----
+        # ---- 左栏：当前天气（单一 QGridLayout：左列 52px 图标+温度 | 右列描述/温差/体感） ----
         self.icon = GlyphLabel(30)
-        self.temp = Label("--°", 28, W.Light, num=True)
+        self.temp = Label("--°", 28, W.Light, num=True, align=Qt.AlignmentFlag.AlignCenter)
         self.temp.setFixedHeight(34)
-        self.desc = Label("", 11.5, W.Medium, align=Qt.AlignmentFlag.AlignCenter)
-        self.city_lbl = Label("", 10.5, level=2, align=Qt.AlignmentFlag.AlignCenter)
-        left_col = vbox(
-            None,
-            hbox(None, self.icon, self.temp, None, spacing=6),
-            self.desc,
-            self.city_lbl,
-            None,
-            spacing=2,
-        )
-        left_wrap = QtWidgets.QWidget()
-        left_wrap.setFixedWidth(154)
-        left_wrap.setLayout(left_col)
+
+        self.desc = Label("", 12.0, W.Medium, align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.desc.setFixedHeight(18)
+        self.range_lbl = Label("", 11.0, level=2, num=True, align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.range_lbl.setFixedHeight(16)
+        self.feels_lbl = Label("", 11.0, level=2, num=True, align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.feels_lbl.setFixedHeight(16)
+        feels_sp = self.feels_lbl.sizePolicy()
+        feels_sp.setRetainSizeWhenHidden(True)
+        self.feels_lbl.setSizePolicy(feels_sp)
+
+        self.left_wrap = QtWidgets.QWidget()
+        self.left_wrap.setFixedWidth(154)
+        self.left_grid = QtWidgets.QGridLayout(self.left_wrap)
+        self.left_grid.setContentsMargins(0, 2, 0, 0)
+        self.left_grid.setHorizontalSpacing(10)
+        self.left_grid.setVerticalSpacing(2)
+        self.left_grid.setColumnMinimumWidth(0, 52)
+        self.left_grid.setColumnStretch(1, 1)
+        self.left_grid.setRowMinimumHeight(2, 16)
+        self.left_grid.setRowStretch(3, 1)
+        self.left_grid.addWidget(self.icon, 0, 0, Qt.AlignmentFlag.AlignCenter)
+        self.left_grid.addWidget(self.desc, 0, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.left_grid.addWidget(self.temp, 1, 0, Qt.AlignmentFlag.AlignCenter)
+        self.left_grid.addWidget(self.range_lbl, 1, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.left_grid.addWidget(self.feels_lbl, 2, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         # ---- 右栏：五日预报 ----
         self.daily = Daily()
@@ -281,7 +304,7 @@ class WeatherPage(Page):
 
         self.body = QtWidgets.QWidget()
         self.body.setLayout(vbox(
-            hbox(left_wrap, (self.daily, 1), spacing=8),
+            hbox(self.left_wrap, (self.daily, 1), spacing=8),
             self.facts,
             self.hourly_scroll,
             spacing=3,
@@ -339,7 +362,7 @@ class WeatherPage(Page):
 
     def _show(self, d: dict):
         from ...services.weather import weather_glyph
-        name = str(d.get("name") or "未知")
+        name = str(d.get("name") or "").strip() or "选择城市"
         if d.get("temp") is None:
             self.city_btn.set_text(name)
             self.err.setText(d.get("error") or "暂无数据")
@@ -349,7 +372,7 @@ class WeatherPage(Page):
         self.err.hide()
         self.body.show()
         t_round = round(d.get("temp", 0))
-        self.city_btn.set_text(f"{name} {t_round}°")
+        self.city_btn.set_text(name)
         self.city_btn.setToolTip(f"{name}（点击切换或管理城市）")
 
         err_txt = d.get("error") or ""
@@ -363,19 +386,24 @@ class WeatherPage(Page):
         self.desc.setToolTip(desc)
 
         lo, hi = d.get("temp_min"), d.get("temp_max")
-        rng = f" · {round(lo)}°~{round(hi)}°" if lo is not None and hi is not None else ""
-        city_full = f"{name}{rng}"
-        self.city_lbl.setText(city_full)
-        self.city_lbl.setToolTip(city_full)
+        rng = f"{round(lo)}°~{round(hi)}°" if lo is not None and hi is not None else "--°~--°"
+        self.range_lbl.setText(rng)
+
+        fl = d.get("feels_like")
+        if fl is not None:
+            self.feels_lbl.setText(f"体感 {round(fl)}°")
+            self.feels_lbl.show()
+        else:
+            self.feels_lbl.setText("")
+            self.feels_lbl.hide()
 
         tz = d.get("tz_offset", 0)
         vis = d.get("visibility")
         self.facts.set_items([
-            ("体感", f"{round(d.get('feels_like', 0))}°"),
             ("湿度", f"{d.get('humidity', '--')}%"),
+            ("能见度", f"{vis / 1000:.0f}km" if vis else "--"),
             ("风", f"{_wind_dir(d.get('wind_deg'))}{d.get('wind', '--')}m/s"),
             ("气压", f"{d.get('pressure', '--')}hPa"),
-            ("能见度", f"{vis / 1000:.0f}km" if vis else "--"),
             ("云量", f"{d.get('clouds', '--')}%"),
             ("日出", _fmt_clock(d.get("sunrise"), tz)),
             ("日落", _fmt_clock(d.get("sunset"), tz)),

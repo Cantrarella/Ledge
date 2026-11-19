@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""主页（正在播放 + 快捷操作 + 自定义启动器）。"""
+"""主页（紧凑双栏：左侧媒体控制 + 右侧小形象，尺寸 419×140）。"""
 from __future__ import annotations
 
 import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ...core.config import cfg, expand
 from ..anim import Spring, clamp
 from ..header import PageHeader
 from ..theme import G, W, icon_font, theme, ui_font
-from ..widgets import (Card, Hoverable, IconButton, Label, PillButton, Themed, fmt_time, hbox,
+from ..widgets import (Card, IconButton, Themed, fmt_time, hbox,
                        painter, rounded_pixmap, vbox)
 from .base import Page
 
@@ -19,11 +18,12 @@ Qt = QtCore.Qt
 
 # ======================================================================== 播放卡片
 class Progress(QtWidgets.QWidget, Themed):
+    """单行横向进度条：左当前时间 + 中 2.5px 圆角进度条 + 右总时长。"""
     seek = QtCore.Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(22)
+        self.setFixedHeight(14)
         self.pos_ = 0.0
         self.dur = 0.0
         self.stamp = 0.0
@@ -43,159 +43,204 @@ class Progress(QtWidgets.QWidget, Themed):
         p = self.pos_ + ((time.monotonic() - self.stamp) if self.playing else 0)
         return clamp(p, 0, self.dur) if self.dur else p
 
+    def _layout_metrics(self) -> tuple[str, str, QtCore.QRectF, QtCore.QRectF, QtCore.QRectF]:
+        cur = self.current()
+        cur_txt = fmt_time(cur)
+        dur_txt = fmt_time(self.dur) if self.dur > 0 else ""
+        fm = QtGui.QFontMetrics(ui_font(9.5, num=True))
+        lw = float(max(24, fm.horizontalAdvance(cur_txt) + 2))
+        rw = float(max(24, fm.horizontalAdvance(dur_txt) + 2)) if dur_txt else 0.0
+        w = float(max(1, self.width()))
+        h = float(self.height())
+        gap = 5.0
+        bar_l = lw + gap
+        bar_r = w - (rw + gap if rw > 0 else 0.0)
+        bar_w = max(12.0, bar_r - bar_l)
+        return (
+            cur_txt,
+            dur_txt,
+            QtCore.QRectF(0, 0, lw, h),
+            QtCore.QRectF(bar_l, 0, bar_w, h),
+            QtCore.QRectF(w - rw, 0, rw, h),
+        )
+
     def mouseReleaseEvent(self, e):
         if self.dur > 0:
-            self.seek.emit(clamp(e.position().x() / max(1, self.width()), 0, 1) * self.dur)
+            _, _, _, bar_r, _ = self._layout_metrics()
+            ratio = clamp((e.position().x() - bar_r.left()) / max(1.0, bar_r.width()), 0.0, 1.0)
+            self.seek.emit(ratio * self.dur)
 
     def paintEvent(self, e):
         p = painter(self)
-        r = QtCore.QRectF(self.rect())
-        y = 6
-        th = 4 + 3 * self.hover
-        tr = QtCore.QRectF(0, y - th / 2, r.width(), th)
+        cur_txt, dur_txt, l_rect, bar_rect, r_rect = self._layout_metrics()
+        cy = bar_rect.center().y()
+        th = 2.5 + 1.0 * self.hover
+        tr = QtCore.QRectF(bar_rect.left(), cy - th / 2.0, bar_rect.width(), th)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(theme.track())
-        p.drawRoundedRect(tr, th / 2, th / 2)
+        p.drawRoundedRect(tr, th / 2.0, th / 2.0)
+
         cur = self.current()
         if self.dur > 0:
-            p.setBrush(theme.text(0.85 + 0.15 * self.hover))
-            p.drawRoundedRect(QtCore.QRectF(0, y - th / 2, max(th, r.width() * cur / self.dur), th), th / 2, th / 2)
-        p.setFont(ui_font(10.5, num=True))
+            ratio = clamp(cur / self.dur, 0.0, 1.0)
+            fill_w = max(th, bar_rect.width() * ratio) if ratio > 0 else 0.0
+            if fill_w > 0:
+                p.setBrush(theme.text(0.85 + 0.15 * self.hover))
+                p.drawRoundedRect(QtCore.QRectF(bar_rect.left(), cy - th / 2.0, fill_w, th), th / 2.0, th / 2.0)
+
+        p.setFont(ui_font(9.5, num=True))
         p.setPen(theme.text3())
-        p.drawText(QtCore.QRectF(0, 10, 60, 12), Qt.AlignmentFlag.AlignLeft, fmt_time(cur))
-        if self.dur > 0:
-            p.drawText(QtCore.QRectF(r.width() - 60, 10, 60, 12), Qt.AlignmentFlag.AlignRight, fmt_time(self.dur))
+        p.drawText(l_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, cur_txt)
+        if dur_txt:
+            p.drawText(r_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, dur_txt)
 
 
 class CoverView(QtWidgets.QWidget):
-    """封面：悬停时轻微放大上浮，并在身后透出封面主色的柔光。"""
-    def __init__(self, size: int, parent=None):
+    """封面：48×48 固定尺寸垂直居中绘制，不响应鼠标悬停缩放或发光。"""
+    def __init__(self, size: int = 48, parent=None):
         super().__init__(parent)
         self.size_ = size
         self.pm: QtGui.QPixmap | None = None
-        self.glow = QtGui.QColor(255, 255, 255, 0)
-        self.h = 0.0
-        self.setFixedSize(size + 12, size + 12)
+        self.setFixedSize(size, size)
 
-    def set_pixmap(self, pm, glow: QtGui.QColor | None):
+    def set_pixmap(self, pm, _glow: QtGui.QColor | None = None):
         self.pm = pm
-        self.glow = glow or QtGui.QColor(255, 255, 255, 0)
         self.update()
 
     def paintEvent(self, e):
+        if self.pm is None:
+            return
         p = painter(self)
-        c = QtCore.QRectF(self.rect()).center()
-        s = 1.0 + 0.07 * self.h
-        r = QtCore.QRectF(0, 0, self.size_ * s, self.size_ * s)
-        r.moveCenter(c - QtCore.QPointF(0, 2.5 * self.h))
-        if self.h > 0.01 and self.glow.alpha():
-            g = QtGui.QRadialGradient(r.center() + QtCore.QPointF(0, 6), r.width() * 0.75)
-            col = QtGui.QColor(self.glow)
-            col.setAlpha(round(150 * self.h))
-            g.setColorAt(0, col)
-            col2 = QtGui.QColor(self.glow)
-            col2.setAlpha(0)
-            g.setColorAt(1, col2)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(g)
-            p.drawEllipse(r.adjusted(-8, -4, 8, 14))
-        if self.pm is not None:
-            p.drawPixmap(r.toRect(), self.pm)
+        target = QtCore.QRectF(0, 0, float(self.size_), float(self.size_))
+        p.drawPixmap(target.toRect(), self.pm)
 
 
-class CoverTitle(QtWidgets.QWidget):
-    """封面在上方居中（正对播放键），标题压在封面下沿、向两侧延伸，但不超出播放卡片。"""
-    COVER = 58
+def _now_playing_text(title: str, artist: str) -> str:
+    """规范化单行正在播放文本：无标题时回退'未在播放'，有歌手时以' · '连接。"""
+    t = (title or "").strip() or "未在播放"
+    a = (artist or "").strip()
+    return f"{t} · {a}" if a else t
+
+
+class NowPlayingLine(QtWidgets.QWidget, Themed):
+    """双色单行正在播放信息：左对齐、同一基线、放不下时优先省略歌手。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pm: QtGui.QPixmap | None = None
-        self.glow = QtGui.QColor(255, 255, 255, 0)
-        self.h = 0.0
-        self.title = "未在播放"
-        self.sub = ""
-        self.setFixedHeight(self.COVER + 30)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-        theme.changed.connect(self.update)
+        self.title_text = "未在播放"
+        self.artist_text = ""
+        self._text = "未在播放"
+        self.setFixedHeight(17)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self._hook_theme()
 
-    def set_pixmap(self, pm, glow):
-        self.pm = pm
-        self.glow = glow or QtGui.QColor(255, 255, 255, 0)
+    def set_now_playing(self, title: str, artist: str = ""):
+        self.title_text = (title or "").strip() or "未在播放"
+        self.artist_text = (artist or "").strip()
+        self._text = _now_playing_text(self.title_text, self.artist_text)
         self.update()
 
-    def set_text(self, title, sub):
-        self.title, self.sub = title, sub
-        self.update()
+    def _compute_segments(self, max_w: float) -> tuple[str, str, float, float]:
+        f_title = ui_font(13.0, W.DemiBold)
+        f_sub = ui_font(10.5, W.Normal)
+        fm_t = QtGui.QFontMetrics(f_title)
+        fm_s = QtGui.QFontMetrics(f_sub)
+        max_w = max(8.0, float(max_w))
+
+        if not self.artist_text:
+            t_drawn = fm_t.elidedText(self.title_text, Qt.TextElideMode.ElideRight, int(max_w))
+            return t_drawn, "", float(fm_t.horizontalAdvance(t_drawn)), 0.0
+
+        sep_artist = f" · {self.artist_text}"
+        tw_full = float(fm_t.horizontalAdvance(self.title_text))
+        sw_full = float(fm_s.horizontalAdvance(sep_artist))
+        if tw_full + sw_full <= max_w:
+            return self.title_text, sep_artist, tw_full, sw_full
+
+        # 放不下时：标题至少保留 60% 可用宽度；剩余宽度 < 28px 时直接隐藏歌手，标题使用全宽省略
+        if tw_full <= max_w * 0.60:
+            t_drawn = self.title_text
+            tw_drawn = tw_full
+        else:
+            # 优先尽量完整保留标题，若留给歌手不足 28px，则回退到标题占 60%~max_w-28px
+            rem_full = max_w - tw_full
+            if rem_full >= 28.0:
+                t_drawn = self.title_text
+                tw_drawn = tw_full
+            else:
+                title_budget = max(max_w * 0.60, max_w - 28.0)
+                t_drawn = fm_t.elidedText(self.title_text, Qt.TextElideMode.ElideRight, int(title_budget))
+                tw_drawn = float(fm_t.horizontalAdvance(t_drawn))
+
+        rem = max_w - tw_drawn
+        if rem < 28.0:
+            t_full_elide = fm_t.elidedText(self.title_text, Qt.TextElideMode.ElideRight, int(max_w))
+            return t_full_elide, "", float(fm_t.horizontalAdvance(t_full_elide)), 0.0
+        s_drawn = fm_s.elidedText(sep_artist, Qt.TextElideMode.ElideRight, int(rem))
+        sw_drawn = float(fm_s.horizontalAdvance(s_drawn))
+        return t_drawn, s_drawn, tw_drawn, sw_drawn
 
     def paintEvent(self, e):
         p = painter(self)
-        W_ = self.width()
-        s = 1.0 + 0.07 * self.h
-        size = self.COVER * s
-        cr = QtCore.QRectF(0, 0, size, size)
-        cr.moveCenter(QtCore.QPointF(W_ / 2, 4 + self.COVER / 2 - 2.5 * self.h))
-        if self.h > 0.01 and self.glow.alpha():
-            g = QtGui.QRadialGradient(cr.center() + QtCore.QPointF(0, 6), cr.width() * 0.8)
-            c1 = QtGui.QColor(self.glow)
-            c1.setAlpha(round(150 * self.h))
-            c2 = QtGui.QColor(self.glow)
-            c2.setAlpha(0)
-            g.setColorAt(0, c1)
-            g.setColorAt(1, c2)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(g)
-            p.drawEllipse(cr.adjusted(-10, -6, 10, 14))
-        if self.pm is not None:
-            p.drawPixmap(cr.toRect(), self.pm)
-        # 标题：压住封面下沿，左右延伸（限制在卡片内），底下垫一块半透明玻璃保证可读
-        f = ui_font(13.5, W.DemiBold)
-        fm = QtGui.QFontMetrics(f)
-        text = self.title + (f"  ·  {self.sub}" if self.sub else "")
-        maxw = W_ - 16
-        text = fm.elidedText(text, Qt.TextElideMode.ElideRight, int(maxw - 20))
-        tw = fm.horizontalAdvance(text) + 20
-        tr = QtCore.QRectF((W_ - tw) / 2, cr.bottom() - 12, tw, fm.height() + 8)
-        p.setFont(f)
-        sh = QtGui.QColor(0, 0, 0, 120) if theme.dark else QtGui.QColor(255, 255, 255, 170)
-        p.setPen(sh)
-        for dx, dy in ((0, 1), (1, 0), (-1, 0), (0, -1)):
-            p.drawText(tr.translated(dx, dy), Qt.AlignmentFlag.AlignCenter, text)
+        p.setClipRect(self.rect())
+        f_title = ui_font(13.0, W.DemiBold)
+        f_sub = ui_font(10.5, W.Normal)
+        fm_t = QtGui.QFontMetrics(f_title)
+        t_drawn, s_drawn, tw_drawn, _ = self._compute_segments(self.width())
+        baseline_y = (self.height() + fm_t.ascent() - fm_t.descent()) / 2.0
+
+        p.setFont(f_title)
         p.setPen(theme.text())
-        p.drawText(tr, Qt.AlignmentFlag.AlignCenter, text)
+        p.drawText(QtCore.QPointF(0.0, baseline_y), t_drawn)
+
+        if s_drawn:
+            p.setFont(f_sub)
+            p.setPen(theme.text2())
+            p.drawText(QtCore.QPointF(tw_drawn, baseline_y), s_drawn)
 
 
 class MediaCard(Card):
+    """紧凑横向媒体区（总高固定 68px，嵌入岛体玻璃表面，不绘制独立背景卡）。"""
+    COVER_SIZE = 48
+
     def __init__(self, ctx, parent=None):
-        super().__init__(parent, 20)
+        super().__init__(parent, 16)
         self.ctx = ctx
-        self.cover_px: QtGui.QPixmap | None = None
-        self.cover = CoverTitle(self)
+        self.setFixedHeight(68)
+        self.setMinimumWidth(210)
+        self.cover = CoverView(self.COVER_SIZE, self)
         self._hov = Spring(0, 260, 0.6, 0.004)
         self._ht = QtCore.QTimer(self, interval=16, timeout=self._hover_tick)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self.title = Label("未在播放", 15, W.DemiBold)
-        self.artist = Label("", 12.5, level=2)
-        self.app = Label("", 11, level=3)
+
+        self.title = NowPlayingLine(self)
+
         self.prog = Progress()
-        self.prev = IconButton(G.PREV, 34, 15, "上一首")
-        self.play = IconButton(G.PLAY, 40, 18, "播放 / 暂停", filled=True)
-        self.next = IconButton(G.NEXT, 34, 15, "下一首")
-        self.open_btn = PillButton("打开网易云", G.MUSIC, height=28)
+        self.prev = IconButton(G.PREV, 24, 12, "上一首")
+        self.play = IconButton(G.PLAY, 30, 14, "播放 / 暂停", filled=True)
+        self.next = IconButton(G.NEXT, 24, 12, "下一首")
+
         self.prev.clicked.connect(lambda: ctx.media.prev())
         self.next.clicked.connect(lambda: ctx.media.next())
         self.play.clicked.connect(lambda: ctx.media.play_pause())
         self.prog.seek.connect(lambda s: ctx.media.seek(s))
-        self.open_btn.clicked.connect(self._open_player)
-        self.open_btn.hide()
-        self.title.hide()
-        self.artist.hide()
-        self.app.hide()
-        ctrls = hbox(None, self.prev, self.play, self.next, None, spacing=8)   # 播放键正对封面
-        self.setLayout(vbox(self.cover, self.prog, ctrls, None, spacing=0, margins=(10, 6, 10, 6)))
+
+        ctrls = hbox(None, self.prev, self.play, self.next, None, spacing=6, margins=(0, 0, 0, 0))
+        right_col = vbox(self.title, self.prog, ctrls, spacing=2, margins=(0, 0, 0, 0))
+        self.setLayout(hbox(self.cover, (right_col, 1), spacing=8, margins=(4, 2, 4, 2)))
+
         self._tick = QtCore.QTimer(self, interval=500, timeout=self.prog.update)
         self._set_cover(None)
+        theme.changed.connect(self._on_theme_refresh)
 
-    # --- 悬停动画 ---
+    def _on_theme_refresh(self):
+        if not self._has_real_cover():
+            self._set_cover(None)
+
+    def _has_real_cover(self) -> bool:
+        return bool(getattr(self, "_raw_cover_img", None) is not None)
+
+    # --- 悬停动画（仅用于进度条高亮，封面不缩放/不发光） ---
     def enterEvent(self, e):
         self._hov.to(1.0, 260, 0.6)
         self._ht.start()
@@ -207,113 +252,60 @@ class MediaCard(Card):
     def _hover_tick(self):
         self._hov.step(0.016)
         h = max(0.0, self._hov.x)
-        self.cover.h = h
-        self.cover.update()
         self.prog.hover = h
         self.prog.update()
-        self.update()
         if self._hov.rest:
             self._ht.stop()
 
     def paintEvent(self, e):
-        """不画独立背景，直接嵌在灵动岛玻璃上（悬停时封面 / 进度条有动画）。"""
+        """不画独立背景，直接嵌在灵动岛玻璃上。"""
         return
 
-    def _open_player(self):
-        items = cfg.get("launcher") or []
-        it = next((i for i in items if "cloudmusic" in str(i.get("path", "")).lower()), items[0] if items else None)
-        if it:
-            self.ctx.windows.open_or_focus(expand(it["path"]), it.get("exe"))
-
     def _set_cover(self, img):
-        px = rounded_pixmap(img, 58, 13) if img is not None else None
-        glow = None
-        if img is not None:
-            q = img if isinstance(img, QtGui.QImage) else img.toImage()
-            glow = q.scaled(1, 1, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation).pixelColor(0, 0)
-            h, s_, v, _ = glow.getHsv()
-            glow = QtGui.QColor.fromHsv(max(0, h), min(255, int(s_ * 1.4) + 40), max(170, v))
+        self._raw_cover_img = img
+        px = rounded_pixmap(img, self.COVER_SIZE, 12) if img is not None else None
         if px is None:
-            pm = QtGui.QPixmap(116, 116)
+            pm = QtGui.QPixmap(self.COVER_SIZE * 2, self.COVER_SIZE * 2)
             pm.fill(Qt.GlobalColor.transparent)
             p = QtGui.QPainter(pm)
             p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(theme.card(1.6))
-            p.drawRoundedRect(QtCore.QRectF(0, 0, 116, 116), 26, 26)
-            p.setFont(icon_font(44))
-            p.setPen(theme.text(0.6))
+            p.drawRoundedRect(QtCore.QRectF(0, 0, self.COVER_SIZE * 2, self.COVER_SIZE * 2), 24, 24)
+            p.setFont(icon_font(38))
+            p.setPen(theme.text(0.65))
             p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, G.MUSIC)
             p.end()
             pm.setDevicePixelRatio(2)
             px = pm
-        self.cover.set_pixmap(px, glow)
+        self.cover.set_pixmap(px)
 
     def set_cover(self, img):
         self._set_cover(img)
 
     def set_media(self, m: dict):
         has = bool(m.get("has_session") and m.get("title"))
-        self.cover.set_text(m.get("title") or "未在播放", m.get("artist") or "")
+        self.title.set_now_playing(str(m.get("title") or ""), str(m.get("artist") or ""))
         self.play.set_glyph(G.PAUSE if m.get("playing") else G.PLAY)
         self.prog.set_state(m)
         self.prog.setVisible(True)
         self.prog.setEnabled(has and (m.get("duration") or 0) > 0)
-        # 按钮始终可用：没有媒体会话（播放器没接入系统媒体控件）时会改发键盘媒体键
-
         if m.get("playing"):
             self._tick.start()
         else:
             self._tick.stop()
 
 
-# ======================================================================== 快捷操作 / 启动器
-class Action(Hoverable):
-    def __init__(self, glyph: str, title: str, parent=None):
-        super().__init__(parent)
-        self.glyph = glyph
-        self.title = title
-        self.on = False
-        self.setFixedHeight(58)
-
-    def set_on(self, on: bool, glyph: str | None = None, title: str | None = None):
-        self.on = on
-        if glyph:
-            self.glyph = glyph
-        if title:
-            self.title = title
-        self.update()
-
-    def paintEvent(self, e):
-        p = painter(self)
-        r = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        sc = self.press_scale()
-        p.translate(r.center())
-        p.scale(sc, sc)
-        p.translate(-r.center())
-        if self._hover.x > 0.01:
-            c = theme.hover()
-            c.setAlphaF(c.alphaF() * self._hover.x)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(c)
-            p.drawRoundedRect(r, 16, 16)
-        col = theme.on_color() if self.on else theme.text(0.9)
-        p.setFont(icon_font(18))
-        p.setPen(col)
-        p.drawText(QtCore.QRectF(r.x(), r.y() + 6, r.width(), 26), Qt.AlignmentFlag.AlignCenter, self.glyph)
-        p.setFont(ui_font(11.5, W.DemiBold if self.on else W.Medium))
-        p.setPen(theme.on_color() if self.on else theme.text2())
-        p.drawText(QtCore.QRectF(r.x(), r.y() + 32, r.width(), 18), Qt.AlignmentFlag.AlignCenter, self.title)
-
-
+# ======================================================================== 小形象
 class PetWidget(QtWidgets.QWidget):
-    """主页中间的大号小形象：眼睛跟随光标，鼠标靠近时开心。"""
-    def __init__(self, parent=None, scale: float = 2.3):
+    """首页右侧小形象（区域 126px 宽，实际表情约 54–60px，居中绘制）：眼睛跟随光标，靠近时开心。"""
+    def __init__(self, parent=None, scale: float = 1.15):
         super().__init__(parent)
         from ..compact import PetFace
         self.face = PetFace()
         self.scale = scale
-        self.setMinimumWidth(round(64 * scale))
+        self.setFixedWidth(126)
+        self.setMinimumHeight(68)
         self._t = QtCore.QTimer(self, interval=16, timeout=self.update)
         self._t.setTimerType(Qt.TimerType.PreciseTimer)
         theme.changed.connect(self.update)
@@ -329,54 +321,42 @@ class PetWidget(QtWidgets.QWidget):
         c = QtCore.QRectF(self.rect()).center()
         gc = QtCore.QPointF(self.mapToGlobal(c.toPoint()))
         look = QtCore.QPointF(QtGui.QCursor.pos()) - gc
-        near = self.rect().adjusted(-24, -24, 24, 24).contains(self.mapFromGlobal(QtGui.QCursor.pos()))
-        self.face.paint(p, c.x(), c.y() - 4, self.scale, 1.0, look, near)
+        near = self.rect().adjusted(-18, -18, 18, 18).contains(self.mapFromGlobal(QtGui.QCursor.pos()))
+        self.face.paint(p, c.x(), c.y(), self.scale, 1.0, look, near)
 
 
 class HomePage(Page):
-    key, glyph, title, height = "home", G.HOME, "主页", 204
+    key, glyph, title = "home", G.HOME, "主页"
+    height, panel_width, panel_height = 98, 419, 140
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.header = PageHeader(ctx, self)
-        self.header.add_left(Label("主页", 12, W.DemiBold, 2))
+        self.header = PageHeader(ctx, self, height=26)
 
         self.media = MediaCard(ctx)
-        self.media.setFixedHeight(156)
-        self.a_pin = Action(G.UNPIN, "保持展开")
-        self.a_pt = Action(G.POINTER, "可穿透")
-        self.a_mute = Action(G.VOLUME, "静音")
-        self.a_live = Action(G.LIVE, "实时字幕")
-        self.a_mute.clicked.connect(lambda: ctx.audio.toggle_mute())
-        self.a_live.clicked.connect(self._toggle_live)
-        ctx.live.running_changed.connect(lambda on: self.a_live.set_on(on, None, "聆听中" if on else "实时字幕"))
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(8)
-        grid.addWidget(self.a_pin, 0, 0)
-        grid.addWidget(self.a_pt, 0, 1)
-        grid.addWidget(self.a_mute, 1, 0)
-        grid.addWidget(self.a_live, 1, 1)
-        gw = QtWidgets.QWidget()
-        gw.setLayout(grid)
-        gw.setFixedWidth(150)
         self.pet = PetWidget()
-        # 播放卡贴左、四个按钮贴右，各自收窄；中间整块留给小形象
-        self.media.setFixedWidth(200)
-        lay = vbox(self.header, hbox(self.media, (self.pet, 1), gw, spacing=12), spacing=6)
+
+        main = hbox(
+            (self.media, 1),
+            self.pet,
+            spacing=10,
+            margins=(8, 0, 8, 0),
+        )
+        lay = vbox(
+            self.header,
+            (main, 1),
+            spacing=4,
+            margins=(0, 0, 0, 0),
+        )
         self.setLayout(lay)
 
     def on_show(self):
         super().on_show()
         self.header.refresh_clock()
 
-    def _toggle_live(self):
-        self.ctx.live.toggle()
-        if self.ctx.live.running and self.island:
-            self.ctx.pages["trans"].show_live()
-            self.island.show_page("trans")
-
     def set_muted(self, muted: bool):
-        self.a_mute.set_on(muted, G.MUTE if muted else G.VOLUME, "已静音" if muted else "静音")
+        """保留接口供外部（如 app.py 音量同步）调用，首页不再展示静音快捷按钮。"""
+        _ = muted
 
 
 def cfg_path():
