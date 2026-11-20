@@ -151,11 +151,12 @@ def adapt_color_for_theme(color: QtGui.QColor, dark: bool, min_contrast: float =
     return QtGui.QColor(245, 247, 252) if dark else QtGui.QColor(28, 32, 42)
 
 
-def extract_cover_color(pixmap: QtGui.QPixmap | None) -> QtGui.QColor | None:
+def extract_cover_color(pixmap: QtGui.QPixmap | QtGui.QImage | None) -> QtGui.QColor | None:
     """从专辑封面提取主色调（优先高饱和中等亮度像素），无效封面返回 None。"""
     if pixmap is None or pixmap.isNull():
         return None
-    img = pixmap.toImage().scaled(
+    src = pixmap if isinstance(pixmap, QtGui.QImage) else pixmap.toImage()
+    img = src.scaled(
         16, 16, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation
     ).convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
     w, h = img.width(), img.height()

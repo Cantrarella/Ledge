@@ -343,6 +343,44 @@ def bind_client_target(
     )
 
 
+def _activate_tray_client(event: NotificationEvent) -> tuple[bool, str]:
+    """微信 4.x（Weixin.exe）等关闭到系统托盘后会销毁主窗口句柄；
+    若检测到对应单实例客户端进程仍在运行，直接唤起原进程主窗口，绝不误开多账号。"""
+    import subprocess
+    exe_names = _SOURCE_EXES.get(event.source_key) or ()
+    if not exe_names:
+        return False, f"{event.app_name} 客户端已退出"
+
+    procs: dict[int, dict] = {}
+    for p in psutil.process_iter(["pid", "ppid", "name", "exe", "create_time"]):
+        try:
+            name = (p.info.get("name") or "").lower()
+            if name in exe_names:
+                procs[int(p.info["pid"])] = p.info
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+
+    if not procs:
+        return False, f"{event.app_name} 客户端已退出"
+
+    roots = [info for pid, info in procs.items() if int(info.get("ppid") or 0) not in procs]
+    if len(roots) > 1:
+        return False, "客户端已打开但无法识别账号"
+    target = roots[0] if roots else next(iter(procs.values()))
+    if event.pid is not None and event.pid not in procs:
+        if event.process_started_at is None or not _same_started_at(target.get("create_time"), event.process_started_at):
+            return False, "无法确认账号，原客户端窗口已失效"
+
+    exe_path = target.get("exe") or ""
+    if not exe_path:
+        return False, f"无法恢复 {event.app_name} 窗口"
+    try:
+        subprocess.Popen([exe_path], close_fds=True)
+        return True, ""
+    except OSError:
+        return False, f"无法恢复 {event.app_name} 窗口"
+
+
 def focus_event_target(
     event: NotificationEvent,
     enumerator=None,
@@ -363,6 +401,8 @@ def focus_event_target(
     ]
 
     if not candidates:
+        if enumerator is None:
+            return _activate_tray_client(event)
         return False, f"{event.app_name} 客户端已退出"
 
     # 1) 优先校验已绑定的窗口句柄 + PID + 启动时间（防止 PID 复用与句柄失效）

@@ -280,11 +280,20 @@ class MediaCard(Card):
             px = pm
         self.cover.set_pixmap(px)
         self.cover.update()
+        if self.cover.isVisible():
+            self.cover.repaint()
+            win = self.window()
+            if win is not None:
+                win.update()
 
     def set_cover(self, img):
         self._set_cover(img)
 
     def set_media(self, m: dict):
+        media_svc = getattr(self.ctx, "media", None)
+        if media_svc is not None and hasattr(media_svc, "cover_image"):
+            if media_svc.cover_image is not getattr(self, "_raw_cover_img", None):
+                self._set_cover(media_svc.cover_image)
         has = bool(m.get("has_session") and m.get("title"))
         self.title.set_now_playing(str(m.get("title") or ""), str(m.get("artist") or ""))
         self.play.set_glyph(G.PAUSE if m.get("playing") else G.PLAY)

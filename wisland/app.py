@@ -287,6 +287,7 @@ def main():
     def on_cover(img):
         compact.set_cover(img)
         P["home"].media.set_cover(img)
+        island.update()
         island._kick()
     ctx.media.cover_changed.connect(on_cover)
 

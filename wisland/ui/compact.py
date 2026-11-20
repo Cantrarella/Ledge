@@ -357,15 +357,10 @@ class CompactView:
         self.media = m or {}
 
     def set_lyrics(self, lyr):
-        """设置当前歌曲的歌词；按最长一行确定胶囊宽度（避免每句都改变宽度）。"""
+        """设置当前歌曲的歌词；保持与歌名一致的紧凑胶囊宽度，长句通过横向滚动展示。"""
         self.lyrics = lyr if lyr else None
         self._lyr_idx, self._lyr_prev = -2, ""
-        if self.lyrics and self.lyrics.lines:
-            fm = QtGui.QFontMetrics(ui_font(13, W.Medium))
-            widest = max((fm.horizontalAdvance(x) for x in self.lyrics.lines), default=0)
-            self._lyr_w = clamp(widest + 160, W_TEXT, 760)      # 宽度按整首最长一句固定，不随每句变化
-        else:
-            self._lyr_w = 0.0
+        self._lyr_w = 0.0
 
     def media_pos(self) -> float:
         m = self.media
@@ -491,7 +486,14 @@ class CompactView:
         if m == "media":
             if not self.playing() and not self.media.get("title"):
                 return 190 + nb * 12, H_MEDIA
-            return max(300, self._lyr_w) + 34 + nb * 12, H_MEDIA
+            if self.lyrics and self.lyrics.lines:
+                return 334 + nb * 12, H_MEDIA
+            title = self.media.get("title", "")
+            artist = self.media.get("artist", "")
+            text = f"{title}  ·  {artist}" if artist else title
+            tw = QtGui.QFontMetrics(ui_font(13, W.Medium)).horizontalAdvance(text) if text else 0
+            w = clamp(math.ceil(tw) + 128, 190, 334)
+            return w + nb * 12, H_MEDIA
         if m == "pet":
             return 134 + nb * 13, H_IDLE
         clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
@@ -775,10 +777,12 @@ class CompactView:
             h_al = Qt.AlignmentFlag.AlignHCenter if line else Qt.AlignmentFlag.AlignLeft
             p.drawText(QtCore.QRectF(tx, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | h_al, text)
         else:
-            gap = 40
-            period = (full + gap) / 34.0      # 34 px/s
-            ph = (t % (period + 2.0))
-            off = 0 if ph < 2.0 else (ph - 2.0) * 34.0
+            gap = 36
+            speed = 38.0
+            pause = 1.2
+            period = (full + gap) / speed
+            ph = (t % (period + pause))
+            off = 0 if ph < pause else (ph - pause) * speed
             for k in (0, 1):
                 p.drawText(QtCore.QRectF(tx - off + k * (full + gap), r.y(), full + 4, r.height()),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
