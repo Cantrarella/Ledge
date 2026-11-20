@@ -39,10 +39,41 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "PIL",
+        "Pillow",
+        "tkinter",
+        "unittest",
+        "pydoc",
+        "PySide6.QtOpenGL",
+        "PySide6.QtOpenGLWidgets",
+    ],
     noarchive=False,
     optimize=0,
 )
+
+# 瘦身过滤：移除未使用的软件 OpenGL、多余翻译、开发期 .lib/.h，以及重复打包的超大 DLL
+def _keep_toc_item(item, is_binary: bool) -> bool:
+    dest = str(item[0]).replace("\\", "/")
+    low = dest.lower()
+    if low.endswith("opengl32sw.dll"):
+        return False
+    if "pyside6/translations/" in low and not (
+        low.endswith("_zh_cn.qm") or low.endswith("_en.qm")
+    ):
+        return False
+    if low.startswith("sherpa_onnx/") and low.endswith((".lib", ".h", ".cmake", ".pdb")):
+        return False
+    # 去重：保留 numpy.libs / sherpa_onnx/lib 内的原位置，移除根目录重复拷贝
+    if "/" not in dest and (
+        low.startswith("libscipy_openblas64_")
+        or low in ("onnxruntime.dll", "sherpa-onnx-c-api.dll")
+    ):
+        return False
+    return True
+
+a.binaries = [x for x in a.binaries if _keep_toc_item(x, True)]
+a.datas = [x for x in a.datas if _keep_toc_item(x, False)]
 pyz = PYZ(a.pure)
 
 exe = EXE(
