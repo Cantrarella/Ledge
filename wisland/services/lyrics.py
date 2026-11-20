@@ -13,6 +13,7 @@ import bisect
 import html
 import re
 import threading
+import zlib
 
 import httpx
 from PySide6 import QtCore
@@ -23,11 +24,65 @@ from wisland.core.config import cfg
 API = "https://music.163.com/api"
 HEADERS = {"Referer": "https://music.163.com/", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 _TS = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+_KRC_LINE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
+_KRC_WORD = re.compile(r"<(\d+),(\d+),\d+>([^<]*)")
+_KRC_KEY = bytes([64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105])
 _OFFSET = re.compile(r"\[offset:\s*([+-]?\d+)\s*\]", re.IGNORECASE)
 # 开头的制作信息（作词 / 作曲 / 编曲 …）不当作歌词显示
 _CREDIT = re.compile(r"^\s*[^\s:：]{1,12}\s*[:：]")
 _INSTRUMENTAL_PLACEHOLDER = re.compile(r"没有填词的纯音乐|纯音乐[，,\s]*请欣赏|no\s+lyrics", re.IGNORECASE)
 _VERSION_TAG = re.compile(r"\b(live|remix|dj|instrumental|karaoke)\b|伴奏|纯音乐|现场|翻唱", re.IGNORECASE)
+
+
+def decrypt_krc(b64_content: str) -> str:
+    """解密酷狗 KRC base64 密文（krc1 头 + 16 字节循环异或 + zlib 解压）。"""
+    raw = base64.b64decode(b64_content or "")
+    if len(raw) <= 4 or raw[:4] != b"krc1":
+        return ""
+    dec = bytes(b ^ _KRC_KEY[i % 16] for i, b in enumerate(raw[4:]))
+    return zlib.decompress(dec).decode("utf-8", "replace")
+
+
+def parse_krc(text: str) -> tuple[list[tuple[float, str]], list[list[tuple[float, float, str]]]]:
+    """解析酷狗 KRC 逐字歌词 -> ([(start_s, line_text)], [[(w_start_s, w_end_s, token), ...]])."""
+    offset_s = 0.0
+    m_off = _OFFSET.search(text or "")
+    if m_off:
+        try:
+            offset_s = int(m_off.group(1)) / 1000.0
+        except ValueError:
+            offset_s = 0.0
+    rows: list[tuple[float, str, list[tuple[float, float, str]]]] = []
+    for raw in (text or "").splitlines():
+        ml = _KRC_LINE.match(raw.strip())
+        if not ml:
+            continue
+        line_start = max(0.0, int(ml.group(1)) / 1000.0 - offset_s)
+        body = ml.group(3)
+        words: list[tuple[float, float, str]] = []
+        parts: list[str] = []
+        for mw in _KRC_WORD.finditer(body):
+            w_off = int(mw.group(1)) / 1000.0
+            w_dur = max(0.02, int(mw.group(2)) / 1000.0)
+            tok = mw.group(3)
+            ws = max(0.0, line_start + w_off)
+            we = ws + w_dur
+            words.append((ws, we, tok))
+            parts.append(tok)
+        line_txt = "".join(parts).strip()
+        if not line_txt and not words:
+            continue
+        rows.append((line_start, line_txt, words))
+
+    rows.sort(key=lambda x: x[0])
+    i = 0
+    while i < len(rows) and (not rows[i][1] or (rows[i][0] < 40 and _CREDIT.match(rows[i][1]))):
+        i += 1
+    cleaned = rows[i:]
+    non_empty = [s for _, s, _ in cleaned if s]
+    if non_empty and all(_INSTRUMENTAL_PLACEHOLDER.search(s) for s in non_empty):
+        return [], []
+    return [(t, s) for t, s, _ in cleaned], [w for _, _, w in cleaned]
 
 
 def parse_lrc(text: str) -> list[tuple[float, str]]:
@@ -62,11 +117,17 @@ def parse_lrc(text: str) -> list[tuple[float, str]]:
 
 
 class Lyrics:
-    def __init__(self, lines: list[tuple[float, str]], trans: list[tuple[float, str]]):
+    def __init__(
+        self,
+        lines: list[tuple[float, str]],
+        trans: list[tuple[float, str]],
+        words: list[list[tuple[float, float, str]]] | None = None,
+    ):
         self.times = [t for t, _ in lines]
         self.lines = [s for _, s in lines]
         tmap = {round(t, 1): s for t, s in trans if s}
         self.trans = [tmap.get(round(t, 1), "") for t in self.times]
+        self.words = words or []
 
     def __bool__(self):
         return bool(self.lines)
@@ -77,6 +138,32 @@ class Lyrics:
         if i < 0:
             return -1, "", ""
         return i, self.lines[i], self.trans[i]
+
+    def sweep_at(self, idx: int, pos: float) -> tuple[str, str, float]:
+        """-> (已唱前缀文本, 当前正在唱的字/词, 当前字/词内进度 0..1)。
+        有 KRC 逐字时间戳时精确到字；否则按整句时间比例平滑扫色。
+        """
+        if idx < 0 or idx >= len(self.lines):
+            return "", "", 0.0
+        line = self.lines[idx]
+        if not line:
+            return "", "", 0.0
+        if idx < len(self.words) and self.words[idx]:
+            done_parts: list[str] = []
+            for ws, we, tok in self.words[idx]:
+                if pos >= we:
+                    done_parts.append(tok)
+                elif pos <= ws:
+                    return "".join(done_parts), "", 0.0
+                else:
+                    frac = max(0.0, min(1.0, (pos - ws) / max(0.02, we - ws)))
+                    return "".join(done_parts), tok, frac
+            return line, "", 0.0
+        t0 = self.times[idx]
+        t1 = self.times[idx + 1] if idx + 1 < len(self.times) else (t0 + 5.0)
+        span = max(0.6, min(t1 - t0, 12.0))
+        frac = max(0.0, min(1.0, (pos - t0) / span))
+        return "", line, frac
 
 
 class LyricsService(QtCore.QObject):
@@ -104,14 +191,15 @@ class LyricsService(QtCore.QObject):
             return "id:" + str(m["song_id"])
         if m.get("kugou_hash"):
             return "kg:" + str(m["kugou_hash"])
-        return "q:" + (m.get("title") or "") + "|" + (m.get("artist") or "")
+        dur_bucket = int(round(float(m.get("duration") or 0) / 5.0) * 5)
+        return f"q:{m.get('title') or ''}|{m.get('artist') or ''}|{dur_bucket}"
 
     def get(self, m: dict) -> Lyrics | None:
         """返回已缓存的歌词；没有时在后台获取，取到后发 ready(key)。"""
         if not cfg.get("media.lyrics", True) or not m.get("title"):
             return None
-        if not m.get("song_id"):
-            dur = float(m.get("duration") or 0)
+        dur = float(m.get("duration") or 0)
+        if not m.get("song_id") and not m.get("kugou_hash"):
             if not (30 <= dur <= 15 * 60):
                 # SMTC 切歌初期 duration 常暂时为 0，等待下次轮询拿到有效时长后再查，避免把 None 写死进缓存
                 return None
@@ -122,7 +210,8 @@ class LyricsService(QtCore.QObject):
             if k in self._pending:
                 return None
             self._pending.add(k)
-        run_bg(self._fetch, dict(m), on_done=lambda res, k=k: self._done(k, res, True),
+        cache_none = (dur != 60.0)
+        run_bg(self._fetch, dict(m), on_done=lambda res, k=k, cn=cache_none: self._done(k, res, cn),
                on_error=lambda e, k=k: self._done(k, None, False))
         return None
 
@@ -146,13 +235,48 @@ class LyricsService(QtCore.QObject):
             if lyr:
                 return lyr
         if m.get("song_id"):
-            order = (self._fetch_netease, self._fetch_qq, self._fetch_kugou, self._fetch_lrclib)
+            order = (self._fetch_netease, self._fetch_kugou, self._fetch_qq, self._fetch_lrclib)
         else:
-            order = (self._fetch_qq, self._fetch_kugou, self._fetch_lrclib, self._fetch_netease)
+            # 优先酷狗（支持 KRC 逐字卡拉 OK 歌词），其次 QQ / LRCLIB / 网易云
+            order = (self._fetch_kugou, self._fetch_qq, self._fetch_lrclib, self._fetch_netease)
         for fn in order:
             lyr = fn(m)
             if lyr:
                 return lyr
+        return None
+
+    def _download_kugou_candidate(self, cand: dict) -> Lyrics | None:
+        """优先尝试下载并解密酷狗 KRC 逐字歌词，失败时回退 LRC。"""
+        for fmt in ("krc", "lrc"):
+            try:
+                rd = self._client.get(
+                    "http://lyrics.kugou.com/download",
+                    params={
+                        "ver": 1,
+                        "client": "pc",
+                        "id": cand["id"],
+                        "accesskey": cand["accesskey"],
+                        "fmt": fmt,
+                        "charset": "utf8",
+                    },
+                )
+                rd.raise_for_status()
+                b64 = rd.json().get("content") or ""
+                if not b64:
+                    continue
+                if fmt == "krc":
+                    text = decrypt_krc(b64)
+                    if text:
+                        lines, words = parse_krc(text)
+                        if lines:
+                            return Lyrics(lines, [], words=words)
+                else:
+                    text = base64.b64decode(b64).decode("utf-8", "replace")
+                    lines = parse_lrc(text)
+                    if lines:
+                        return Lyrics(lines, [])
+            except Exception:  # noqa: BLE001
+                continue
         return None
 
     def _fetch_kugou_by_hash(self, kg_hash: str, dur: float, keyword: str = "") -> Lyrics | None:
@@ -175,26 +299,7 @@ class LyricsService(QtCore.QObject):
             cands = rk.json().get("candidates") or []
             if not cands:
                 return None
-            cand = cands[0]
-            rd = self._client.get(
-                "http://lyrics.kugou.com/download",
-                params={
-                    "ver": 1,
-                    "client": "pc",
-                    "id": cand["id"],
-                    "accesskey": cand["accesskey"],
-                    "fmt": "lrc",
-                    "charset": "utf8",
-                },
-            )
-            rd.raise_for_status()
-            b64 = rd.json().get("content") or ""
-            if not b64:
-                return None
-            text = base64.b64decode(b64).decode("utf-8", "replace")
-            lines = parse_lrc(text)
-            lyr = Lyrics(lines, [])
-            return lyr if lyr else None
+            return self._download_kugou_candidate(cands[0])
         except Exception:  # noqa: BLE001
             return None
 
@@ -237,9 +342,12 @@ class LyricsService(QtCore.QObject):
                 return False
 
         if q_dur and cand_dur:
-            max_dd = 8.0 if exact_title else 5.0
-            if dur_diff > max_dd:
-                return False
+            # 非会员试听片段通常为 30~65 秒：若歌名与歌手均精确匹配，放行完整版歌词
+            is_vip_preview = (25.0 <= q_dur <= 65.0) and cand_dur > 65.0 and exact_title and bool(qa_tokens) and artist_ok
+            if not is_vip_preview:
+                max_dd = 8.0 if exact_title else 5.0
+                if dur_diff > max_dd:
+                    return False
         return True
 
     def _score_match(
@@ -424,26 +532,7 @@ class LyricsService(QtCore.QObject):
             cands = rk.json().get("candidates") or []
             if not cands:
                 return None
-            cand = cands[0]
-            rd = self._client.get(
-                "http://lyrics.kugou.com/download",
-                params={
-                    "ver": 1,
-                    "client": "pc",
-                    "id": cand["id"],
-                    "accesskey": cand["accesskey"],
-                    "fmt": "lrc",
-                    "charset": "utf8",
-                },
-            )
-            rd.raise_for_status()
-            b64 = rd.json().get("content") or ""
-            if not b64:
-                return None
-            text = base64.b64decode(b64).decode("utf-8", "replace")
-            lines = parse_lrc(text)
-            lyr = Lyrics(lines, [])
-            return lyr if lyr else None
+            return self._download_kugou_candidate(cands[0])
         except Exception:  # noqa: BLE001
             return None
 

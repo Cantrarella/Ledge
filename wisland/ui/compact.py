@@ -776,10 +776,106 @@ class CompactView:
         p.translate(0, 9 * (1 - k) if self._lyr_prev else 0)
         p.setPen(theme.text(a * (k if self._lyr_prev else 1.0)))
         t = t - self._lyr_t                           # 滚动从这一行出现时开始计时
+        line_alpha = a * (k if self._lyr_prev else 1.0)
+        fill_w = -1.0
+        done_s = ""
+        cur_s = ""
+        cur_frac = 0.0
+        has_krc_word = False
+        if line and self.lyrics is not None:
+            done_s, cur_s, cur_frac = self.lyrics.sweep_at(idx, self.media_pos())
+            fill_w = clamp(float(fm.horizontalAdvance(done_s)) + float(fm.horizontalAdvance(cur_s)) * cur_frac, 0.0, float(full))
+            has_krc_word = (
+                bool(cur_s.strip())
+                and idx < len(self.lyrics.words)
+                and bool(self.lyrics.words[idx])
+                and bool(self.media.get("playing"))
+                and 0.02 < cur_frac < 0.98
+            )
+
+        def _draw_karaoke(rect_line: QtCore.QRectF, align_flag):
+            if fill_w < 0.0:
+                p.setPen(theme.text(line_alpha))
+                p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                return
+            unsung_c = theme.text(0.38 * line_alpha)
+            sung_c = theme.text(line_alpha)
+            if fill_w <= 0.5 or full <= 1.0:
+                p.setPen(unsung_c)
+                p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                return
+            if fill_w >= full - 0.5:
+                p.setPen(sung_c)
+                p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                return
+            text_x = rect_line.x()
+            if align_flag == Qt.AlignmentFlag.AlignHCenter and full < rect_line.width():
+                text_x = rect_line.x() + (rect_line.width() - full) / 2.0
+            # 文字笔画级羽化渐变扫色（无任何背景矩形色块）
+            feather = 10.0
+            x0 = text_x + max(0.0, fill_w - feather)
+            x1 = text_x + min(float(full), fill_w + feather * 0.45)
+            if x1 <= x0 + 0.5:
+                x1 = x0 + 1.0
+            grad = QtGui.QLinearGradient(x0, 0.0, x1, 0.0)
+            grad.setColorAt(0.0, sung_c)
+            grad.setColorAt(1.0, unsung_c)
+            pen = QtGui.QPen(QtGui.QBrush(grad), 0)
+
+            # 前沿正在唱的字/词原位原生矢量字号微弹（1.0 -> 1.08 -> 1.0），无位图拉伸与重影模糊
+            if has_krc_word:
+                wx0 = text_x + float(fm.horizontalAdvance(done_s))
+                wx1 = text_x + float(fm.horizontalAdvance(done_s + cur_s))
+                word_w = wx1 - wx0
+                if word_w > 1.0 and wx1 > tx and wx0 < tx + tw:
+                    clip_y = rect_line.y() - 6.0
+                    clip_h = rect_line.height() + 12.0
+                    if wx0 > tx:
+                        p.save()
+                        p.setClipRect(QtCore.QRectF(tx, clip_y, wx0 - tx + 0.05, clip_h), Qt.ClipOperation.IntersectClip)
+                        p.setPen(pen)
+                        p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                        p.restore()
+                    if wx1 < tx + tw:
+                        p.save()
+                        p.setClipRect(QtCore.QRectF(wx1 - 0.05, clip_y, tx + tw - wx1 + 0.05, clip_h), Qt.ClipOperation.IntersectClip)
+                        p.setPen(pen)
+                        p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                        p.restore()
+                    pulse = math.sin(cur_frac * math.pi)
+                    scale = 1.0 + 0.08 * pulse
+                    base_f = p.font()
+                    zf = QtGui.QFont(base_f)
+                    if base_f.pixelSize() > 0:
+                        dpi_y = max(72.0, float(p.device().logicalDpiY()))
+                        zf.setPointSizeF((base_f.pixelSize() * 72.0 / dpi_y) * scale)
+                    else:
+                        zf.setPointSizeF(base_f.pointSizeF() * scale)
+                    zf.setWeight(W.DemiBold if pulse > 0.35 else base_f.weight())
+                    cx_w = (wx0 + wx1) * 0.5
+                    span_w = word_w * scale + 10.0
+                    word_rect = QtCore.QRectF(cx_w - span_w * 0.5, rect_line.y() - 0.5 * pulse, span_w, rect_line.height())
+                    p.save()
+                    p.setFont(zf)
+                    p.setPen(pen)
+                    p.drawText(word_rect, Qt.AlignmentFlag.AlignCenter, cur_s)
+                    p.restore()
+                    return
+
+            p.setPen(pen)
+            p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+
         if full <= tw:
             # 歌词居中显示；歌名 · 歌手靠左
             h_al = Qt.AlignmentFlag.AlignHCenter if line else Qt.AlignmentFlag.AlignLeft
-            p.drawText(QtCore.QRectF(tx, r.y(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter | h_al, text)
+            _draw_karaoke(QtCore.QRectF(tx, r.y(), tw, r.height()), h_al)
+        elif line and fill_w >= 0.0:
+            # 长歌词单向跟随演唱进度滚到末尾停住，不再从右侧循环折返
+            off = clamp(fill_w - tw * 0.65, 0.0, float(full - tw))
+            _draw_karaoke(
+                QtCore.QRectF(tx - off, r.y(), full + 4, r.height()),
+                Qt.AlignmentFlag.AlignLeft,
+            )
         else:
             gap = 36
             speed = 38.0
@@ -787,9 +883,11 @@ class CompactView:
             period = (full + gap) / speed
             ph = (t % (period + pause))
             off = 0 if ph < pause else (ph - pause) * speed
-            for k in (0, 1):
-                p.drawText(QtCore.QRectF(tx - off + k * (full + gap), r.y(), full + 4, r.height()),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+            for k_copy in (0, 1):
+                _draw_karaoke(
+                    QtCore.QRectF(tx - off + k_copy * (full + gap), r.y(), full + 4, r.height()),
+                    Qt.AlignmentFlag.AlignLeft,
+                )
             # 两端渐隐
             for left in (True, False):
                 g = QtGui.QLinearGradient(tx if left else tx + tw - 14, 0, tx + 14 if left else tx + tw, 0)
