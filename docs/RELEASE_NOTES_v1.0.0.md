@@ -12,21 +12,25 @@ Windows 10 / 11 桌面边缘液态毛玻璃灵动岛首个正式发布版本。
 - **实时双语字幕**：支持系统声音/麦克风捕获与本地离线日语识别 + 中文实时字幕翻译。
 - **工具、生活提醒与系统维护**：文件置物架、文字剪贴板历史、待办/喝水/久坐提醒、设置页一键检查 GitHub 更新及脱敏诊断包导出。
 
-## 便携版安装与升级
+## 安装与升级
 
-- **全新安装**：下载 `Ledge-portable.zip` 解压至任意目录，确保 `Ledge.exe` 与 `_internal` 同级，双击 `Ledge.exe` 启动。
-- **从旧版升级**：退出当前运行的 Ledge 后直接覆盖解压新版本文件；原有 `config.json`、系统凭据与 `data/` 本地数据会自动兼容保留。
-- **彻底卸载**：关闭设置中的“开机自启”（或清理注册表开机启动项）、在 Windows 凭据管理器移除 `wisland:*` 凭据后，直接删除程序目录即可。
+- **安装版（推荐）**：下载 `Ledge-Setup-v1.0.0.exe` 双击运行安装向导（单用户免管理员权限安装至 `%LOCALAPPDATA%\Programs\Ledge`），覆盖安装自动保留原有 `config.json` 与 `data/`。
+- **便携版**：下载 `Ledge-portable.zip` 解压至任意目录，确保 `Ledge.exe` 与 `_internal` 同级，双击 `Ledge.exe` 启动。
+- **彻底卸载**：安装版可在 Windows“设置 → 应用”中直接卸载（卸载向导结束时可选择是否同步清除 `config.json` 与 `data/`）；若曾在应用内开启自启或登录过邮箱/AI 账号，请顺带关闭自启并在 Windows 凭据管理器移除 `wisland:*` 凭据。
 
 ## 文件校验（SHA-256）
 
+- `Ledge-Setup-v1.0.0.exe`（63,091,210 字节）
+  ```text
+  429f642423e8abe0e03f4471967727a5a76cd109e0fde280f9574108ec05e6fb
+  ```
 - `Ledge-portable.zip`（89,379,206 字节）
   ```text
   33189a5a23f2fa432343aa619feba0fadd28894178d19ca5bfba6fffe5f3464b
   ```
   验证命令（PowerShell）：
   ```powershell
-  Get-FileHash .\Ledge-portable.zip -Algorithm SHA256
+  Get-FileHash .\Ledge-Setup-v1.0.0.exe -Algorithm SHA256
   ```
 
 ## 已知限制

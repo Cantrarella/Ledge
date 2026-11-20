@@ -5,6 +5,7 @@
 #>
 param(
     [switch]$SkipZip = $false,
+    [switch]$SkipInstaller = $false,
     [switch]$RestartApp = $false
 )
 
@@ -52,7 +53,7 @@ New-Item -ItemType Directory -Force (Join-Path $RepoRoot "_internal") | Out-Null
 Copy-Item -Recurse -Force (Join-Path $PortableDir "_internal\*") (Join-Path $RepoRoot "_internal")
 
 if (-not $SkipZip) {
-    Write-Host "[4/4] 生成便携版压缩包与 SHA256 校验文件: $ZipPath ..." -ForegroundColor Cyan
+    Write-Host "[4/5] 生成便携版压缩包与 SHA256 校验文件: $ZipPath ..." -ForegroundColor Cyan
     if (Test-Path $ZipPath) {
         Remove-Item -Force $ZipPath
     }
@@ -60,6 +61,32 @@ if (-not $SkipZip) {
     $HashObj = Get-FileHash -Path $ZipPath -Algorithm SHA256
     $ShaPath = "$ZipPath.sha256"
     "$($HashObj.Hash.ToLowerInvariant())  $(Split-Path -Leaf $ZipPath)" | Set-Content -Path $ShaPath -Encoding ASCII
+}
+
+if (-not $SkipInstaller) {
+    $IsccCandidates = @(
+        "C:\Users\User\AppData\Local\Programs\Inno Setup 6\ISCC.exe",
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 6\ISCC.exe"
+    )
+    $IsccExe = $IsccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($IsccExe) {
+        $AppVer = (python -c "import sys; sys.path.insert(0, r'$RepoRoot'); from wisland.core.branding import APP_VERSION; print(APP_VERSION)" 2>$null).Trim()
+        if (-not $AppVer) { $AppVer = "1.0.0" }
+        $IssPath = Join-Path $PSScriptRoot "Ledge.iss"
+        Write-Host "[5/5] 生成安装版程序 (Inno Setup): Ledge-Setup-v$AppVer.exe ..." -ForegroundColor Cyan
+        & $IsccExe "/DMyAppVersion=$AppVer" "/DSourceDir=$PortableDir" "/DOutputDir=$DistDir" $IssPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup 打包失败 (ExitCode: $LASTEXITCODE)"
+        }
+        $SetupPath = Join-Path $DistDir "Ledge-Setup-v$AppVer.exe"
+        if (Test-Path $SetupPath) {
+            $SetupHash = Get-FileHash -Path $SetupPath -Algorithm SHA256
+            "$($SetupHash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $SetupPath)" | Set-Content -Path "$SetupPath.sha256" -Encoding ASCII
+        }
+    } else {
+        Write-Host "[5/5] 未检测到 Inno Setup (ISCC.exe)，跳过安装版生成。" -ForegroundColor Yellow
+    }
 }
 
 # 打包压缩包必须保持无个人数据；仅在最终重建的本地目录中恢复原配置。
