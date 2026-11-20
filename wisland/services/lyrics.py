@@ -149,6 +149,41 @@ class LyricsService(QtCore.QObject):
     def _clean_artist(self, raw: str) -> str:
         return re.sub(r"\s*[/、,;，；]+\s*", " ", raw or "").strip()
 
+    def _norm_text(self, s: str) -> str:
+        return re.sub(r"[\s\-_·.,，。!！?？'\"`~()（）\[\]【】]+", "", self._clean_title(s)).lower()
+
+    def _is_valid_match(
+        self,
+        cand_title: str,
+        cand_artist: str,
+        cand_dur: float,
+        q_title: str,
+        q_artist: str,
+        q_dur: float,
+    ) -> bool:
+        ct_raw = self._clean_title(cand_title).lower()
+        qt_raw = self._clean_title(q_title).lower()
+        ct = self._norm_text(cand_title)
+        qt = self._norm_text(q_title)
+        if not ct or not qt:
+            return False
+        exact_title = (ct == qt) or (ct_raw == qt_raw)
+        sub_title = (qt in ct) or (ct in qt)
+        if not exact_title and not sub_title:
+            return False
+
+        ca = cand_artist.lower()
+        qa_tokens = [t for t in self._clean_artist(q_artist).lower().split() if len(t) >= 2]
+        artist_ok = (not qa_tokens) or any(t in ca for t in qa_tokens)
+        if not exact_title and not artist_ok:
+            return False
+
+        if q_dur and cand_dur:
+            max_dd = 8.0 if exact_title else 5.0
+            if abs(cand_dur - q_dur) > max_dd:
+                return False
+        return True
+
     def _score_match(
         self,
         cand_title: str,
@@ -223,8 +258,11 @@ class LyricsService(QtCore.QObject):
                 title, artist, dur,
             ),
         )
-        if dur and abs((best.get("duration") or 0) / 1000.0 - dur) > 8:
-            return ""            # 时长对不上：多半不是同一首，宁可不显示
+        if not self._is_valid_match(
+            best.get("name") or "", _artists_str(best), (best.get("duration") or 0) / 1000.0,
+            title, artist, dur,
+        ):
+            return ""
         return str(best.get("id") or "")
 
     def _fetch_qq(self, m: dict) -> Lyrics | None:
@@ -258,7 +296,10 @@ class LyricsService(QtCore.QObject):
                     title, artist, dur,
                 ),
             )
-            if dur and abs(float(best.get("interval") or 0) - dur) > 8:
+            if not self._is_valid_match(
+                best.get("songname") or "", _artists_str(best), float(best.get("interval") or 0),
+                title, artist, dur,
+            ):
                 return None
             mid = best.get("songmid") or ""
             if not mid:
@@ -307,7 +348,10 @@ class LyricsService(QtCore.QObject):
                     title, artist, dur,
                 ),
             )
-            if abs(float(best.get("duration") or 0) - dur) > 8:
+            if not self._is_valid_match(
+                best.get("songname") or "", best.get("singername") or "", float(best.get("duration") or 0),
+                title, artist, dur,
+            ):
                 return None
             rk = self._client.get(
                 "http://krcs.kugou.com/search",
@@ -377,7 +421,12 @@ class LyricsService(QtCore.QObject):
                     title, artist, dur,
                 ),
             )
-            if best.get("duration") and abs(float(best["duration"]) - dur) > 8:
+            if not self._is_valid_match(
+                best.get("trackName") or best.get("name") or "",
+                best.get("artistName") or "",
+                float(best.get("duration") or 0),
+                title, artist, dur,
+            ):
                 return None
             lines = parse_lrc(best["syncedLyrics"])
             lyr = Lyrics(lines, [])
