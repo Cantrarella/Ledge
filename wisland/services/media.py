@@ -77,17 +77,80 @@ def _secs(v) -> float:
         return 0.0
 
 
+_COVER_HEADERS = {
+    "Referer": "https://music.163.com/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+}
+
+
 def _download_cover(url: str):
-    """下载网易云专辑封面（小图）-> QImage | None。"""
+    """下载专辑封面（小图）-> QImage | None。"""
+    if not url:
+        return None
     try:
         import httpx
-        u = url.replace("http://", "https://", 1)
-        r = httpx.get(u + ("&" if "?" in u else "?") + "param=240y240", timeout=8, follow_redirects=True)
-        r.raise_for_status()
-        img = QtGui.QImage.fromData(r.content)
-        return None if img.isNull() else img
+        candidates = [url.replace("http://", "https://", 1)]
+        if url.startswith("http://"):
+            candidates.append(url)
+        for base in candidates:
+            sep = "&" if "?" in base else "?"
+            try:
+                r = httpx.get(
+                    f"{base}{sep}param=240y240",
+                    headers=_COVER_HEADERS,
+                    timeout=8,
+                    follow_redirects=True,
+                )
+                r.raise_for_status()
+                img = QtGui.QImage.fromData(r.content)
+                if not img.isNull():
+                    return img
+            except Exception:  # noqa: BLE001
+                continue
+        return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _search_cover_url(title: str, artist: str, duration: float) -> str:
+    """SMTC 无缩略图时，按歌名 + 歌手 + 时长向网易云公开接口兜底查询封面 URL。"""
+    import re
+    if not title or not (30 <= float(duration or 0) <= 15 * 60):
+        return ""
+    try:
+        import httpx
+        clean_title = re.sub(r"\s*[\(（\[【].*?[\)）\]】]\s*", " ", title).strip() or title
+        q = f"{clean_title} {artist}".strip()
+        r = httpx.get(
+            "https://music.163.com/api/search/get/web",
+            params={"s": q, "type": 1, "limit": 6},
+            headers=_COVER_HEADERS,
+            timeout=6,
+        )
+        r.raise_for_status()
+        songs = ((r.json().get("result") or {}).get("songs")) or []
+        if not songs:
+            return ""
+        name = clean_title.lower()
+
+        def score(s):
+            same = (s.get("name") or "").lower().strip() == name
+            dd = abs((s.get("duration") or 0) / 1000.0 - duration) if duration else 0
+            return (0 if same else 1, dd)
+
+        best = min(songs, key=score)
+        if duration and abs((best.get("duration") or 0) / 1000.0 - duration) > 8:
+            return ""
+        album = best.get("album") or {}
+        pic = album.get("picUrl") or ""
+        if not pic:
+            # 某些搜索结果仅在 song.album.id 或 artists[0].img1v1Url 有图，优先取 album.picUrl
+            artists = best.get("artists") or []
+            if artists and isinstance(artists[0], dict):
+                pic = artists[0].get("picUrl") or ""
+        return str(pic)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _empty_state() -> dict:
@@ -105,6 +168,7 @@ class MediaService(QtCore.QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.state: dict = _empty_state()
+        self.cover_image: QtGui.QImage | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -112,8 +176,14 @@ class MediaService(QtCore.QObject):
         self._session = None
         self._track_key = None
         self._cover_tries = 0
+        self._netease_cover_url = ""
+        self._smtc_fallback_tried = False
         self._last_emit = None
         self._netease = NeteaseLog()
+
+    def _emit_cover(self, img: QtGui.QImage | None):
+        self.cover_image = img
+        self.cover_changed.emit(img)
 
     # ---------------- 生命周期 ----------------
     def start(self):
@@ -221,7 +291,10 @@ class MediaService(QtCore.QObject):
             st = _empty_state()
             if self.state.get("has_session") or self._last_emit is None:
                 self._track_key = None
-                self.cover_changed.emit(None)
+                self._cover_tries = 0
+                self._netease_cover_url = ""
+                self._smtc_fallback_tried = False
+                self._emit_cover(None)
                 self._publish(st, force=True)
             return
 
@@ -274,17 +347,28 @@ class MediaService(QtCore.QObject):
         if key != self._track_key:
             self._track_key = key
             self._cover_tries = 0
+            self._smtc_fallback_tried = False
             img = await self._read_cover(props)
-            self.cover_changed.emit(img)
+            self._emit_cover(img)
             if img is None:
                 self._cover_tries = 1
-        elif 0 < self._cover_tries < 6:
-            # 浏览器等常常在标题之后才给出缩略图，重试几次
+        elif 0 < self._cover_tries < 15:
+            # 浏览器 / 播放器常在标题之后才更新缩略图，延长重试窗口
             self._cover_tries += 1
             img = await self._read_cover(props)
             if img is not None:
                 self._cover_tries = 0
-                self.cover_changed.emit(img)
+                self._emit_cover(img)
+            elif self._cover_tries == 4 and not self._smtc_fallback_tried and title:
+                # 若 SMTC 连续多次仍无缩略图，尝试通过在线曲库兜底获取封面
+                self._smtc_fallback_tried = True
+                loop = asyncio.get_running_loop()
+                pic_url = await loop.run_in_executor(None, _search_cover_url, title, artist, dur)
+                if pic_url:
+                    fb_img = await loop.run_in_executor(None, _download_cover, pic_url)
+                    if fb_img is not None:
+                        self._cover_tries = 0
+                        self._emit_cover(fb_img)
         self._publish(st)
 
     async def _publish_netease(self, ne: dict):
@@ -295,12 +379,27 @@ class MediaService(QtCore.QObject):
             "can_prev": True, "can_next": True, "song_id": ne["song_id"], "source": "netease",
         }
         key = ("netease", ne["song_id"])
-        if key != self._track_key:
+        cover_url = str(ne.get("cover") or "")
+        is_new_track = key != self._track_key
+        if is_new_track:
             self._track_key = key
-            img = None
-            if ne.get("cover"):
-                img = await asyncio.get_running_loop().run_in_executor(None, _download_cover, ne["cover"])
-            self.cover_changed.emit(img)
+            self._cover_tries = 0
+            self._netease_cover_url = ""
+            self._emit_cover(None)
+
+        need_fetch = bool(cover_url) and (
+            is_new_track
+            or cover_url != self._netease_cover_url
+            or (self.cover_image is None and 0 < self._cover_tries < 6)
+        )
+        if need_fetch:
+            self._netease_cover_url = cover_url
+            img = await asyncio.get_running_loop().run_in_executor(None, _download_cover, cover_url)
+            if img is not None:
+                self._cover_tries = 0
+                self._emit_cover(img)
+            else:
+                self._cover_tries = max(1, self._cover_tries + 1)
         self._publish(st)
 
     def _publish(self, st: dict, force: bool = False):
@@ -319,26 +418,42 @@ class MediaService(QtCore.QObject):
             self.changed.emit(dict(st))
 
     async def _read_cover(self, props):
+        stream = None
         try:
             thumb = props.thumbnail if props else None
             if thumb is None:
                 return None
             stream = await thumb.open_read_async()
             size = int(stream.size)
-            if size <= 0 or size > 20 * 1024 * 1024:
+            if size < 0 or size > 20 * 1024 * 1024:
                 return None
-            buf = _Buffer(size)
-            out = await stream.read_async(buf, size, _ISO.READ_AHEAD)
-            data = bytes(memoryview(out))[: int(out.length)]
-            try:
-                stream.close()
-            except Exception:  # noqa: BLE001
-                pass
-            img = QtGui.QImage.fromData(data)
+            # IRandomAccessStream.read_async 不保证单次读满，循环读取至结束或达到 size
+            chunks = []
+            total = 0
+            chunk_cap = 64 * 1024 if size == 0 else min(size, 512 * 1024)
+            limit = size if size > 0 else 20 * 1024 * 1024
+            while total < limit:
+                want = chunk_cap if size == 0 else min(chunk_cap, size - total)
+                buf = _Buffer(want)
+                out = await stream.read_async(buf, want, _ISO.READ_AHEAD)
+                got = int(out.length)
+                if got <= 0:
+                    break
+                chunks.append(bytes(memoryview(out))[:got])
+                total += got
+            if not chunks:
+                return None
+            img = QtGui.QImage.fromData(b"".join(chunks))
             return None if img.isNull() else img
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             return None
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ---------------- 控制 ----------------
     def _submit(self, make_coro, fallback_vk: int | None = None):

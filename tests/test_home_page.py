@@ -310,3 +310,20 @@ def test_06_themes_and_2x_dpi_screenshots(qt_app, tmp_path):
     finally:
         island_theme.set_mode(orig_mode)
         pg.close()
+
+
+def test_07_on_show_syncs_cover_image(qt_app):
+    pg, _ = _make_home(qt_app)
+    try:
+        cover_img = QtGui.QImage(84, 84, QtGui.QImage.Format.Format_ARGB32)
+        cover_img.fill(QtGui.QColor("#10b981"))
+        pg.ctx.media.cover_image = cover_img
+        assert not pg.media._has_real_cover()
+
+        pg.on_show()
+        qt_app.processEvents()
+        assert pg.media._has_real_cover()
+        assert pg.media._raw_cover_img is cover_img
+        assert pg.media.cover.pm is not None
+    finally:
+        pg.close()

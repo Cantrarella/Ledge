@@ -262,8 +262,8 @@ class MediaCard(Card):
         return
 
     def _set_cover(self, img):
-        self._raw_cover_img = img
         px = rounded_pixmap(img, self.COVER_SIZE, 12) if img is not None else None
+        self._raw_cover_img = img if px is not None else None
         if px is None:
             pm = QtGui.QPixmap(self.COVER_SIZE * 2, self.COVER_SIZE * 2)
             pm.fill(Qt.GlobalColor.transparent)
@@ -279,6 +279,7 @@ class MediaCard(Card):
             pm.setDevicePixelRatio(2)
             px = pm
         self.cover.set_pixmap(px)
+        self.cover.update()
 
     def set_cover(self, img):
         self._set_cover(img)
@@ -353,6 +354,12 @@ class HomePage(Page):
     def on_show(self):
         super().on_show()
         self.header.refresh_clock()
+        # 展开时强制同步最新封面，避免隐藏期间错过或未重绘封面
+        media_svc = getattr(self.ctx, "media", None)
+        if media_svc is not None and hasattr(media_svc, "cover_image"):
+            cur_img = media_svc.cover_image
+            if cur_img is not getattr(self.media, "_raw_cover_img", None):
+                self.media.set_cover(cur_img)
 
     def set_muted(self, muted: bool):
         """保留接口供外部（如 app.py 音量同步）调用，首页不再展示静音快捷按钮。"""
