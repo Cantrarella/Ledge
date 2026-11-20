@@ -27,3 +27,27 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+BrimDeck
+--------
+
+Project: BrimDeck
+Repository: https://github.com/MoFeng2223/BrimDeck
+License: Apache-2.0
+
+Ledge ported and adapted BrimDeck's compact clock style presets and color scheme
+design in PySide6 (wisland/ui/clock_face.py).
+
+
+Bundled Clock Fonts
+-------------------
+
+The following fonts bundled under wisland/assets/fonts/ are licensed under
+the SIL Open Font License, Version 1.1 (OFL-1.1):
+
+- Orbitron (Orbitron-SemiBold.ttf) — Copyright (c) The Orbitron Project Authors
+- Instrument Serif (InstrumentSerif-Italic.ttf) — Copyright (c) The Instrument Serif Project Authors
+- Unbounded (Unbounded-SemiBold.ttf) — Copyright (c) The Unbounded Project Authors
+- Bebas Neue (BebasNeue-Regular.ttf) — Copyright (c) The Bebas Neue Project Authors
+- Fredoka (Fredoka-SemiBold.ttf) — Copyright (c) The Fredoka Project Authors

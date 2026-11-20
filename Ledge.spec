@@ -7,6 +7,7 @@ SITE_PKGS = Path("D:/Codex/wisland-exe/build/site-packages")
 
 datas = [
     (str(ROOT / "LICENSE"), "."),
+    (str(ROOT / "THIRD_PARTY_NOTICES.txt"), "."),
     (str(ROOT / "config.example.json"), "."),
     (str(ROOT / "wisland" / "icon.png"), "wisland"),
     (str(ROOT / "wisland" / "icon.ico"), "wisland"),
