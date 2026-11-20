@@ -717,3 +717,83 @@ def test_manager_missing_vs_corrupt_vs_auth_error_and_refresh_save_fail(qt_app, 
     assert s_keep.credits == 100.0
     assert "保存失败" in s_keep.last_error
     mgr.stop()
+
+
+def test_gemini_browser_launcher_exit_and_app_url_fallback(monkeypatch):
+    """验证 Gemini 浏览器启动器进程提前退出但 CDP 端口存活、且登录后停留在 /app 时仍能正确提取并验证额度。"""
+    import wisland.services.quota.adapters.gemini as gm
+
+    class _FakeProc:
+        def poll(self):
+            return 0  # 模拟 Windows Edge/Chrome 启动器进程已转交窗口并退出
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    class _FakeCdp:
+        def __init__(self, ws_url, timeout_s=3.0):
+            self.ws_url = ws_url
+
+        def call(self, method, params=None, cancel_event=None, timeout_s=15.0):
+            if method == "Runtime.evaluate":
+                return {"result": {"value": "gemini.user@gmail.com"}}
+            if method == "Network.getCookies":
+                return {
+                    "cookies": [
+                        {"domain": ".google.com", "name": "__Secure-1PSID", "value": "sid-ok"},
+                        {"domain": ".google.com", "name": "SID", "value": "sid-1"},
+                    ]
+                }
+            return {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(gm, "find_chromium_browser", lambda: Path("C:/Fake/msedge.exe"))
+    monkeypatch.setattr(gm.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    monkeypatch.setattr(gm, "_LocalCdpSocket", _FakeCdp)
+    monkeypatch.setattr(
+        gm.urllib.request,
+        "urlopen",
+        lambda url, timeout=1.5: _FakeResp(
+            200,
+            json.dumps([
+                {
+                    "type": "page",
+                    "url": "https://gemini.google.com/app",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9999/devtools/page/1",
+                }
+            ]).encode("utf-8"),
+        ),
+    )
+
+    valid_payload = [
+        {
+            "data": {
+                "viewer": {
+                    "rpcs": {
+                        "getUsageInfo": {
+                            "pools": [
+                                {"poolType": "GXU_FIVE_HOURLY", "percentageUsed": 0.2, "gxu": {"windowRefreshesAt": "2026-11-20T12:00:00Z"}}
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+    ]
+    ok, err, sess, snap = gm.connect_gemini_browser(
+        account_id="gm_test",
+        http_opener=lambda req, timeout=12.0: _FakeResp(200, json.dumps(valid_payload).encode("utf-8")),
+        timeout_s=5.0,
+    )
+    assert ok is True
+    assert err == ""
+    assert sess is not None and sess["email"] == "gemini.user@gmail.com"
+    assert snap is not None and snap.status == AccountStatus.OK.value

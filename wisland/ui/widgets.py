@@ -464,6 +464,18 @@ class WheelScrollArea(QtWidgets.QScrollArea):
         sb = self.horizontalScrollBar() if self.orientation == "horizontal" else self.verticalScrollBar()
         sb.setValue(sb.minimum())
 
+    def scrollContentsBy(self, dx: int, dy: int):
+        # 透明分层窗口内禁止 QScrollArea 默认的 viewport->scroll BitBlt 像素搬运，避免半透明背景重影拖尾
+        ox = self.horizontalScrollBar().value()
+        oy = self.verticalScrollBar().value()
+        self.inner.move(-ox, -oy)
+        self.viewport().update()
+        win = self.window()
+        if win is not None and win is not self and win.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
+            vp = self.viewport()
+            top_left = vp.mapTo(win, QtCore.QPoint(0, 0))
+            win.update(QtCore.QRect(top_left, vp.size()))
+
     def wheelEvent(self, e):
         sb = self.horizontalScrollBar() if self.orientation == "horizontal" else self.verticalScrollBar()
         if sb.maximum() <= sb.minimum():

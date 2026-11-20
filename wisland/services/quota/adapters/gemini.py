@@ -349,12 +349,22 @@ def fetch_gemini_usage(
 
 _GEMINI_EMAIL_JS = r"""(() => {
   if (location.origin !== 'https://gemini.google.com') return '';
-  if (!/^\/(?:u\/\d+\/)?usage\/?$/.test(location.pathname)) return '';
-  const a = document.querySelector('a[href^="https://accounts.google.com/SignOutOptions"][aria-label]')
-         || document.querySelector('a[aria-label*="@"]');
-  const raw = (a && a.getAttribute('aria-label')) || '';
-  const m = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  return m ? m[0] : '';
+  const selectors = [
+    'a[href^="https://accounts.google.com/SignOutOptions"][aria-label]',
+    'a[aria-label*="@"]',
+    'button[aria-label*="@"]',
+    '[data-email*="@"]',
+    'img[alt*="@"]',
+  ];
+  for (const sel of selectors) {
+    const nodes = document.querySelectorAll(sel);
+    for (const el of nodes) {
+      const raw = el.getAttribute('aria-label') || el.getAttribute('data-email') || el.getAttribute('alt') || '';
+      const m = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+      if (m) return m[0];
+    }
+  }
+  return '';
 })()"""
 
 _GEMINI_ALLOWED_COOKIE_DOMAINS = frozenset({
@@ -377,6 +387,21 @@ def is_gemini_usage_page(raw_url: str) -> bool:
         return False
     path = u.path.rstrip("/")
     return path == "/usage" or bool(re.fullmatch(r"/u/\d+/usage", path))
+
+
+def is_gemini_logged_in_page(raw_url: str) -> bool:
+    """校验是否为 https://gemini.google.com 的已跳转工作页面（含 /usage、/app 或根路径）。"""
+    if is_gemini_usage_page(raw_url):
+        return True
+    try:
+        u = urllib.parse.urlparse(str(raw_url or ""))
+    except Exception:
+        return False
+    if u.scheme != "https" or u.hostname != "gemini.google.com":
+        return False
+    if u.port not in (None, 443) or u.username or u.password:
+        return False
+    return True
 
 
 def build_gemini_cookie_header(cookies: list[dict]) -> tuple[bool, str]:
@@ -573,6 +598,7 @@ def connect_gemini_browser(
             f"--remote-debugging-port={port}",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-features=msEdgeStartupBoost",
             "--new-window",
             "https://gemini.google.com/usage",
         ]
@@ -584,14 +610,15 @@ def connect_gemini_browser(
             creationflags=creationflags,
         )
 
-        deadline = time.monotonic() + timeout_s
+        start_ts = time.monotonic()
+        deadline = start_ts + timeout_s
         list_url = f"http://127.0.0.1:{port}/json/list"
+        cdp_seen = False
+        missed_cdp = 0
 
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 return False, "已取消 Gemini 连接", None, None
-            if proc.poll() is not None:
-                return False, "浏览器窗口已关闭，未完成 Gemini 登录", None, None
 
             targets = None
             try:
@@ -601,14 +628,26 @@ def connect_gemini_browser(
                 targets = None
 
             if isinstance(targets, list):
+                page_targets = [
+                    t for t in targets
+                    if isinstance(t, dict)
+                    and t.get("type") == "page"
+                    and t.get("webSocketDebuggerUrl")
+                ]
+                if page_targets:
+                    cdp_seen = True
+                    missed_cdp = 0
+                elif cdp_seen:
+                    missed_cdp += 1
+                    if missed_cdp >= 3:
+                        return False, "浏览器窗口已关闭，未完成 Gemini 登录", None, None
+
+                # 优先匹配 /usage 页面，其次匹配登录后留在 gemini.google.com 的其他页面
                 page_target = next(
-                    (
-                        t for t in targets
-                        if isinstance(t, dict)
-                        and t.get("type") == "page"
-                        and is_gemini_usage_page(t.get("url", ""))
-                        and t.get("webSocketDebuggerUrl")
-                    ),
+                    (t for t in page_targets if is_gemini_usage_page(t.get("url", ""))),
+                    None,
+                ) or next(
+                    (t for t in page_targets if is_gemini_logged_in_page(t.get("url", ""))),
                     None,
                 )
                 if page_target is not None:
@@ -622,10 +661,12 @@ def connect_gemini_browser(
                         )
                         raw_email = str((ev_res.get("result") or {}).get("value") or "").strip()
                         ok_e, cur_email = validate_gemini_email(raw_email)
+                        if not ok_e and wanted_email:
+                            ok_e, cur_email = True, wanted_email
                         if ok_e and (not wanted_email or cur_email == wanted_email):
                             ck_res = cdp.call(
                                 "Network.getCookies",
-                                {"urls": ["https://gemini.google.com/"]},
+                                {"urls": ["https://gemini.google.com/", "https://accounts.google.com/"]},
                                 cancel_event=cancel_event,
                             )
                             ok_c, cookie_hdr = build_gemini_cookie_header(ck_res.get("cookies") or [])
@@ -648,6 +689,14 @@ def connect_gemini_browser(
                         if cdp is not None:
                             cdp.close()
                             cdp = None
+            else:
+                if proc.poll() is not None:
+                    if cdp_seen:
+                        missed_cdp += 1
+                        if missed_cdp >= 2:
+                            return False, "浏览器窗口已关闭，未完成 Gemini 登录", None, None
+                    elif (time.monotonic() - start_ts) >= 4.0:
+                        return False, "独立登录窗口未能连接调试端口，请关闭已有浏览器后重试或改用手动粘贴 Cookie", None, None
 
             for _ in range(10):
                 if cancel_event is not None and cancel_event.is_set():

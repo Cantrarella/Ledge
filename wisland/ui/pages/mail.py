@@ -1309,3 +1309,9 @@ class MailPage(Page):
         self.otp_preview_card.clear_and_stop()
         self._copy_tip_timer.stop()
         super().closeEvent(e)
+
+    def on_hide(self):
+        """岛体收起或切走页面时，若当前停留在邮件详情则自动返回邮件列表。"""
+        if self.mode_stack.currentIndex() == 1:
+            self.close_detail()
+        super().on_hide()

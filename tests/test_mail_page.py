@@ -986,3 +986,68 @@ def test_10_otp_preview_card_layout_interaction_and_filtering(qt_app, tmp_path):
     pg.close()
     mgr.shutdown()
 
+
+def test_09_mail_scroll_clean_and_collapse_returns_to_list(qt_app, tmp_path):
+    """验证透明滚动区滚动不依赖 BitBlt 脏搬运，且从邮件详情收起岛体后自动返回邮件列表。"""
+    from wisland.services.mail.models import MailBody
+    from wisland.ui.island import Island
+
+    acc = MailAccount(id="a1", provider="qq", email="u1@qq.com", host="imap.qq.com", display_name="QQ")
+    cm = _make_cfg(tmp_path, [acc])
+    creds = _MemCreds()
+    mgr = MailAccountManager(config_obj=cm, cred_store=creds)
+
+    now = time.time()
+    mgr._headers["a1"] = [
+        MailHeader(
+            uid=str(i),
+            account_id="a1",
+            sender=f"Sender{i}",
+            subject=f"Subject line {i}",
+            received_at=now - i * 60,
+            is_read=(i % 2 == 0),
+        )
+        for i in range(1, 35)
+    ]
+    mgr._bodies[mgr._cache_key("a1", "1", "")] = MailBody(account_id="a1", uid="1", text="Hello detail body")
+
+    opened: list[tuple] = []
+    ctx = _make_dummy_ctx(mgr, opened)
+    pg = MailPage(ctx)
+    isl = Island([pg])
+    try:
+        isl.show()
+        isl.expand("mail")
+        tw, th = isl.target_size()
+        isl.sw.snap(tw)
+        isl.sh.snap(th)
+        isl._tick()
+        qt_app.processEvents()
+        pg.scroll_lay.activate()
+        qt_app.processEvents()
+
+        # 1) 长列表滚动：inner 准确跟随滚动条偏移且各行不重叠
+        sb = pg.scroll.verticalScrollBar()
+        assert sb.maximum() > 0
+        sb.setValue(34)
+        qt_app.processEvents()
+        assert pg.scroll.inner.pos().y() == -sb.value()
+        ys = [r.geometry().y() for r in pg._rows]
+        assert all(ys[i + 1] - ys[i] == 17 for i in range(len(ys) - 1))
+
+        # 2) 点开邮件详情（419×236），随后收起岛体 -> 自动回到邮件列表态（419×140）
+        pg.open_detail(mgr._headers["a1"][0])
+        qt_app.processEvents()
+        assert pg.mode_stack.currentIndex() == 1
+        assert (pg.panel_width, pg.panel_height) == (419, 236)
+
+        isl.collapse()
+        qt_app.processEvents()
+        assert isl.expanded is False
+        assert pg.mode_stack.currentIndex() == 0
+        assert (pg.panel_width, pg.panel_height) == (419, 140)
+        assert pg._selected_key == ("a1", "1")
+    finally:
+        isl.close()
+        mgr.shutdown()
+

@@ -224,7 +224,11 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
   - `Island` 接入 `screenAdded` / `screenRemoved` / `primaryScreenChanged` / 屏幕几何变化以及 `WM_POWERBROADCAST`、`WM_DISPLAYCHANGE`、`WM_DPICHANGED`，支持显示器热插拔后停靠位置恢复、清空旧毛玻璃帧防黑屏，以及睡眠唤醒后重置帧时钟并自动触发天气/AI 额度/邮件监听后台刷新。
 - 测试结果：`tests/test_home_page.py` + `tests/test_release_matrix.py` `11 passed`（**0 警告**），全量测试 `89 passed`；`python -m compileall -q wisland tests` 与 `git diff --check` 通过。
 - 打包与隔离目录发布验证：PyInstaller 6.22.3 使用 `WIsland.spec` 构建成功；将发布包复制到源码外全新隔离目录并清空 `PYTHONPATH` 后，验证包内资源（图标、5 个 `ai-icons`、4 个 `life-icons`、5 个额度适配器、`sherpa_onnx`、`config.example.json`）、首次启动、旧配置升级、损坏配置保护及开机启动注册表读写往返均通过。
-- 修改文件：`wisland/app.py`、`wisland/ui/island.py`、`wisland/services/quota/credentials.py`、`wisland/services/quota/manager.py`、`tests/test_home_page.py`、`tests/test_release_matrix.py`、`PROJECT_STATE.md`
+- 邮件滚动、详情收起与 Gemini 登录修复：
+  - `WheelScrollArea.scrollContentsBy` 禁用透明窗口内 `viewport->scroll` 脏像素搬运，改用 `inner.move(-ox, -oy)` 并同步刷新顶层透明区域，彻底消除邮件列表垂直重影拖尾。
+  - `MailPage.on_hide` 在岛体收起或切走页面时自动从邮件详情（`419×236`）返回邮件列表（`419×140`）。
+  - `connect_gemini_browser` 改以本机 CDP `/json/list` 页面存活为准，修复启动器进程提前退出误报“浏览器窗口已关闭”的问题，并支持登录后停留在 `/app` 等页面的会话与邮箱提取；全量测试 `tests/` `97 passed`（0 failed）。
+- 修改文件：`wisland/ui/widgets.py`、`wisland/ui/pages/mail.py`、`wisland/services/quota/adapters/gemini.py`、`tests/test_mail_page.py`、`tests/test_quota_foundation.py`、`PROJECT_STATE.md`
 - 已知风险：
   1. 实机 8 小时 / 24 小时连续驻留及真实硬件睡眠唤醒、多物理显示器热插拔仍需在物理桌面周期性观察。
 - 下一阶段：
