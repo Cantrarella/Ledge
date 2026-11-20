@@ -53,7 +53,7 @@ def _bind_theme_slot(widget: QtCore.QObject, slot) -> None:
                     if prev_t is not None:
                         try:
                             prev_t.changed.disconnect(cb)
-                        except (RuntimeError, TypeError):
+                        except (RuntimeError, TypeError, SystemError):
                             pass
                     target_theme.changed.connect(cb)
                     _bmap[id(cb)] = target_theme
@@ -71,7 +71,7 @@ def _bind_theme_slot(widget: QtCore.QObject, slot) -> None:
                     if prev_t is not None:
                         try:
                             prev_t.changed.disconnect(cb)
-                        except (RuntimeError, TypeError):
+                        except (RuntimeError, TypeError, SystemError):
                             pass
             _slots.clear()
             _bmap.clear()

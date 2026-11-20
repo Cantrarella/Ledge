@@ -8,7 +8,9 @@
 """
 from __future__ import annotations
 
+import base64
 import bisect
+import html
 import re
 import threading
 
@@ -175,12 +177,15 @@ class LyricsService(QtCore.QObject):
         ca = cand_artist.lower()
         qa_tokens = [t for t in self._clean_artist(q_artist).lower().split() if len(t) >= 2]
         artist_ok = (not qa_tokens) or any(t in ca for t in qa_tokens)
+        dur_diff = abs(cand_dur - q_dur) if (q_dur and cand_dur) else 0.0
         if not exact_title and not artist_ok:
-            return False
+            # 歌名为包含关系（如带副标题/OST后缀）且艺人中英文不同时，仅在时长高度吻合（<=2.5s）时放行
+            if not (min(len(ct), len(qt)) >= 2 and q_dur and cand_dur and dur_diff <= 2.5):
+                return False
 
         if q_dur and cand_dur:
             max_dd = 8.0 if exact_title else 5.0
-            if abs(cand_dur - q_dur) > max_dd:
+            if dur_diff > max_dd:
                 return False
         return True
 
@@ -310,7 +315,6 @@ class LyricsService(QtCore.QObject):
                 headers={"Referer": "https://y.qq.com/"},
             )
             rl.raise_for_status()
-            import html
             lrc_txt = html.unescape(rl.json().get("lyric") or "")
             if not lrc_txt:
                 return None
@@ -322,7 +326,6 @@ class LyricsService(QtCore.QObject):
 
     def _fetch_kugou(self, m: dict) -> Lyrics | None:
         """酷狗音乐公开接口兜底（覆盖网易云/QQ无版权曲库）。"""
-        import base64
         dur = float(m.get("duration") or 0)
         if not (30 <= dur <= 15 * 60):
             return None
