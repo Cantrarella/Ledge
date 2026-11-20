@@ -308,6 +308,13 @@ def main():
         vol_state["last"] = key
     ctx.audio.volume_changed.connect(on_volume)
     compact.set_view(cfg.get("island.compact_view", "clock"))
+    compact.set_clock_appearance(
+        style=cfg.get("island.clock_style", "minimal"),
+        color=cfg.get("island.clock_color", "white"),
+        custom_color=cfg.get("island.clock_custom_color", "#FFBF5E"),
+        gradient=cfg.get("island.clock_gradient", ["#5AE0FF", "#FF6BA8"]),
+        show_weather=bool(cfg.get("island.compact_weather", True)),
+    )
 
     def on_wheel(d):
         v = compact.cycle_view(d)
@@ -384,7 +391,7 @@ def main():
         P["weather"].set_data(d)
         if d.get("ok") or d.get("temp") is not None:
             g, fam = weather_glyph(d.get("icon"))
-            compact.weather = (g, f"{round(d.get('temp', 0))}°", fam)
+            compact.weather = (g, f"{round(d.get('temp', 0))}°", fam, d.get("icon") or "")
         island._kick()
     ctx.weather.updated.connect(on_weather)
 
@@ -470,6 +477,13 @@ def main():
     def apply_runtime_config(show_toast: bool = False):
         island_theme.set_mode(cfg.get("island.theme", "auto"))
         settings_theme.set_mode(cfg.get("settings_window.theme", "light"))
+        compact.set_clock_appearance(
+            style=cfg.get("island.clock_style", "minimal"),
+            color=cfg.get("island.clock_color", "white"),
+            custom_color=cfg.get("island.clock_custom_color", "#FFBF5E"),
+            gradient=cfg.get("island.clock_gradient", ["#5AE0FF", "#FF6BA8"]),
+            show_weather=bool(cfg.get("island.compact_weather", True)),
+        )
         island.apply_config()
         if not island.expanded and compact.view in ("clock", "pet", "music"):
             want_view = cfg.get("island.compact_view", "clock")

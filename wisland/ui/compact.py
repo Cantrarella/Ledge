@@ -11,6 +11,17 @@ import time
 from PySide6 import QtCore, QtGui
 
 from .anim import clamp, ease_out
+from .clock_face import (
+    extract_cover_color,
+    infer_weather_kind,
+    measure_clock,
+    measure_temperature,
+    paint_clock,
+    paint_temperature,
+    paint_weather_icon,
+    resolve_clock_palette,
+    resolve_weather_colors,
+)
 from .icons import draw_life_svg_icon, draw_svg_icon
 from .theme import KIND_COLORS, G, W, icon_font, theme, ui_font
 from .widgets import rounded_pixmap
@@ -315,6 +326,31 @@ class CompactView:
         # 收起态音乐视图右侧的播放 / 暂停键（灵动岛坐标，绘制时更新）
         self.play_rect: QtCore.QRectF | None = None
         self.play_hover = 0.0
+        # 收起态时间样式与配色
+        self.clock_style: str = "minimal"
+        self.clock_color: str = "white"
+        self.clock_custom_color: str = "#FFBF5E"
+        self.clock_gradient: list[str] = ["#5AE0FF", "#FF6BA8"]
+        self.show_weather: bool = True
+        self.cover_color: QtGui.QColor | None = None
+
+    def set_clock_appearance(
+        self,
+        style: str = "minimal",
+        color: str = "white",
+        custom_color: str = "#FFBF5E",
+        gradient: list[str] | None = None,
+        show_weather: bool = True,
+    ):
+        """同步收起态时间字体风格与配色配置。"""
+        self.clock_style = str(style or "minimal")
+        self.clock_color = str(color or "white")
+        self.clock_custom_color = str(custom_color or "#FFBF5E")
+        self.show_weather = bool(show_weather)
+        if isinstance(gradient, (list, tuple)) and len(gradient) >= 2:
+            self.clock_gradient = [str(x) for x in gradient[:3]]
+        else:
+            self.clock_gradient = ["#5AE0FF", "#FF6BA8"]
 
     # --- 数据 ---
     def set_media(self, m: dict):
@@ -364,6 +400,7 @@ class CompactView:
 
     def set_cover(self, img):
         self.cover = rounded_pixmap(img, 26, 7) if img is not None else None
+        self.cover_color = extract_cover_color(img) if img is not None else None
 
     def show_activity(self, act: dict, duration: float = 2.4):
         a = dict(act)
@@ -457,7 +494,13 @@ class CompactView:
             return max(300, self._lyr_w) + 34 + nb * 12, H_MEDIA
         if m == "pet":
             return 134 + nb * 13, H_IDLE
-        base_w = 146 if self.weather else 96
+        clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
+        if self.weather and self.show_weather:
+            temp_w = measure_temperature(self.clock_style, self.weather[1])["total_w"]
+            weather_w = 15.0 + 1.5 + temp_w
+            base_w = max(146, int(math.ceil(clock_w + _IDLE_WEATHER_GAP + weather_w + 36)))
+        else:
+            base_w = max(96, int(math.ceil(clock_w + 36)))
         # 对称扩展胶囊宽度：时间天气始终以整个胶囊中心居中，同时右侧预留色点空间
         extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
         return base_w + extra_w, H_IDLE
@@ -577,12 +620,12 @@ class CompactView:
         return f
 
     def _idle_layout_metrics(self, r: QtCore.QRectF) -> dict:
-        """基于 QFontMetrics 计算收起态时间与天气整体居中的几何参数。"""
+        """基于固定数字槽宽计算收起态时间与天气整体居中的几何参数。"""
         txt = getattr(self, "_clock_override", None) or time.strftime("%H:%M", time.localtime())
-        ft = self._tabular_font(15, W.DemiBold)
-        fmt = QtGui.QFontMetrics(ft)
-        clock_w = float(math.ceil(fmt.horizontalAdvance(txt)))
-        if not self.weather:
+        cm = measure_clock(self.clock_style, txt)
+        ft = cm["font"] or self._tabular_font(15, W.DemiBold)
+        clock_w = float(cm["total_w"])
+        if not self.weather or not self.show_weather:
             sx = r.center().x() - clock_w / 2.0
             return {
                 "txt": txt,
@@ -596,11 +639,11 @@ class CompactView:
             }
         glyph, temp = self.weather[0], self.weather[1]
         fam = self.weather[2] if len(self.weather) > 2 else None
-        fw = self._tabular_font(14.5, W.DemiBold)
-        fmw = QtGui.QFontMetrics(fw)
-        temp_w = float(math.ceil(fmw.horizontalAdvance(temp)))
-        icon_w = 14.0
-        icon_temp_gap = 3.0
+        icon_code = self.weather[3] if len(self.weather) > 3 else ""
+        tm = measure_temperature(self.clock_style, temp)
+        temp_w = float(tm["total_w"])
+        icon_w = 15.0
+        icon_temp_gap = 1.5
         weather_w = icon_w + icon_temp_gap + temp_w
         gap = _IDLE_WEATHER_GAP
         content_total = clock_w + gap + weather_w
@@ -612,13 +655,15 @@ class CompactView:
         return {
             "txt": txt,
             "ft": ft,
-            "fw": fw,
+            "fw": tm["font"] or self._tabular_font(13.0, W.Medium),
             "fam": fam,
             "glyph": glyph,
+            "icon_code": icon_code,
             "temp": temp,
             "clock_w": clock_w,
             "weather_w": weather_w,
             "gap": gap,
+            "dot_pos": QtCore.QPointF(group_left + clock_w + gap * 0.44, r.center().y()),
             "content_total": content_total,
             "group_left": group_left,
             "clock_rect": clock_rect,
@@ -632,20 +677,26 @@ class CompactView:
         m = self._idle_layout_metrics(r)
 
         # 时间 + 天气组始终以整个胶囊中心 r.center().x() 严格居中，绝不计入未读色点宽度
-        p.setFont(m["ft"])
-        p.setPen(theme.text(a))
-        p.drawText(m["clock_rect"], Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, m["txt"])
+        palette = resolve_clock_palette(
+            self.clock_color,
+            theme,
+            custom_hex=self.clock_custom_color,
+            gradient_stops=self.clock_gradient,
+            cover_color=self.cover_color,
+        )
+        paint_clock(p, m["clock_rect"], m["txt"], self.clock_style, palette, dark=theme.dark, alpha=a)
 
         if m["has_weather"]:
-            f = icon_font(13.5)
-            if m["fam"]:
-                f.setFamilies([m["fam"], "Segoe Fluent Icons", "Segoe UI Symbol"])
-            p.setFont(f)
-            p.setPen(theme.text(0.88 * a))
-            p.drawText(m["icon_rect"], Qt.AlignmentFlag.AlignCenter, m["glyph"])
-            p.setFont(m["fw"])
-            p.setPen(theme.text(0.95 * a))
-            p.drawText(m["temp_rect"], Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, m["temp"])
+            dot_col, icon_col, temp_col = resolve_weather_colors(self.clock_color, theme, palette, alpha=a)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dot_col)
+            p.drawEllipse(m["dot_pos"], 1.1, 1.1)
+            p.restore()
+
+            kind = infer_weather_kind(m.get("icon_code", ""), m.get("glyph", ""))
+            paint_weather_icon(p, m["icon_rect"], kind, icon_col)
+            paint_temperature(p, m["temp_rect"], m["temp"], self.clock_style, temp_col)
 
         # 未读色点固定在胶囊最右侧（约 12px 右边距）
         self._badges(p, r.right() - 12.0, cy, a)

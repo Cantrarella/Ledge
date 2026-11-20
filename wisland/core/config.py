@@ -65,6 +65,11 @@ DEFAULTS: dict = {
         "pinned": False,            # 旧版"保持展开"（兼容）
         "compact_view": "clock",    # 收起态视图：clock / pet / music（滚轮切换）
         "auto_cycle_s": 30,         # 时间天气与小形象自动轮换的间隔（秒），0 = 不轮换
+        "compact_weather": True,    # 收起态是否在时间右侧显示天气
+        "clock_style": "minimal",   # 收起态时间字体风格：minimal / segment / neon / serif / wide / condensed / rounded
+        "clock_color": "white",     # 收起态时间颜色：white / amber / cyan / pink / lime / cover / custom / gradient
+        "clock_custom_color": "#FFBF5E",          # 自定义时间颜色（Hex）
+        "clock_gradient": ["#5AE0FF", "#FF6BA8"], # 时间渐变停靠色（2~3 个 Hex）
         "passthrough": False,       # 可穿透：鼠标穿过灵动岛，只响应右键（不影响展开 / 收起）
     },
     "hotkeys": {
@@ -163,6 +168,8 @@ VALID_THEMES = ("auto", "classic", "light", "dark", "rouge", "sky")
 VALID_SETTINGS_THEMES = ("light", "dark")
 VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
+VALID_CLOCK_STYLES = ("minimal", "segment", "neon", "serif", "wide", "condensed", "rounded")
+VALID_CLOCK_COLORS = ("white", "amber", "cyan", "pink", "lime", "cover", "custom", "gradient")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
 VALID_QUOTA_PROVIDERS = ("deepseek", "workbuddy", "gemini", "grok_bot", "codex")
 REGISTERED_PAGE_KEYS = ("home", "mail", "quota", "weather", "trans", "tools", "life")
@@ -379,6 +386,52 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
             isl["auto_cycle_s"] = 30
     else:
         isl["auto_cycle_s"] = int(acyc)
+
+    # clock_style
+    cstyle = isl.get("clock_style", "minimal")
+    if cstyle not in VALID_CLOCK_STYLES:
+        _err(f"无效的时间字体风格: {cstyle}")
+        if not strict:
+            isl["clock_style"] = "minimal"
+
+    # compact_weather
+    cweather = isl.get("compact_weather", True)
+    if not isinstance(cweather, bool):
+        _err(f"收起态显示天气开关需为布尔值: {cweather}")
+        if not strict:
+            isl["compact_weather"] = bool(cweather)
+
+    # clock_color
+    ccolor = isl.get("clock_color", "white")
+    if ccolor not in VALID_CLOCK_COLORS:
+        _err(f"无效的时间颜色模式: {ccolor}")
+        if not strict:
+            isl["clock_color"] = "white"
+
+    # clock_custom_color & clock_gradient
+    def _is_hex(val: object) -> bool:
+        if not isinstance(val, str):
+            return False
+        s = val.strip()
+        if not s.startswith("#") or len(s) not in (4, 7):
+            return False
+        return all(ch in "0123456789abcdefABCDEF" for ch in s[1:])
+
+    custom_hex = isl.get("clock_custom_color", "#FFBF5E")
+    if not _is_hex(custom_hex):
+        _err(f"无效的自定义时间颜色: {custom_hex}")
+        if not strict:
+            isl["clock_custom_color"] = "#FFBF5E"
+    else:
+        isl["clock_custom_color"] = custom_hex.strip().upper()
+
+    grad = isl.get("clock_gradient", ["#5AE0FF", "#FF6BA8"])
+    if not isinstance(grad, list) or not (2 <= len(grad) <= 3) or not all(_is_hex(x) for x in grad):
+        _err(f"时间渐变色需为 2~3 个十六进制色值: {grad}")
+        if not strict:
+            isl["clock_gradient"] = ["#5AE0FF", "#FF6BA8"]
+    else:
+        isl["clock_gradient"] = [x.strip().upper() for x in grad]
 
     # hotkeys
     hks = merged.get("hotkeys")
