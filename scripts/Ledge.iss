@@ -116,9 +116,16 @@ begin
   WizardForm.FilenameLabel.Width := RightW;
   WizardForm.ProgressGauge.Width := RightW;
 
+  WizardForm.WizardBitmapImage.Visible := False;
+  WizardForm.WizardBitmapImage2.Visible := False;
+
+  WizardForm.FinishedHeadingLabel.Left := ScaleX(26);
   WizardForm.FinishedHeadingLabel.Width := RightW;
+  WizardForm.FinishedHeadingLabel.WordWrap := True;
+  WizardForm.FinishedLabel.Left := ScaleX(26);
   WizardForm.FinishedLabel.Width := RightW;
   WizardForm.FinishedLabel.WordWrap := True;
+  WizardForm.RunList.Left := ScaleX(26);
   WizardForm.RunList.Width := RightW;
 
   WizardForm.PreparingLabel.Width := RightW;
