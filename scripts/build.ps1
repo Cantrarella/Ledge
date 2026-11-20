@@ -52,11 +52,14 @@ New-Item -ItemType Directory -Force (Join-Path $RepoRoot "_internal") | Out-Null
 Copy-Item -Recurse -Force (Join-Path $PortableDir "_internal\*") (Join-Path $RepoRoot "_internal")
 
 if (-not $SkipZip) {
-    Write-Host "[4/4] 生成便携版压缩包: $ZipPath ..." -ForegroundColor Cyan
+    Write-Host "[4/4] 生成便携版压缩包与 SHA256 校验文件: $ZipPath ..." -ForegroundColor Cyan
     if (Test-Path $ZipPath) {
         Remove-Item -Force $ZipPath
     }
     Compress-Archive -Path "$PortableDir\*" -DestinationPath $ZipPath -CompressionLevel Optimal
+    $HashObj = Get-FileHash -Path $ZipPath -Algorithm SHA256
+    $ShaPath = "$ZipPath.sha256"
+    "$($HashObj.Hash.ToLowerInvariant())  $(Split-Path -Leaf $ZipPath)" | Set-Content -Path $ShaPath -Encoding ASCII
 }
 
 # 打包压缩包必须保持无个人数据；仅在最终重建的本地目录中恢复原配置。

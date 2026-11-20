@@ -59,7 +59,15 @@ class _Tee:
 
 
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
-_log = open(os.path.join(ROOT, "data", "wisland.log"), "a", encoding="utf-8", buffering=1)
+_data_dir = os.path.join(ROOT, "data")
+_log_path = os.path.join(_data_dir, "wisland.log")
+try:
+    from pathlib import Path
+    from wisland.core.diagnostics import setup_crash_logging
+    setup_crash_logging(Path(_data_dir), Path(_log_path))
+except Exception:
+    pass
+_log = open(_log_path, "a", encoding="utf-8", buffering=1)
 sys.stdout = _Tee(sys.stdout, _log)
 sys.stderr = _Tee(sys.stderr, _log)
 
