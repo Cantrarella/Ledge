@@ -102,6 +102,8 @@ class LyricsService(QtCore.QObject):
     def key(m: dict) -> str:
         if m.get("song_id"):
             return "id:" + str(m["song_id"])
+        if m.get("kugou_hash"):
+            return "kg:" + str(m["kugou_hash"])
         return "q:" + (m.get("title") or "") + "|" + (m.get("artist") or "")
 
     def get(self, m: dict) -> Lyrics | None:
@@ -135,6 +137,14 @@ class LyricsService(QtCore.QObject):
 
     # ---------------- 网络 ----------------
     def _fetch(self, m: dict) -> Lyrics | None:
+        if m.get("kugou_hash"):
+            lyr = self._fetch_kugou_by_hash(
+                str(m["kugou_hash"]),
+                float(m.get("duration") or 0),
+                f"{self._clean_title(m.get('title') or '')} {self._clean_artist(m.get('artist') or '')}".strip(),
+            )
+            if lyr:
+                return lyr
         if m.get("song_id"):
             order = (self._fetch_netease, self._fetch_qq, self._fetch_kugou, self._fetch_lrclib)
         else:
@@ -144,6 +154,49 @@ class LyricsService(QtCore.QObject):
             if lyr:
                 return lyr
         return None
+
+    def _fetch_kugou_by_hash(self, kg_hash: str, dur: float, keyword: str = "") -> Lyrics | None:
+        """凭 Echo Music 提供的精确酷狗音频 hash 直接拉取对应歌词。"""
+        if not kg_hash:
+            return None
+        try:
+            params = {
+                "ver": 1,
+                "man": "yes",
+                "client": "mobi",
+                "hash": kg_hash,
+            }
+            if dur > 0:
+                params["duration"] = int(dur * 1000)
+            if keyword:
+                params["keyword"] = keyword
+            rk = self._client.get("http://krcs.kugou.com/search", params=params)
+            rk.raise_for_status()
+            cands = rk.json().get("candidates") or []
+            if not cands:
+                return None
+            cand = cands[0]
+            rd = self._client.get(
+                "http://lyrics.kugou.com/download",
+                params={
+                    "ver": 1,
+                    "client": "pc",
+                    "id": cand["id"],
+                    "accesskey": cand["accesskey"],
+                    "fmt": "lrc",
+                    "charset": "utf8",
+                },
+            )
+            rd.raise_for_status()
+            b64 = rd.json().get("content") or ""
+            if not b64:
+                return None
+            text = base64.b64decode(b64).decode("utf-8", "replace")
+            lines = parse_lrc(text)
+            lyr = Lyrics(lines, [])
+            return lyr if lyr else None
+        except Exception:  # noqa: BLE001
+            return None
 
     def _clean_title(self, raw: str) -> str:
         return re.sub(r"\s*[\(（\[【].*?[\)）\]】]\s*", " ", raw or "").strip() or (raw or "")

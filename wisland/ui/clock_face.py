@@ -557,7 +557,7 @@ def measure_temperature(style_key: str, temp_text: str) -> dict:
     key = style_key if style_key in CLOCK_STYLE_MAP else "minimal"
     has_deg = "°" in temp_text
     num_text = temp_text.replace("°", "")
-    deg_w = 5.2 if has_deg else 0.0
+    deg_w = 6.6 if has_deg else 0.0
 
     if key == "segment":
         dw = 7.6
@@ -571,19 +571,31 @@ def measure_temperature(style_key: str, temp_text: str) -> dict:
             "digit_w": dw,
             "gap": gap,
             "deg_w": deg_w,
+            "ink_left": 0.0,
             "total_w": float(math.ceil(w + 1.0)),
             "height": 12.4,
         }
 
     f = build_temperature_font(key)
     fm = QtGui.QFontMetricsF(f)
-    num_w = fm.horizontalAdvance(num_text) if num_text else 0.0
+    ink_left = 0.0
+    num_w = 0.0
+    if num_text:
+        probe = QtGui.QPainterPath()
+        probe.addText(0.0, 0.0, f, num_text)
+        br = probe.boundingRect()
+        if not br.isEmpty():
+            ink_left = float(br.left())
+            num_w = float(br.width())
+        else:
+            num_w = float(fm.horizontalAdvance(num_text))
     extra = 1.2 if key == "serif" else 0.0
     return {
         "style": key,
         "font": f,
         "num_text": num_text,
         "has_deg": has_deg,
+        "ink_left": ink_left,
         "num_w": float(num_w),
         "deg_w": deg_w,
         "total_w": float(math.ceil(num_w + deg_w + extra + 1.0)),
@@ -621,7 +633,7 @@ def paint_temperature(
         p.setBrush(color)
         p.drawPath(path)
         if m["has_deg"]:
-            deg_cx = cx + 1.4
+            deg_cx = cx + 2.4
             deg_cy = top_y + 2.0
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QtGui.QPen(color, 1.2))
@@ -634,12 +646,12 @@ def paint_temperature(
     baseline_y = rect.center().y() + (fm.ascent() - fm.descent()) * 0.5
     if num_text:
         tpath = QtGui.QPainterPath()
-        tpath.addText(rect.x(), baseline_y, font, num_text)
+        tpath.addText(rect.x() - m["ink_left"], baseline_y, font, num_text)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(color)
         p.drawPath(tpath)
     if m["has_deg"]:
-        deg_cx = rect.x() + m["num_w"] + (3.0 if key == "serif" else 2.4)
+        deg_cx = rect.x() + m["num_w"] + (4.2 if key == "serif" else 3.6)
         deg_cy = baseline_y - fm.ascent() * 0.68
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QtGui.QPen(color, 1.3))

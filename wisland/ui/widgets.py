@@ -738,12 +738,19 @@ class ComboBox(QtWidgets.QComboBox):
         self.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.setFont(ui_font(13))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         if items:
             self.set_items(items)
         self.currentIndexChanged.connect(self._on_idx)
         _bind_theme_slot(self, self._style)
         self._style()
+
+    def wheelEvent(self, e):
+        # 仅在下拉菜单展开时响应滚轮，防止滚动设置页时误切选项
+        if self.view() is not None and self.view().isVisible():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
 
     def set_items(self, items: list[tuple[object, str]]):
         self.blockSignals(True)
@@ -805,18 +812,26 @@ class ComboBox(QtWidgets.QComboBox):
 
 
 class SpinBox(QtWidgets.QSpinBox):
-    """主题化整数微调框（默认宽度 196px）。"""
+    """主题化整数微调框（默认宽度 196px；单位外置展示，避免混入输入框）。"""
     def __init__(self, min_v: int = 0, max_v: int = 9999, step: int = 1, suffix: str = "", parent=None, width: int = 196):
         super().__init__(parent)
         self.setRange(min_v, max_v)
         self.setSingleStep(step)
-        if suffix:
-            self.setSuffix(suffix)
+        self._unit_text = (suffix or "").strip()
         self.setFixedHeight(32)
         self.setFixedWidth(width)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setFont(ui_font(13, num=True))
+        if self.lineEdit() is not None:
+            self.lineEdit().setTextMargins(8, 0, 0, 0)
         _bind_theme_slot(self, self._style)
         self._style()
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
 
     def _style(self):
         t = resolve_theme(self)
@@ -833,20 +848,28 @@ class SpinBox(QtWidgets.QSpinBox):
 
 
 class DoubleSpinBox(QtWidgets.QDoubleSpinBox):
-    """主题化浮点数微调框（默认宽度 196px）。"""
+    """主题化浮点数微调框（默认宽度 196px；单位外置展示，避免混入输入框）。"""
     def __init__(self, min_v: float = 0.0, max_v: float = 100.0, step: float = 0.05, decimals: int = 2,
                  suffix: str = "", parent=None, width: int = 196):
         super().__init__(parent)
         self.setDecimals(decimals)
         self.setRange(min_v, max_v)
         self.setSingleStep(step)
-        if suffix:
-            self.setSuffix(suffix)
+        self._unit_text = (suffix or "").strip()
         self.setFixedHeight(32)
         self.setFixedWidth(width)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setFont(ui_font(13, num=True))
+        if self.lineEdit() is not None:
+            self.lineEdit().setTextMargins(8, 0, 0, 0)
         _bind_theme_slot(self, self._style)
         self._style()
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
 
     def _style(self):
         t = resolve_theme(self)
@@ -902,7 +925,21 @@ class SettingRow(Card):
 
         self._left_lay = vbox(*left_items, spacing=4)
         self._ctrl_wrap = QtWidgets.QWidget(self)
-        self._ctrl_lay = hbox(control, spacing=0, margins=(0, 0, 0, 0)) if control is not None else hbox()
+        self._unit_lbl: QtWidgets.QLabel | None = None
+        unit_text = getattr(control, "_unit_text", "") if control is not None else ""
+        if control is not None and unit_text:
+            unit_w = 40
+            gap_w = 8
+            total_w = max(control.width(), 196) if control.width() > 0 else 196
+            control.setFixedWidth(max(72, total_w - unit_w - gap_w))
+            self._unit_lbl = QtWidgets.QLabel(unit_text, self)
+            self._unit_lbl.setFont(ui_font(12.5, W.Medium))
+            self._unit_lbl.setFixedWidth(unit_w)
+            self._unit_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._ctrl_lay = hbox(control, self._unit_lbl, spacing=gap_w, margins=(0, 0, 0, 0))
+            self._ctrl_wrap.setFixedWidth(total_w)
+        else:
+            self._ctrl_lay = hbox(control, spacing=0, margins=(0, 0, 0, 0)) if control is not None else hbox()
         self._ctrl_wrap.setLayout(self._ctrl_lay)
 
         self._main_lay = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.LeftToRight, self)
@@ -920,6 +957,8 @@ class SettingRow(Card):
         self.title_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.text())};background:transparent;}}")
         if self.sub_lbl is not None:
             self.sub_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.text3())};background:transparent;}}")
+        if self._unit_lbl is not None:
+            self._unit_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.text2())};background:transparent;}}")
         self.err_lbl.setStyleSheet(f"QLabel{{color:{t.qss_color(t.up())};background:transparent;}}")
         if hasattr(self, "badge_lbl") and self.badge_lbl is not None:
             self.badge_lbl.set_color(t.on_color())

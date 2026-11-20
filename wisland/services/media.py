@@ -15,6 +15,7 @@ import traceback
 from PySide6 import QtCore, QtGui
 
 from wisland.core.config import cfg
+from wisland.services.echomusic import lookup_echo_track
 from wisland.services.netease import NeteaseLog
 
 try:
@@ -344,11 +345,19 @@ class MediaService(QtCore.QObject):
         except Exception:  # noqa: BLE001
             pass
 
+        kugou_hash = ""
+        echo_cover = ""
+        if "echomusic" in app_id.lower() and title:
+            echo_info = lookup_echo_track(title, artist)
+            if echo_info:
+                kugou_hash = echo_info.get("kugou_hash", "")
+                echo_cover = echo_info.get("cover", "")
+
         st = {
             "has_session": True, "app_id": app_id, "app_name": friendly_name(app_id),
             "title": title, "artist": artist, "album": album, "playing": playing,
             "position": pos, "duration": dur, "stamp": time.monotonic(),
-            "can_prev": can_prev, "can_next": can_next, "song_id": "", "source": "smtc",
+            "can_prev": can_prev, "can_next": can_next, "song_id": "", "kugou_hash": kugou_hash, "source": "smtc",
         }
 
         key = (app_id, title, artist, album)
@@ -382,10 +391,10 @@ class MediaService(QtCore.QObject):
                     self._emit_cover(self._stale_cover_img)
                     self._stale_cover_img = None
                 elif self._cover_tries == 4 and not self._smtc_fallback_tried and title:
-                    # 若 SMTC 连续多次仍无缩略图，尝试通过在线曲库兜底获取封面
+                    # 若 SMTC 连续多次仍无缩略图，优先用 Echo Music 本地封面或在线曲库兜底
                     self._smtc_fallback_tried = True
                     loop = asyncio.get_running_loop()
-                    pic_url = await loop.run_in_executor(None, _search_cover_url, title, artist, dur)
+                    pic_url = echo_cover or await loop.run_in_executor(None, _search_cover_url, title, artist, dur)
                     if pic_url:
                         fb_img = await loop.run_in_executor(None, _download_cover, pic_url)
                         if fb_img is not None:

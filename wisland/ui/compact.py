@@ -499,7 +499,7 @@ class CompactView:
         clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
         if self.weather and self.show_weather:
             temp_w = measure_temperature(self.clock_style, self.weather[1])["total_w"]
-            weather_w = 15.0 + 1.5 + temp_w
+            weather_w = 15.0 + 4.5 + temp_w
             base_w = max(146, int(math.ceil(clock_w + _IDLE_WEATHER_GAP + weather_w + 36)))
         else:
             base_w = max(96, int(math.ceil(clock_w + 36)))
@@ -564,15 +564,19 @@ class CompactView:
         return 12 + 12 * sum(1 for v in self.badges.values() if v)
 
     def _paint_no_media(self, p, r, a):
-        cy = r.center().y()
+        txt = "未在播放"
+        f_txt = ui_font(13, W.Medium)
+        txt_w = float(QtGui.QFontMetrics(f_txt).horizontalAdvance(txt))
+        icon_w = 18.0
+        gap = 7.0
+        x0 = r.center().x() - (icon_w + gap + txt_w) / 2.0
         p.setFont(icon_font(14))
         p.setPen(theme.text(0.75 * a))
-        p.drawText(QtCore.QRectF(r.x() + 16, r.y(), 22, r.height()), Qt.AlignmentFlag.AlignCenter, G.MUSIC)
-        p.setFont(ui_font(13, W.Medium))
+        p.drawText(QtCore.QRectF(x0, r.y(), icon_w, r.height()), Qt.AlignmentFlag.AlignCenter, G.MUSIC)
+        p.setFont(f_txt)
         p.setPen(theme.text2(a))
-        p.drawText(QtCore.QRectF(r.x() + 46, r.y(), r.width() - 60, r.height()),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "未在播放")
-        _ = cy
+        p.drawText(QtCore.QRectF(x0 + icon_w + gap, r.y(), txt_w + 2.0, r.height()),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
 
     def _paint_pet(self, p, r, a):
         cx, cy = r.center().x(), r.center().y()
@@ -645,7 +649,7 @@ class CompactView:
         tm = measure_temperature(self.clock_style, temp)
         temp_w = float(tm["total_w"])
         icon_w = 15.0
-        icon_temp_gap = 1.5
+        icon_temp_gap = 4.5
         weather_w = icon_w + icon_temp_gap + temp_w
         gap = _IDLE_WEATHER_GAP
         content_total = clock_w + gap + weather_w

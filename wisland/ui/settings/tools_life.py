@@ -6,8 +6,8 @@ from PySide6 import QtWidgets
 
 from ...core.config import ConfigDraft
 from ..pages.tools import ClearClipboardDialog
-from ..theme import G
-from ..widgets import ConfirmDialog, LineEdit, PillButton, SettingRow, SpinBox, Switch, hbox
+from ..theme import G, W
+from ..widgets import ConfirmDialog, Label, LineEdit, PillButton, SettingRow, SpinBox, Switch, hbox
 from .base import SettingsPage
 
 
@@ -42,10 +42,11 @@ class ToolsLifeSettingsPage(SettingsPage):
         self.sp_water_serving = SpinBox(50, 1000, 50, suffix=" ml")
         self.sp_water_interval = SpinBox(5, 180, 5, suffix=" 分钟")
 
-        self.sp_win_start = SpinBox(0, 23, 1, suffix=" 点", width=96)
-        self.sp_win_end = SpinBox(1, 24, 1, suffix=" 点", width=96)
+        self.sp_win_start = SpinBox(0, 23, 1, suffix=" 点", width=70)
+        self.sp_win_end = SpinBox(1, 24, 1, suffix=" 点", width=70)
         win_wrap = QtWidgets.QWidget()
-        win_wrap.setLayout(hbox(self.sp_win_start, self.sp_win_end, spacing=8))
+        win_wrap.setLayout(hbox(self.sp_win_start, Label("点", 12.5, W.Medium, 2), Label("–", 12.5, W.Normal, 3),
+                                self.sp_win_end, Label("点", 12.5, W.Medium, 2), spacing=6, margins=(0, 0, 0, 0)))
 
         self.sw_lunch = Switch()
         self.ed_lunch_start = LineEdit("12:00", width=96)
