@@ -43,11 +43,11 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "autostart"; Description: "Launch {#MyAppName} automatically at Windows startup"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "autostart"; Description: "开机自动启动 {#MyAppName}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,data\*.log,data\*.json,data\wisland.lock"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -74,7 +74,7 @@ begin
     DataDir := ExpandConstant('{app}\data');
     if (FileExists(CfgPath) or DirExists(DataDir)) and (not UninstallSilent) then
     begin
-      if MsgBox('Remove personal configuration and local data (config.json and data folder)?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+      if MsgBox('是否同时删除个人配置与本地数据（config.json 和 data 文件夹）？', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
       begin
         if FileExists(CfgPath) then
           DeleteFile(CfgPath);
