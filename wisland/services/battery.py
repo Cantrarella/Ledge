@@ -142,7 +142,7 @@ class BatteryService(QtCore.QObject):
             from winrt.windows.storage.streams import DataWriter
 
             dw = DataWriter()
-            dw.write_bytes(bytes([0x4C, 0x00, 0x07, 0x19]))
+            dw.write_bytes(bytes([0x4C, 0x00]))
             pat = BluetoothLEAdvertisementBytePattern(0xFF, 0, dw.detach_buffer())
             w = BluetoothLEAdvertisementWatcher()
             w.scanning_mode = BluetoothLEScanningMode.PASSIVE
@@ -164,7 +164,7 @@ class BatteryService(QtCore.QObject):
 
     def _on_ble_adv(self, _sender, args):
         try:
-            if int(args.raw_signal_strength_in_dbm) < -65:
+            if int(args.raw_signal_strength_in_dbm) < -82:
                 return
             for mdata in args.advertisement.manufacturer_data:
                 if int(mdata.company_id) != AppleAdvertParser.COMPANY_ID:
