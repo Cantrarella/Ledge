@@ -318,6 +318,11 @@ class CompactView:
         self._lyr_prev = ""
         self._lyr_t = 0.0
         self._lyr_cur = ""
+        self._lyr_font = None
+        self._lyr_fm = None
+        self._lyr_zoom_font = None
+        self._lyr_full_cache: tuple[str, int] = ("", 0)
+        self._lyr_word_cache: tuple[str, str, float, float, float] = ("", "", 0.0, 0.0, 0.0)
         # 实时字幕（收起态两行：日语 / 中文）
         self.sub_on = False
         self.sub_jp = ""
@@ -444,8 +449,16 @@ class CompactView:
         return m
 
     def busy(self) -> bool:
-        """是否需要持续动画帧。"""
-        return self.mode() in ("media", "activity", "pet", "subtitle") or time.monotonic() - self._view_t < 1.4
+        """是否需要持续 60FPS 动画帧。"""
+        m = self.mode()
+        if m == "media":
+            return (
+                bool(self.media.get("playing"))
+                or max(self._bars) > 0.20
+                or (time.monotonic() - self._lyr_t < 0.38)
+                or (time.monotonic() - self._view_t < 1.4)
+            )
+        return m in ("activity", "pet", "subtitle") or time.monotonic() - self._view_t < 1.4
 
     # --- 尺寸 ---
     def size_hint(self) -> tuple[float, float]:
@@ -763,9 +776,15 @@ class CompactView:
             self._lyr_idx, self._lyr_t = idx, t
         self._lyr_cur = text
         k = ease_out((t - self._lyr_t) / 0.32)
-        p.setFont(ui_font(13, W.Medium))
-        fm = QtGui.QFontMetrics(p.font())
-        full = fm.horizontalAdvance(text)
+        if self._lyr_font is None:
+            self._lyr_font = ui_font(13, W.Medium)
+            self._lyr_fm = QtGui.QFontMetrics(self._lyr_font)
+            self._lyr_zoom_font = QtGui.QFont(self._lyr_font)
+        p.setFont(self._lyr_font)
+        fm = self._lyr_fm
+        if self._lyr_full_cache[0] != text:
+            self._lyr_full_cache = (text, fm.horizontalAdvance(text))
+        full = self._lyr_full_cache[1]
         p.save()
         p.setClipRect(QtCore.QRectF(tx, r.y(), tw, r.height()))
         if k < 1 and self._lyr_prev:
@@ -782,9 +801,19 @@ class CompactView:
         cur_s = ""
         cur_frac = 0.0
         has_krc_word = False
+        w_done = 0.0
+        w_cur = 0.0
+        w_after = 0.0
         if line and self.lyrics is not None:
             done_s, cur_s, cur_frac = self.lyrics.sweep_at(idx, self.media_pos())
-            fill_w = clamp(float(fm.horizontalAdvance(done_s)) + float(fm.horizontalAdvance(cur_s)) * cur_frac, 0.0, float(full))
+            if self._lyr_word_cache[0] == done_s and self._lyr_word_cache[1] == cur_s:
+                _, _, w_done, w_cur, w_after = self._lyr_word_cache
+            else:
+                w_done = float(fm.horizontalAdvance(done_s)) if done_s else 0.0
+                w_cur = float(fm.horizontalAdvance(cur_s)) if cur_s else 0.0
+                w_after = float(fm.horizontalAdvance(done_s + cur_s)) if (done_s or cur_s) else 0.0
+                self._lyr_word_cache = (done_s, cur_s, w_done, w_cur, w_after)
+            fill_w = clamp(w_done + w_cur * cur_frac, 0.0, float(full))
             has_krc_word = (
                 bool(cur_s.strip())
                 and idx < len(self.lyrics.words)
@@ -824,8 +853,8 @@ class CompactView:
 
             # 前沿正在唱的字/词原位原生矢量字号微弹（1.0 -> 1.08 -> 1.0），无位图拉伸与重影模糊
             if has_krc_word:
-                wx0 = text_x + float(fm.horizontalAdvance(done_s))
-                wx1 = text_x + float(fm.horizontalAdvance(done_s + cur_s))
+                wx0 = text_x + w_done
+                wx1 = text_x + w_after
                 word_w = wx1 - wx0
                 if word_w > 1.0 and wx1 > tx and wx0 < tx + tw:
                     clip_y = rect_line.y() - 6.0
@@ -844,14 +873,13 @@ class CompactView:
                         p.restore()
                     pulse = math.sin(cur_frac * math.pi)
                     scale = 1.0 + 0.08 * pulse
-                    base_f = p.font()
-                    zf = QtGui.QFont(base_f)
-                    if base_f.pixelSize() > 0:
+                    zf = self._lyr_zoom_font
+                    if self._lyr_font.pixelSize() > 0:
                         dpi_y = max(72.0, float(p.device().logicalDpiY()))
-                        zf.setPointSizeF((base_f.pixelSize() * 72.0 / dpi_y) * scale)
+                        zf.setPointSizeF((self._lyr_font.pixelSize() * 72.0 / dpi_y) * scale)
                     else:
-                        zf.setPointSizeF(base_f.pointSizeF() * scale)
-                    zf.setWeight(W.DemiBold if pulse > 0.35 else base_f.weight())
+                        zf.setPointSizeF(self._lyr_font.pointSizeF() * scale)
+                    zf.setWeight(W.DemiBold if pulse > 0.35 else self._lyr_font.weight())
                     cx_w = (wx0 + wx1) * 0.5
                     span_w = word_w * scale + 10.0
                     word_rect = QtCore.QRectF(cx_w - span_w * 0.5, rect_line.y() - 0.5 * pulse, span_w, rect_line.height())

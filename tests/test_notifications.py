@@ -432,7 +432,7 @@ class TestNotifications(unittest.TestCase):
         self.assertEqual(nh, 36)
         self.assertGreaterEqual(nw, 190.0)
         self.assertLessEqual(nw, 360.0)
-        cv.show_activity({"type": "notify", "title": "微信", "sub": "这是一条非常长的群聊通知摘要用于测试最大宽度上限"}, 4.0)
+        cv.show_activity({"type": "notify", "title": "微信", "sub": "这是一条非常长的群聊通知摘要用于测试最大宽度上限这是一条非常长的群聊通知摘要"}, 4.0)
         nw2, nh2 = cv.size_hint()
         self.assertEqual(nh2, 36)
         self.assertEqual(nw2, 360.0)

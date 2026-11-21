@@ -268,6 +268,7 @@ class SubtitlePage(Page):
     def on_show(self):
         super().on_show()
         self.header.refresh_clock()
+        self.live.preload()
 
     def show_live(self):
         pass

@@ -320,3 +320,15 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 已知风险：受限测试环境未写入真实 Windows Credential Manager；真实线上 AI 账号与长期运行稳定性待实机持续观察
 下一阶段：1. 首页最终布局确认；2. Win10/Win11、高 DPI、多显示器、睡眠唤醒、断网重连和长时间稳定性测试；3. 版本号、崩溃日志、诊断信息和正式发布包
 ```
+
+```text
+阶段：v1.0.3 发布 + 内存/渲染/歌词磁盘缓存与前奏过滤优化（2026-11-21）
+状态：完成
+已发布基线：v1.0.3 (b6a3347) — 酷狗 KRC 逐字卡拉 OK 歌词、原生矢量字号 1.08x 微弹上浮、长歌词单向滚动、60s 非会员试听时长兼容
+本轮待提交优化：
+1. 内存与帧率：LiveService 改为 SubtitlePage.on_show() 时按需 preload()，实机常驻私有提交内存由 607.2 MB 降至 80.6 MB；CompactView.busy() 在音乐暂停且波形/切行过渡完成后让出 60FPS；热路径字体、度量与整行/逐字宽度缓存复用。
+2. 歌词体验：_CREDIT 正则放宽至支持带空格的中英文制作人员标签（如“和声编写 Harmonic Arrangement:”），抽取 _clean_leading_rows；新增 DATA_DIR/lyrics_cache.json 本地磁盘缓存（上限 200 首、TTL 7 天、原子写入）。
+3. 测试收尾：修复 tests/test_notifications.py 最大宽度上限测试样本，全量 pytest 116/116 通过。
+修改文件：PROJECT_STATE.md、wisland/live/service.py、wisland/ui/pages/subtitle.py、wisland/ui/compact.py、wisland/services/lyrics.py、tests/test_notifications.py
+下一阶段：1. 视需要打包发布 v1.0.4（或先提交优化改动到 main）；2. 展开态音乐卡是否同步 KRC 逐字扫色
+```

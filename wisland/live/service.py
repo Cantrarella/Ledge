@@ -61,7 +61,13 @@ class LiveService(QtCore.QObject):
         self._dl = None
         self._stopping = None
         self._last_error = ""
-        # numpy / sherpa-onnx 导入要 0.5s 以上：启动后在后台预先导入，点「开始聆听」时不卡界面
+        self._preloaded = False
+
+    def preload(self):
+        """按需在后台预导入语音识别重型依赖，避免未启用实时字幕时常驻占用数百 MB 提交内存。"""
+        if self._preloaded:
+            return
+        self._preloaded = True
         from ..core.bg import run_bg
         run_bg(lambda: __import__("wisland.live.pipeline"))
 

@@ -11,15 +11,18 @@ from __future__ import annotations
 import base64
 import bisect
 import html
+import json
+import os
 import re
 import threading
+import time
 import zlib
 
 import httpx
 from PySide6 import QtCore
 
 from wisland.core.bg import run_bg, ui
-from wisland.core.config import cfg
+from wisland.core.config import DATA_DIR, cfg
 
 API = "https://music.163.com/api"
 HEADERS = {"Referer": "https://music.163.com/", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -28,10 +31,13 @@ _KRC_LINE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
 _KRC_WORD = re.compile(r"<(\d+),(\d+),\d+>([^<]*)")
 _KRC_KEY = bytes([64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105])
 _OFFSET = re.compile(r"\[offset:\s*([+-]?\d+)\s*\]", re.IGNORECASE)
-# 开头的制作信息（作词 / 作曲 / 编曲 …）不当作歌词显示
-_CREDIT = re.compile(r"^\s*[^\s:：]{1,12}\s*[:：]")
+# 开头的制作信息（含带空格的中英文混排，如 "和声编写 Harmonic Arrangement:"）不当作歌词显示
+_CREDIT = re.compile(r"^\s*[^:：，。！？；]{1,36}\s*[:：]")
 _INSTRUMENTAL_PLACEHOLDER = re.compile(r"没有填词的纯音乐|纯音乐[，,\s]*请欣赏|no\s+lyrics", re.IGNORECASE)
 _VERSION_TAG = re.compile(r"\b(live|remix|dj|instrumental|karaoke)\b|伴奏|纯音乐|现场|翻唱", re.IGNORECASE)
+_DISK_CACHE_FILE = DATA_DIR / "lyrics_cache.json"
+_DISK_CACHE_TTL = 7 * 86400
+_DISK_CACHE_MAX = 200
 
 
 def decrypt_krc(b64_content: str) -> str:
@@ -41,6 +47,19 @@ def decrypt_krc(b64_content: str) -> str:
         return ""
     dec = bytes(b ^ _KRC_KEY[i % 16] for i, b in enumerate(raw[4:]))
     return zlib.decompress(dec).decode("utf-8", "replace")
+
+
+def _clean_leading_rows(rows: list[tuple]) -> list[tuple]:
+    """排序后去掉开头连续的制作信息行，并在仅剩纯音乐占位文本时返回空列表。"""
+    rows.sort(key=lambda x: x[0])
+    i = 0
+    while i < len(rows) and (not rows[i][1] or (rows[i][0] < 40 and _CREDIT.match(rows[i][1]))):
+        i += 1
+    cleaned = rows[i:]
+    non_empty = [r[1] for r in cleaned if r[1]]
+    if non_empty and all(_INSTRUMENTAL_PLACEHOLDER.search(s) for s in non_empty):
+        return []
+    return cleaned
 
 
 def parse_krc(text: str) -> tuple[list[tuple[float, str]], list[list[tuple[float, float, str]]]]:
@@ -74,13 +93,8 @@ def parse_krc(text: str) -> tuple[list[tuple[float, str]], list[list[tuple[float
             continue
         rows.append((line_start, line_txt, words))
 
-    rows.sort(key=lambda x: x[0])
-    i = 0
-    while i < len(rows) and (not rows[i][1] or (rows[i][0] < 40 and _CREDIT.match(rows[i][1]))):
-        i += 1
-    cleaned = rows[i:]
-    non_empty = [s for _, s, _ in cleaned if s]
-    if non_empty and all(_INSTRUMENTAL_PLACEHOLDER.search(s) for s in non_empty):
+    cleaned = _clean_leading_rows(rows)
+    if not cleaned:
         return [], []
     return [(t, s) for t, s, _ in cleaned], [w for _, _, w in cleaned]
 
@@ -103,17 +117,7 @@ def parse_lrc(text: str) -> list[tuple[float, str]]:
             frac = m.group(3) or "0"
             t = int(m.group(1)) * 60 + int(m.group(2)) + int(frac) / (10 ** len(frac))
             out.append((max(0.0, t - offset_s), body))
-    out.sort(key=lambda x: x[0])
-    # 去掉开头连续的制作信息行
-    i = 0
-    while i < len(out) and (not out[i][1] or (out[i][0] < 40 and _CREDIT.match(out[i][1]))):
-        i += 1
-    cleaned = out[i:]
-    # 若整首只剩“纯音乐，请欣赏”之类占位提示，视为无歌词（让收起态胶囊按歌名自适应收缩）
-    non_empty = [s for _, s in cleaned if s]
-    if non_empty and all(_INSTRUMENTAL_PLACEHOLDER.search(s) for s in non_empty):
-        return []
-    return cleaned
+    return _clean_leading_rows(out)
 
 
 class Lyrics:
@@ -131,6 +135,32 @@ class Lyrics:
 
     def __bool__(self):
         return bool(self.lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "times": self.times,
+            "lines": self.lines,
+            "trans": self.trans,
+            "words": self.words,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Lyrics | None:
+        times = data.get("times") or []
+        lines = data.get("lines") or []
+        if not times or len(times) != len(lines):
+            return None
+        obj = cls([], [])
+        obj.times = [float(t) for t in times]
+        obj.lines = [str(s) for s in lines]
+        trans = data.get("trans") or []
+        obj.trans = [str(trans[i]) if i < len(trans) else "" for i in range(len(obj.lines))]
+        raw_words = data.get("words") or []
+        obj.words = [
+            [(float(ws), float(we), str(tok)) for ws, we, tok in row]
+            for row in raw_words
+        ]
+        return obj
 
     def at(self, pos: float) -> tuple[int, str, str]:
         """-> (行号, 歌词, 翻译)；还没到第一行时行号为 -1。"""
@@ -176,6 +206,9 @@ class LyricsService(QtCore.QObject):
         self._cache: dict[str, Lyrics | None] = {}
         self._pending: set[str] = set()
         self._lock = threading.Lock()
+        self._disk_lock = threading.Lock()
+        self._disk_loaded = False
+        self._disk_cache: dict[str, dict] = {}
 
     @property
     def _client(self) -> httpx.Client:
@@ -224,8 +257,63 @@ class LyricsService(QtCore.QObject):
                     self._cache.pop(next(iter(self._cache)))
         self.ready.emit(k)
 
+    def _ensure_disk_cache(self):
+        with self._disk_lock:
+            if self._disk_loaded:
+                return
+            self._disk_loaded = True
+            try:
+                if _DISK_CACHE_FILE.is_file():
+                    raw = json.loads(_DISK_CACHE_FILE.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        now = time.time()
+                        self._disk_cache = {
+                            k: v for k, v in raw.items()
+                            if isinstance(v, dict) and now - float(v.get("ts") or 0) < _DISK_CACHE_TTL
+                        }
+            except Exception:  # noqa: BLE001
+                self._disk_cache = {}
+
+    def _disk_get(self, k: str) -> Lyrics | None:
+        self._ensure_disk_cache()
+        with self._disk_lock:
+            ent = self._disk_cache.get(k)
+            if not ent:
+                return None
+            if time.time() - float(ent.get("ts") or 0) >= _DISK_CACHE_TTL:
+                self._disk_cache.pop(k, None)
+                return None
+            return Lyrics.from_dict(ent)
+
+    def _disk_put(self, k: str, lyr: Lyrics):
+        self._ensure_disk_cache()
+        with self._disk_lock:
+            self._disk_cache.pop(k, None)
+            ent = lyr.to_dict()
+            ent["ts"] = int(time.time())
+            self._disk_cache[k] = ent
+            while len(self._disk_cache) > _DISK_CACHE_MAX:
+                self._disk_cache.pop(next(iter(self._disk_cache)))
+            try:
+                _DISK_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                tmp = _DISK_CACHE_FILE.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self._disk_cache, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, _DISK_CACHE_FILE)
+            except Exception:  # noqa: BLE001
+                pass
+
     # ---------------- 网络 ----------------
     def _fetch(self, m: dict) -> Lyrics | None:
+        k = self.key(m)
+        cached = self._disk_get(k)
+        if cached:
+            return cached
+        res = self._fetch_remote(m)
+        if res:
+            self._disk_put(k, res)
+        return res
+
+    def _fetch_remote(self, m: dict) -> Lyrics | None:
         if m.get("kugou_hash"):
             lyr = self._fetch_kugou_by_hash(
                 str(m["kugou_hash"]),
