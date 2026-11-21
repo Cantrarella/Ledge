@@ -39,8 +39,8 @@ def qapp():
 
 
 def test_version_consistency_across_code_and_rc(qapp):
-    assert APP_VERSION == "1.0.5"
-    assert APP_VERSION_TAG == "v1.0.5"
+    assert APP_VERSION == "1.0.6"
+    assert APP_VERSION_TAG == "v1.0.6"
 
     ver_file = Path(__file__).resolve().parents[1] / "build" / "version_info.txt"
     txt = ver_file.read_text(encoding="utf-8")
