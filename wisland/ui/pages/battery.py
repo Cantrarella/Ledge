@@ -98,7 +98,7 @@ class _DeviceCard(QtWidgets.QWidget):
         super().__init__(parent)
         self.dev = dev
         self.low_thresh = low_thresh
-        self.setFixedSize(width, 102)
+        self.setFixedSize(width, 110)
 
     def paintEvent(self, e):
         d = self.dev
@@ -108,35 +108,35 @@ class _DeviceCard(QtWidgets.QWidget):
 
             w = float(self.width())
             cx = w * 0.5
-            cy = 24.0
-            radius = 18.0
+            cy = 27.0
+            radius = 21.0
             arc_rect = QtCore.QRectF(cx - radius, cy - radius, radius * 2.0, radius * 2.0)
 
             # 1) 圆环轨道 + 电量弧
             track_col = QtGui.QColor(theme.track())
             track_col.setAlphaF(track_col.alphaF() * alpha)
-            p.setPen(QtGui.QPen(track_col, 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.setPen(QtGui.QPen(track_col, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(arc_rect)
 
             if d.percent is not None and d.percent > 0:
                 fg = QtGui.QColor(ring_col)
                 fg.setAlphaF(fg.alphaF() * alpha)
-                p.setPen(QtGui.QPen(fg, 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.setPen(QtGui.QPen(fg, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 span_angle = -int(round(360.0 * 16.0 * max(0, min(100, d.percent)) / 100.0))
                 p.drawArc(arc_rect, 90 * 16, span_angle)
 
             # 2) 中央设备图标
             icon_col = QtGui.QColor(theme.text(0.92 * alpha))
-            draw_device_icon(p, d.kind, cx, cy, 16.0, icon_col)
+            draw_device_icon(p, d.kind, cx, cy, 18.0, icon_col)
 
             # 3) 充电中右下角绿底闪电小徽章
             if d.charging:
                 bx, by = cx + radius * 0.72, cy + radius * 0.72
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QtGui.QColor("#34d399"))
-                p.drawEllipse(QtCore.QPointF(bx, by), 5.6, 5.6)
-                draw_bolt(p, bx, by, 7.0, QtGui.QColor("#0f172a"))
+                p.drawEllipse(QtCore.QPointF(bx, by), 6.0, 6.0)
+                draw_bolt(p, bx, by, 7.5, QtGui.QColor("#0f172a"))
 
             # 4) 百分比数字（轻盈字重 + 居中对齐，小 % 贴右下基线）
             pct_str = str(d.percent) if d.percent is not None else "--"
@@ -148,15 +148,14 @@ class _DeviceCard(QtWidgets.QWidget):
             fm_s = QtGui.QFontMetrics(f_sym)
             nw = fm_n.horizontalAdvance(pct_str)
             sw = fm_s.horizontalAdvance("%") if d.percent is not None else 0
-            total_w = nw + (sw + 1 if sw else 0)
-            nx = cx - total_w * 0.5 + (1.0 if sw else 0.0)
+            nx = cx - nw * 0.5
             p.setFont(f_num)
             p.setPen(num_col)
-            p.drawText(QtCore.QRectF(nx, 47.0, nw + 2, 19.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, pct_str)
+            p.drawText(QtCore.QRectF(nx, 54.0, nw + 2, 19.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, pct_str)
             if sw:
                 p.setFont(f_sym)
                 p.setPen(theme.text2(0.75 * alpha))
-                p.drawText(QtCore.QRectF(nx + nw + 1, 50.0, sw + 2, 15.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "%")
+                p.drawText(QtCore.QRectF(nx + nw + 1, 57.0, sw + 2, 15.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "%")
 
             # 5) 设备名 + 缩小版状态副文案（参考 BrimDeck 层次感）
             f_name = ui_font(10.5, W.Normal)
@@ -164,7 +163,7 @@ class _DeviceCard(QtWidgets.QWidget):
             p.setFont(f_name)
             p.setPen(theme.text(0.88 * alpha))
             elided = fm_name.elidedText(d.display_name, Qt.TextElideMode.ElideRight, int(w - 8))
-            p.drawText(QtCore.QRectF(4.0, 67.5, w - 8.0, 15.0), Qt.AlignmentFlag.AlignCenter, elided)
+            p.drawText(QtCore.QRectF(4.0, 74.5, w - 8.0, 15.0), Qt.AlignmentFlag.AlignCenter, elided)
 
             st_txt, st_col = _status_text(d, self.low_thresh)
             st_col = QtGui.QColor(st_col)
@@ -174,7 +173,7 @@ class _DeviceCard(QtWidgets.QWidget):
             p.setFont(f_sub)
             p.setPen(st_col)
             elided_st = fm_sub.elidedText(st_txt, Qt.TextElideMode.ElideRight, int(w - 6))
-            p.drawText(QtCore.QRectF(3.0, 83.0, w - 6.0, 14.0), Qt.AlignmentFlag.AlignCenter, elided_st)
+            p.drawText(QtCore.QRectF(3.0, 90.0, w - 6.0, 14.0), Qt.AlignmentFlag.AlignCenter, elided_st)
 
 
 class _HorizontalDeviceStrip(QtWidgets.QScrollArea):
