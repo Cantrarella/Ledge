@@ -25,11 +25,16 @@ from ..core.config import cfg
 from .anim import Spring, clamp, lerp, smooth
 from .compact import CompactView
 from .glass import Backdrop, exclude_from_capture
-from .icons import draw_life_svg_icon
+from .island_overlays import (
+    BlankDoubleClick as _BlankDoubleClick,
+    LifeReminderBanner as _LifeReminderBanner,
+    Veil as _Veil,
+)
 from .nav import NavBar
 from .shape import body_path, body_points, deform, drip_path, edge_corners, neck_path, poly_path
 from .unread_dock import DOCK_WIDTH, UnreadDock
-from .theme import G, W, icon_font, theme, ui_font
+from .theme import theme
+from .win32_hooks import MOD, MOD_NOREPEAT, RightClickHook as _RightClickHook, parse_hotkey
 
 Qt = QtCore.Qt
 user32 = ctypes.WinDLL("user32")
@@ -53,8 +58,6 @@ WM_DPICHANGED = 0x02E0
 PBT_APMRESUMESUSPEND = 0x0007
 PBT_APMRESUMEAUTOMATIC = 0x0012
 HSHELL_FLASH = 0x8006
-MOD = {"alt": 0x1, "ctrl": 0x2, "control": 0x2, "shift": 0x4, "win": 0x8}
-MOD_NOREPEAT = 0x4000
 
 user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
 user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -64,285 +67,6 @@ user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintyp
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.RegisterWindowMessageW.restype = wintypes.UINT
-
-
-def parse_hotkey(s: str) -> tuple[int, int] | None:
-    parts = [x.strip().lower() for x in (s or "").split("+") if x.strip()]
-    if not parts:
-        return None
-    mods = 0
-    vk = 0
-    for x in parts:
-        if x in MOD:
-            mods |= MOD[x]
-        elif len(x) == 1 and x.isalnum():
-            vk = ord(x.upper())
-        elif x.startswith("f") and x[1:].isdigit():
-            vk = 0x70 + int(x[1:]) - 1
-        elif x == "space":
-            vk = 0x20
-    return (mods | MOD_NOREPEAT, vk) if vk else None
-
-
-class _RightClickHook:
-    """穿透模式下窗口对鼠标完全透明；用低级鼠标钩子只截获落在灵动岛上的右键。
-    只在穿透模式开启时安装，回调对非右键消息立即放行。"""
-    WM_RBUTTONDOWN, WM_RBUTTONUP = 0x0204, 0x0205
-
-    def __init__(self, island):
-        self.island = island
-        self.handle = None
-        self._proc = None
-
-    def install(self):
-        if self.handle:
-            return
-        u = ctypes.WinDLL("user32", use_last_error=True)
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-
-        class MSLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [("pt", wintypes.POINT), ("mouseData", wintypes.DWORD), ("flags", wintypes.DWORD),
-                        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
-
-        LRESULT = ctypes.c_ssize_t
-        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-        u.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
-        u.SetWindowsHookExW.restype = ctypes.c_void_p
-        u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
-        u.CallNextHookEx.restype = LRESULT
-        u.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
-        k.GetModuleHandleW.restype = wintypes.HMODULE
-        self._u = u
-        isl = self.island
-
-        def proc(code, wparam, lparam):
-            if code == 0 and wparam == 0x020A:        # WM_MOUSEWHEEL
-                info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                dpr = isl.scr.devicePixelRatio()
-                sg = isl.scr.geometry()
-                lx = sg.x() + (info.pt.x - sg.x()) / dpr
-                ly = sg.y() + (info.pt.y - sg.y()) / dpr
-                if isl.isVisible() and not isl.expanded and isl._inside(QtCore.QPoint(round(lx), round(ly))):
-                    delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
-                    QtCore.QTimer.singleShot(0, lambda d=delta: isl.wheel_compact.emit(1 if d > 0 else -1))
-                    return 1
-            if code == 0 and wparam in (self.WM_RBUTTONDOWN, self.WM_RBUTTONUP):
-                info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                # 钩子坐标是物理像素，换算成 Qt 逻辑坐标
-                dpr = isl.scr.devicePixelRatio()
-                sg = isl.scr.geometry()
-                lx = sg.x() + (info.pt.x - sg.x()) / dpr
-                ly = sg.y() + (info.pt.y - sg.y()) / dpr
-                if isl.isVisible() and isl._inside(QtCore.QPoint(round(lx), round(ly))):
-                    if wparam == self.WM_RBUTTONUP:
-                        pos = QtCore.QPoint(round(lx), round(ly))
-                        QtCore.QTimer.singleShot(0, lambda: isl.menu_requested.emit(pos))
-                    return 1          # 吞掉右键，不传给下面的窗口
-            return u.CallNextHookEx(self.handle, code, wparam, lparam)
-
-        self._proc = HOOKPROC(proc)
-        self.handle = u.SetWindowsHookExW(14, self._proc, k.GetModuleHandleW(None), 0)
-
-    def remove(self):
-        if self.handle:
-            self._u.UnhookWindowsHookEx(self.handle)
-        self.handle = None
-        self._proc = None
-
-
-class _Veil(QtWidgets.QWidget):
-    """内容渐显用的"玻璃面纱"：盖在内容上，画和灵动岛完全相同的玻璃，不透明度从 1 降到 0。
-    普通子控件、与灵动岛同一次绘制，不会像 QGraphicsOpacityEffect 那样出现没有玻璃底的帧。"""
-
-    def __init__(self, island):
-        super().__init__(island)
-        self.island = island
-        self.alpha = 0.0
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.hide()
-
-    def paintEvent(self, e):
-        if self.alpha <= 0.002:
-            return
-        p = QtGui.QPainter(self)
-        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-        p.setOpacity(self.alpha)
-        p.translate(-self.x(), -self.y())
-        self.island._paint_glass(p, self.island.path, crossfade=False)
-        p.end()
-
-
-class _BlankDoubleClick(QtCore.QObject):
-    """灵动岛展开后，双击空白区域切换 悬停展开 ↔ 长关；滚轮在内部滚动区外才切换页面。"""
-
-    def __init__(self, island):
-        super().__init__(island)
-        self.island = island
-
-    def eventFilter(self, obj, ev):
-        if ev.type() == QtCore.QEvent.Type.Wheel and isinstance(obj, QtWidgets.QWidget):
-            isl = self.island
-            if isl.expanded and not isl.locks and obj.window() is isl:
-                if self._in_internal_scroll_or_input(obj):
-                    return False
-                dy = ev.angleDelta().y() or ev.angleDelta().x() or ev.pixelDelta().y() or ev.pixelDelta().x()
-                if dy:
-                    isl.nav.step_wheel(dy)
-                    ev.accept()
-                    return True
-            return False
-        if ev.type() != QtCore.QEvent.Type.MouseButtonDblClick or not isinstance(obj, QtWidgets.QWidget):
-            return False
-        isl = self.island
-        if obj is isl or obj.window() is not isl or ev.button() != Qt.MouseButton.LeftButton:
-            return False
-        if self._blank(obj, ev):
-            isl.toggle_long_off()
-            return True
-        return False
-
-    def _in_internal_scroll_or_input(self, w: QtWidgets.QWidget) -> bool:
-        """判断指针是否位于内部滚动区（含 viewport 及子控件）或输入/下拉等自带滚轮控件内。"""
-        cur = w
-        while cur is not None and cur is not self.island:
-            if isinstance(
-                cur,
-                (
-                    QtWidgets.QAbstractScrollArea,
-                    QtWidgets.QLineEdit,
-                    QtWidgets.QTextEdit,
-                    QtWidgets.QPlainTextEdit,
-                    QtWidgets.QAbstractSpinBox,
-                    QtWidgets.QComboBox,
-                    QtWidgets.QSlider,
-                ),
-            ):
-                return True
-            if hasattr(cur, "_max_scroll") and cur._max_scroll() > 0:
-                return True
-            cur = cur.parentWidget()
-        return False
-
-    @staticmethod
-    def _blank(w, ev) -> bool:
-        from .nav import NavBar
-        from .pages.base import Page
-        from .widgets import Card
-        if isinstance(w, NavBar):
-            return w._hit(ev.position()) < 0
-        if isinstance(w, (Page, Card, QtWidgets.QStackedWidget)):
-            return True
-        if type(w) is QtWidgets.QWidget:                 # 普通容器（内容区、滚动区内层等）
-            return True
-        p = w.parentWidget()
-        if isinstance(p, QtWidgets.QAbstractScrollArea) and w is p.viewport():
-            return True
-        return False
-
-
-class _LifeReminderBanner(QtWidgets.QWidget):
-    """展开态岛内轻量生活提醒浮层：不改变 419px 面板尺寸、不遮挡顶部齿轮/刷新按钮与底部圆点。"""
-
-    clicked_kind = QtCore.Signal(str)
-    dismissed = QtCore.Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._kind = "water"
-        self._title = ""
-        self._sub = ""
-        self._hover_close = False
-        self.setFixedHeight(40)
-        self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hide()
-
-    def set_reminder(self, item: dict):
-        self._kind = str(item.get("kind") or "water")
-        self._title = str(item.get("title") or "")
-        self._sub = str(item.get("sub") or "")
-        self.update()
-
-    def _close_rect(self) -> QtCore.QRectF:
-        return QtCore.QRectF(self.width() - 30.0, (self.height() - 22.0) / 2.0, 22.0, 22.0)
-
-    def mouseMoveEvent(self, e):
-        hv = self._close_rect().adjusted(-3, -3, 3, 3).contains(e.position())
-        if hv != self._hover_close:
-            self._hover_close = hv
-            self.update()
-
-    def leaveEvent(self, e):
-        if self._hover_close:
-            self._hover_close = False
-            self.update()
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            e.accept()
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            if self._close_rect().adjusted(-3, -3, 3, 3).contains(e.position()):
-                self.dismissed.emit()
-            else:
-                self.clicked_kind.emit(self._kind)
-            e.accept()
-
-    def paintEvent(self, e):
-        p = QtGui.QPainter(self)
-        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-        r = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        bg = QtGui.QColor(34, 36, 44, 242) if theme.dark else QtGui.QColor(250, 251, 255, 244)
-        bd = QtGui.QColor(255, 255, 255, 38) if theme.dark else QtGui.QColor(16, 18, 24, 28)
-        p.setPen(QtGui.QPen(bd, 1.0))
-        p.setBrush(bg)
-        p.drawRoundedRect(r, 12.0, 12.0)
-
-        # 左侧 24×24 槽位居中绘制 22×22 SVG（无彩色圆底）
-        slot_r = QtCore.QRectF(r.left() + 9.0, r.center().y() - 12.0, 24.0, 24.0)
-        icon_r = slot_r.adjusted(1.0, 1.0, -1.0, -1.0)
-        draw_life_svg_icon(p, icon_r, self._kind, theme.dark, 1.0)
-
-        cr = self._close_rect()
-        if self._hover_close:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.hover())
-            p.drawEllipse(cr)
-        p.setFont(icon_font(9.0))
-        p.setPen(theme.text(0.72 if not self._hover_close else 0.95))
-        p.drawText(cr, Qt.AlignmentFlag.AlignCenter, G.CLOSE)
-
-        tx = slot_r.right() + 9.0
-        tw = max(40.0, cr.left() - 6.0 - tx)
-        f_t = ui_font(12.0, W.DemiBold)
-        fm_t = QtGui.QFontMetrics(f_t)
-        p.setFont(f_t)
-        p.setPen(theme.text())
-        if self._sub:
-            p.drawText(
-                QtCore.QRectF(tx, r.top() + 4.0, tw, 16.0),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                fm_t.elidedText(self._title, Qt.TextElideMode.ElideRight, int(tw)),
-            )
-            f_s = ui_font(10.5, W.Normal)
-            fm_s = QtGui.QFontMetrics(f_s)
-            p.setFont(f_s)
-            p.setPen(theme.text2())
-            p.drawText(
-                QtCore.QRectF(tx, r.top() + 20.0, tw, 15.0),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                fm_s.elidedText(self._sub, Qt.TextElideMode.ElideRight, int(tw)),
-            )
-        else:
-            p.drawText(
-                QtCore.QRectF(tx, r.top(), tw, r.height()),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                fm_t.elidedText(self._title, Qt.TextElideMode.ElideRight, int(tw)),
-            )
-        p.end()
 
 
 class Island(QtWidgets.QWidget):
@@ -1946,7 +1670,3 @@ class Island(QtWidgets.QWidget):
                 pass
         cfg.save()
         super().closeEvent(e)
-
-
-
-_ = G
