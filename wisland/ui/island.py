@@ -1662,6 +1662,10 @@ class Island(QtWidgets.QWidget):
         self.unread_dock._timer.stop()
         self.backdrop.stop()
         self._rhook.remove()
+        try:
+            theme.changed.disconnect(self.update)
+        except Exception:
+            pass
         app_inst = QtWidgets.QApplication.instance()
         if app_inst is not None:
             try:

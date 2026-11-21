@@ -511,7 +511,11 @@ class CompactView:
             return 134 + nb * 13, H_IDLE
         clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
         if self.weather and self.show_weather:
-            temp_w = measure_temperature(self.clock_style, self.weather[1])["total_w"]
+            temp_w = max(
+                measure_temperature(self.clock_style, "-88°")["total_w"],
+                measure_temperature(self.clock_style, "100°")["total_w"],
+                measure_temperature(self.clock_style, self.weather[1])["total_w"],
+            )
             weather_w = 15.0 + 4.5 + temp_w
             base_w = max(146, int(math.ceil(clock_w + _IDLE_WEATHER_GAP + weather_w + 36)))
         else:

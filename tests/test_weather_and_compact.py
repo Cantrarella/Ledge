@@ -106,8 +106,17 @@ def test_01_compact_clock_weather_centering_and_stability(qt_app):
         assert m["clock_rect"].right() <= m["icon_rect"].left()
         assert m["icon_rect"].right() <= m["temp_rect"].left()
 
-    # 温度为负数或三位数时，岛体宽度不突然变化
+    # 温度为负数或三位数时，岛体宽度不突然变化（含宽体等超过 146px 的字体风格）
     assert len(widths) == 1
+    for style in ("wide", "neon"):
+        c.clock_style = style
+        style_widths = set()
+        for temp_txt in ("18°", "-8°", "100°", "22°"):
+            c.weather = ("\u2601", temp_txt)
+            w_s, _ = c.size_hint()
+            style_widths.add(w_s)
+        assert len(style_widths) == 1, f"{style} width jitter: {style_widths}"
+    c.clock_style = "minimal"
 
     # 无天气数据时，只显示居中的时间，不保留空天气槽位
     c._clock_override = "09:04"

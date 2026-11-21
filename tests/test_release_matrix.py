@@ -472,6 +472,8 @@ def test_05_adaptive_fps_memory_stability_and_clean_thread_exit(qt_app, tmp_path
         QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
         gc.collect()
 
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    gc.collect()
     tracemalloc.start()
     try:
         try:
