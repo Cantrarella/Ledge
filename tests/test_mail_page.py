@@ -346,7 +346,7 @@ def test_04_badge_visibility_and_provider_symbols(qt_app, tmp_path):
     assert len(pg1._rows) == 1
     assert pg1._rows[0].show_badge is False
     assert pg1._rows[0].height() == 23
-    assert "GitHub Notification" in pg1._rows[0].toolTip()
+    assert pg1._rows[0].toolTip() == ""
     pg1.close()
 
     # 2) 多启用账号 + 全部账号：显示服务商徽标 Q / G / 163 / @

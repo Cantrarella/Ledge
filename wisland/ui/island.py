@@ -373,7 +373,10 @@ class Island(QtWidgets.QWidget):
             self.collapse()
         else:
             self.expand(page)
+            seq = getattr(self, "_pin_seq", 0) + 1
+            self._pin_seq = seq
             self.locks.add("pin")
+            QtCore.QTimer.singleShot(2500, lambda s=seq: self.locks.discard("pin") if getattr(self, "_pin_seq", 0) == s else None)
 
     def show_page(self, key: str):
         keys = self.nav.keys()
@@ -1245,6 +1248,7 @@ class Island(QtWidgets.QWidget):
                 return
         if inside:
             self._out_since = None
+            self.locks.discard("pin")
             if not self.expanded and self.expand_mode() != "never":
                 if self._press is not None or self._click_timer.isActive() or (user32.GetAsyncKeyState(0x01) & 0x8000):
                     self._hover_since = now       # 鼠标按下或等待双击期间不自动展开，防止打断双击长关
@@ -1457,7 +1461,7 @@ class Island(QtWidgets.QWidget):
             return
         if not self.expanded:
             self.wheel_compact.emit(1 if dy > 0 else -1)
-        elif not self.locks:
+        elif "focus" not in self.locks and "drop" not in self.locks:
             self.nav.step_wheel(dy)
             e.accept()
 

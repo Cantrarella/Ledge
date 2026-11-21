@@ -214,7 +214,6 @@ class _MailRow(Hoverable):
         self.selected = selected
         self.time_str = _format_mail_time(hdr.received_at)
         self.setFixedHeight(23)
-        self.setToolTip(_format_mail_tooltip(hdr, acc))
         self.clicked.connect(lambda: self.row_clicked.emit(self.hdr.account_id, str(self.hdr.uid)))
 
     def set_selected(self, selected: bool):
@@ -1238,12 +1237,13 @@ class MailPage(Page):
             self.otp_preview_card.clear_and_stop()
             self.otp_preview_card.hide()
 
-        self._rebuild_rows(shown_hdrs, acc_map, acc_index, show_otp_badge=False)
         self.stack.setCurrentIndex(2)
+        self._rebuild_rows(shown_hdrs, acc_map, acc_index, show_otp_badge=False)
 
     def _clear_rows(self):
         self._rows.clear()
         self._last_rows_sig = None
+        self.scroll.inner.setMinimumHeight(0)
         while self.scroll_lay.count():
             item = self.scroll_lay.takeAt(0)
             w = item.widget()
@@ -1281,32 +1281,40 @@ class MailPage(Page):
         if new_sig == self._last_rows_sig:
             return
 
-        self._clear_rows()
-        self._last_rows_sig = new_sig
-        for h, item_sig in zip(hdrs, sig_items):
-            acc = acc_map.get(h.account_id)
-            idx = acc_index.get(h.account_id, -1)
-            col = _account_color(h.account_id, idx)
-            selected = self._selected_key == (h.account_id, str(h.uid))
-            has_otp = item_sig[7]
-            row = _MailRow(
-                h,
-                acc,
-                col,
-                show_badge=show_badge,
-                has_otp=has_otp,
-                show_otp_badge=show_otp_badge,
-                selected=selected,
-                parent=self.scroll.inner,
-            )
-            row.row_clicked.connect(self._on_row_clicked)
-            self._rows.append(row)
-            self.scroll_lay.addWidget(row)
-            row.show()
-        self.scroll_lay.addStretch(1)
-        self.scroll_lay.activate()
-        self.scroll.inner.updateGeometry()
-        self.scroll.clamp_scroll()
+        self.scroll.inner.setUpdatesEnabled(False)
+        try:
+            self._clear_rows()
+            self._last_rows_sig = new_sig
+            for h, item_sig in zip(hdrs, sig_items):
+                acc = acc_map.get(h.account_id)
+                idx = acc_index.get(h.account_id, -1)
+                col = _account_color(h.account_id, idx)
+                selected = self._selected_key == (h.account_id, str(h.uid))
+                has_otp = item_sig[7]
+                row = _MailRow(
+                    h,
+                    acc,
+                    col,
+                    show_badge=show_badge,
+                    has_otp=has_otp,
+                    show_otp_badge=show_otp_badge,
+                    selected=selected,
+                    parent=self.scroll.inner,
+                )
+                row.row_clicked.connect(self._on_row_clicked)
+                self._rows.append(row)
+                self.scroll_lay.addWidget(row)
+                row.show()
+            self.scroll_lay.addStretch(1)
+            self.scroll_lay.invalidate()
+            need_h = max(0, self.scroll_lay.sizeHint().height())
+            self.scroll.inner.setMinimumHeight(need_h)
+            self.scroll_lay.activate()
+            self.scroll.inner.updateGeometry()
+            self.scroll.clamp_scroll()
+        finally:
+            self.scroll.inner.setUpdatesEnabled(True)
+        self.scroll.inner.update()
         self.scroll.viewport().update()
 
     def closeEvent(self, e):
