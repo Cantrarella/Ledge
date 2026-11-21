@@ -56,6 +56,9 @@ class _Parakeet:
         seconds = time.perf_counter() - started
         return AsrResult(text=text, seconds=seconds, audio_seconds=len(samples) / 16000)
 
+    def unload(self) -> None:
+        self._recognizer = None
+
 
 class FinalASR:
     """保留原统一入口，内部固定使用 Parakeet，旧配置不会再切换模型。"""
@@ -72,6 +75,13 @@ class FinalASR:
                 impl = _Parakeet(self.num_threads)
                 impl.load()
                 self._impl = impl
+
+    def unload(self) -> None:
+        """卸载已加载的语音识别模型实例，释放底层 ONNX Runtime 内存。"""
+        with self._lock:
+            if self._impl is not None:
+                self._impl.unload()
+                self._impl = None
 
     def transcribe(self, samples: np.ndarray, context: str = "") -> AsrResult:  # noqa: ARG002
         with self._lock:

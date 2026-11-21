@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """设置窗口各分类子页面导出。"""
 from .about import AboutSettingsPage, get_process_memory_mb
+from .battery import BatterySettingsPage
 from .data import DataSettingsPage
 from .general import GeneralSettingsPage
 from .island_pet import IslandPetSettingsPage
@@ -24,5 +25,6 @@ __all__ = [
     "ToolsLifeSettingsPage",
     "DataSettingsPage",
     "AboutSettingsPage",
+    "BatterySettingsPage",
     "get_process_memory_mb",
 ]

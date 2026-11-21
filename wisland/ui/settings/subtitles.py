@@ -15,9 +15,10 @@ class SubtitlesSettingsPage(SettingsPage):
     glyph = G.LIVE
 
     def __init__(self, ctx=None, parent=None):
-        super().__init__(ctx, parent)
+        super().__init__(ctx, parent, lazy=True)
         self._loaded_api_key = ""
 
+    def _build_ui(self):
         self.cb_source = ComboBox([
             ("loopback", "系统声音内录 (Loopback)"),
             ("mic", "麦克风输入 (Mic)"),

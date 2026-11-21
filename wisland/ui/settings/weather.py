@@ -16,9 +16,10 @@ class WeatherSettingsPage(SettingsPage):
     glyph = G.SUN
 
     def __init__(self, ctx=None, parent=None):
-        super().__init__(ctx, parent)
+        super().__init__(ctx, parent, lazy=True)
         self._cities: list[dict] = []
 
+    def _build_ui(self):
         self.ed_city = LineEdit("例如：上海 / 北京 / 东京", width=196)
         self.ed_api_key = PasswordEdit("粘贴 API Key（可选）", width=196)
         self.sp_interval = SpinBox(1, 1440, 5, suffix=" 分钟", width=196)

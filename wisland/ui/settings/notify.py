@@ -17,8 +17,10 @@ class NotifySettingsPage(SettingsPage):
     glyph = G.BELL
 
     def __init__(self, ctx=None, parent=None):
-        super().__init__(ctx, parent)
+        super().__init__(ctx, parent, lazy=True)
+        self._notify_svc = getattr(ctx, "notify", None) if ctx is not None else None
 
+    def _build_ui(self):
         self.sw_enabled = Switch()
         self.sw_wechat = Switch()
         self.sw_qq = Switch()
@@ -75,7 +77,6 @@ class NotifySettingsPage(SettingsPage):
             SettingRow("IMAP 邮件检查间隔", "后台定时检查新邮件的轮询秒数（最少 15 秒）", self.sp_mail_interval),
         )
 
-        self._notify_svc = getattr(ctx, "notify", None) if ctx is not None else None
         if self._notify_svc is not None and hasattr(self._notify_svc, "status_changed"):
             self._notify_svc.status_changed.connect(self._update_status_ui, QtCore.Qt.ConnectionType.UniqueConnection)
             if hasattr(self._notify_svc, "status_snapshot"):

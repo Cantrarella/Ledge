@@ -190,6 +190,29 @@ class Pipeline(QtCore.QThread):
                 self._capture.join(timeout=2.0)
             # finished 代表所有模型工作也已结束。
             self._shutdown_pools()
+            self._release_resources()
+
+    def _release_resources(self) -> None:
+        """显式释放语音识别模型、VAD、音频采集与缓冲，避免停止字幕后继续占用数百 MB 内存。"""
+        for eng in (self._final, self._draft_engine):
+            if eng is not None and hasattr(eng, "unload"):
+                try:
+                    eng.unload()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._final = None
+        self._draft_engine = None
+        self._vad = None
+        self._stream = None
+        self._capture = None
+        self._translator = None
+        self._vad_pending = np.zeros(0, dtype=np.float32)
+        self._utterance.clear()
+        self._raw_frames.clear()
+        self._pre_roll.clear()
+        with self._translation_state_lock:
+            self._pending_final.clear()
+            self._failed_translations.clear()
 
     # ------------------------------------------------------------- 初始化
     def _setup(self) -> None:

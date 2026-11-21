@@ -49,6 +49,7 @@ class PageRegistry:
     @classmethod
     def create_default(cls, ctx) -> PageRegistry:
         """创建并注册当前项目的真实页面（主页、邮箱、AI 额度、天气、实时字幕、工具、生活）。"""
+        from .pages.battery import BatteryPage
         from .pages.home import HomePage
         from .pages.info import WeatherPage
         from .pages.life import LifePage
@@ -58,7 +59,7 @@ class PageRegistry:
         from .pages.tools import ToolsPage
 
         reg = cls()
-        for pg in (HomePage(ctx), MailPage(ctx), QuotaPage(ctx), WeatherPage(ctx), SubtitlePage(ctx), ToolsPage(ctx), LifePage(ctx)):
+        for pg in (HomePage(ctx), MailPage(ctx), QuotaPage(ctx), BatteryPage(ctx), WeatherPage(ctx), SubtitlePage(ctx), ToolsPage(ctx), LifePage(ctx)):
             reg.register(pg)
         reg.sync_from_config(cfg)
         return reg

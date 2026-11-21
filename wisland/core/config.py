@@ -21,11 +21,12 @@ DATA_DIR.mkdir(exist_ok=True)
 DEFAULTS: dict = {
     "schema_version": 2,
     "pages": {
-        "order": ["home", "mail", "quota", "weather", "trans", "tools", "life"],
+        "order": ["home", "mail", "quota", "battery", "weather", "trans", "tools", "life"],
         "visible": {
             "home": True,
             "mail": True,
             "quota": True,
+            "battery": True,
             "weather": True,
             "trans": True,
             "tools": True,
@@ -149,6 +150,15 @@ DEFAULTS: dict = {
         "refresh_minutes": 3,
         "accounts": [],
     },
+    "battery": {
+        "enabled": True,
+        "poll_interval_s": 60,
+        "low_notify": True,
+        "low_threshold": 20,
+        "full_notify": True,
+        "aliases": {},
+        "hidden": [],
+    },
     "live": {
         "models_dir": "models",     # parakeet-ja-0.6b-int8/ 与 silero_vad.onnx 所在目录
         "audio": {"source": "loopback", "device": "", "block_ms": 80},
@@ -172,7 +182,7 @@ VALID_CLOCK_STYLES = ("minimal", "segment", "neon", "serif", "wide", "condensed"
 VALID_CLOCK_COLORS = ("white", "amber", "cyan", "pink", "lime", "cover", "custom", "gradient")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
 VALID_QUOTA_PROVIDERS = ("deepseek", "workbuddy", "gemini", "grok_bot", "codex")
-REGISTERED_PAGE_KEYS = ("home", "mail", "quota", "weather", "trans", "tools", "life")
+REGISTERED_PAGE_KEYS = ("home", "mail", "quota", "battery", "weather", "trans", "tools", "life")
 _MOD_NAMES = {"alt", "ctrl", "control", "shift", "win"}
 
 
@@ -570,6 +580,30 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
                     lf[lk] = ldef
             else:
                 lf[lk] = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+
+    # battery
+    bt = merged.get("battery")
+    if not isinstance(bt, dict):
+        _err("battery 配置必须是对象")
+        merged["battery"] = copy.deepcopy(DEFAULTS["battery"])
+    else:
+        bt["enabled"] = bool(bt.get("enabled", True))
+        bt["low_notify"] = bool(bt.get("low_notify", True))
+        bt["full_notify"] = bool(bt.get("full_notify", True))
+        p_sec = bt.get("poll_interval_s", 60)
+        if not isinstance(p_sec, (int, float)) or isinstance(p_sec, bool) or not (15 <= int(p_sec) <= 300):
+            bt["poll_interval_s"] = 60
+        else:
+            bt["poll_interval_s"] = int(p_sec)
+        l_th = bt.get("low_threshold", 20)
+        if not isinstance(l_th, (int, float)) or isinstance(l_th, bool) or not (5 <= int(l_th) <= 50):
+            bt["low_threshold"] = 20
+        else:
+            bt["low_threshold"] = int(l_th)
+        if not isinstance(bt.get("aliases"), dict):
+            bt["aliases"] = {}
+        if not isinstance(bt.get("hidden"), list):
+            bt["hidden"] = []
 
     # quota
     qt = merged.get("quota")

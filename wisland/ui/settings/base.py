@@ -16,14 +16,62 @@ class SettingsPage(ScrollArea):
     title: str = ""
     glyph: str = ""
 
-    def __init__(self, ctx=None, parent=None):
+    def __init__(self, ctx=None, parent=None, lazy: bool = False):
         super().__init__(parent)
         self.ctx = ctx
         self._theme_context = settings_theme
         self._sec_titles: list[QtWidgets.QLabel] = []
         self._sec_descs: list[QtWidgets.QLabel] = []
         self._rows: dict[str, SettingRow] = {}
+        self._built: bool = not lazy
+        self._building: bool = False
+        self._pending_draft: ConfigDraft | None = None
         settings_theme.changed.connect(self._style_sections)
+
+    def _build_ui(self):
+        """子类重写此方法以在首次需要时构建页面控件（启用 lazy=True 时调用）。"""
+        pass
+
+    def ensure_built(self):
+        """若页面启用了延迟构建且尚未构建，立即完成控件构建并载入待加载草稿。"""
+        if self._built or self._building:
+            return
+        self._building = True
+        try:
+            self._build_ui()
+            self._built = True
+        finally:
+            self._building = False
+        if self._pending_draft is not None:
+            draft = self._pending_draft
+            self._pending_draft = None
+            was_blocked = self.blockSignals(True)
+            try:
+                self.load_from_draft(draft)
+            finally:
+                self.blockSignals(was_blocked)
+
+    def defer_load_draft(self, draft: ConfigDraft):
+        """记录待加载草稿，待页面真正构建时再写入控件。"""
+        if self._built:
+            self.load_from_draft(draft)
+        else:
+            self._pending_draft = draft
+
+    def showEvent(self, e):
+        if not self._built:
+            self.ensure_built()
+        super().showEvent(e)
+
+    def __getattr__(self, name: str):
+        if (
+            not name.startswith("_")
+            and not self.__dict__.get("_built", True)
+            and not self.__dict__.get("_building", False)
+        ):
+            self.ensure_built()
+            return object.__getattribute__(self, name)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def section(self, title: str, desc: str = "") -> QtWidgets.QLayout:
         lbl = QtWidgets.QLabel(title, self.inner)
@@ -35,9 +83,7 @@ class SettingsPage(ScrollArea):
             sub.setFont(ui_font(12, W.Normal))
             sub.setWordWrap(True)
             self._sec_descs.append(sub)
-            self._style_sections()
             return vbox(lbl, sub, spacing=2, margins=(4, 10, 4, 2))
-        self._style_sections()
         return vbox(lbl, spacing=2, margins=(4, 10, 4, 2))
 
     def _style_sections(self):
@@ -60,6 +106,7 @@ class SettingsPage(ScrollArea):
         # 滚动容器底部保留 24px 内边距，确保最后一组卡片可完整滚到底部操作栏上方
         lay = vbox(*widgets, None, spacing=10, margins=(20, 12, 20, 24))
         self.inner.setLayout(lay)
+        self._style_sections()
         bind_theme_context(self, settings_theme)
         self._hook_change_signals()
 

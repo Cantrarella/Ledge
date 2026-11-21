@@ -44,7 +44,7 @@ class Hourly(QtWidgets.QWidget, Themed):
         super().__init__(parent)
         self.items: list[dict] = []
         self.tz = None
-        self.setFixedHeight(42)
+        self.setFixedHeight(40)
         self._hook_theme()
 
     def set_items(self, items):
@@ -104,7 +104,7 @@ class Daily(QtWidgets.QWidget, Themed):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.items: list[dict] = []
-        self.setFixedHeight(76)
+        self.setFixedHeight(72)
         self._hook_theme()
 
     def set_items(self, items):
@@ -167,7 +167,7 @@ class Facts(QtWidgets.QWidget, Themed):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.items: list[tuple[str, str]] = []
-        self.setFixedHeight(30)
+        self.setFixedHeight(28)
         self._hook_theme()
 
     def set_items(self, items):
@@ -221,7 +221,7 @@ def _wind_dir(deg):
 
 
 class WeatherPage(Page):
-    key, glyph, title, height, panel_width, panel_height = "weather", G.CLOUD, "天气", 190, 419, 232
+    key, glyph, title, height, panel_width, panel_height = "weather", G.CLOUD, "天气", 190, 419, 218
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -273,6 +273,7 @@ class WeatherPage(Page):
 
         self.left_wrap = QtWidgets.QWidget()
         self.left_wrap.setFixedWidth(154)
+        self.left_wrap.setMinimumHeight(72)
         self.left_grid = QtWidgets.QGridLayout(self.left_wrap)
         self.left_grid.setContentsMargins(0, 2, 0, 0)
         self.left_grid.setHorizontalSpacing(10)
@@ -298,7 +299,7 @@ class WeatherPage(Page):
         self.hourly_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.hourly_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.hourly_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.hourly_scroll.setFixedHeight(45)
+        self.hourly_scroll.setFixedHeight(42)
         self.hourly_scroll.setStyleSheet("QScrollArea,QWidget{background:transparent;border:none;}")
         self.hourly_scroll.setWidget(self.hourly)
 
@@ -307,14 +308,14 @@ class WeatherPage(Page):
             hbox(self.left_wrap, (self.daily, 1), spacing=8),
             self.facts,
             self.hourly_scroll,
-            spacing=3,
+            spacing=2,
             margins=(0, 0, 0, 0),
         ))
 
         self.err = Label("", 12, level=2, align=Qt.AlignmentFlag.AlignCenter, wrap=True)
         self.err.hide()
 
-        self.setLayout(vbox(self.header, self.add_edit, self.msg, (self.body, 1), self.err, spacing=3))
+        self.setLayout(vbox(self.header, self.add_edit, self.msg, (self.body, 1), self.err, spacing=2))
 
         ctx.weather.cities_updated.connect(self.set_cities)
         ctx.weather.city_added.connect(self._added)

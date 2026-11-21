@@ -8,8 +8,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..core.branding import DISPLAY_NAME, SETTINGS_TITLE
 from ..core.config import ConfigDraft, cfg
+from ..core.memory import trim_working_set
 from .settings import (
     AboutSettingsPage,
+    BatterySettingsPage,
     DataSettingsPage,
     GeneralSettingsPage,
     IslandPetSettingsPage,
@@ -100,6 +102,7 @@ LEAF_TO_GROUP: dict[str, tuple[str, str]] = {
     "weather": ("weather", "weather"),
     "quota": ("ai_content", "quota"),
     "subtitles": ("ai_content", "subtitles"),
+    "battery": ("battery", "battery"),
     "tools_life": ("tools_life", "tools_life"),
     "data": ("data_about", "data"),
     "about": ("data_about", "about"),
@@ -156,6 +159,37 @@ class _SubTabButton(Hoverable):
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.title)
 
 
+class _PanelFrame(QtWidgets.QWidget):
+    """自绘背景与 1px 边线的轻量面板容器，避免 setStyleSheet 触发全树 QSS 解析。"""
+
+    def __init__(self, role: str, parent=None):
+        super().__init__(parent)
+        self._role = role
+
+    def paintEvent(self, e):
+        p = QtGui.QPainter(self)
+        dark = settings_theme.dark
+        sep = QtGui.QColor(255, 255, 255, 18) if dark else QtGui.QColor(0, 0, 0, 16)
+        if self._role == "sidebar":
+            p.fillRect(self.rect(), QtGui.QColor("#13141a" if dark else "#eaedf4"))
+            p.fillRect(self.width() - 1, 0, 1, self.height(), sep)
+        elif self._role == "header":
+            p.fillRect(self.rect(), QtGui.QColor("#181920" if dark else "#f3f5f9"))
+            p.fillRect(0, self.height() - 1, self.width(), 1, sep)
+        else:
+            p.fillRect(self.rect(), QtGui.QColor("#15161c" if dark else "#edf0f6"))
+            p.fillRect(0, 0, self.width(), 1, sep)
+
+
+class _TabBarFrame(QtWidgets.QWidget):
+    """二级标签栏容器：自绘 1px 底部分隔线，避免 QFrame setStyleSheet 触发全树样式重算。"""
+
+    def paintEvent(self, e):
+        p = QtGui.QPainter(self)
+        sep = QtGui.QColor(255, 255, 255, 14) if settings_theme.dark else QtGui.QColor(0, 0, 0, 12)
+        p.fillRect(0, self.height() - 1, self.width(), 1, sep)
+
+
 class SettingsGroupPage(QtWidgets.QWidget):
     """一级组合设置页：固定二级标签栏 + QStackedWidget 承载原有独立滚动的叶子页面。"""
     leaf_changed = QtCore.Signal(str)
@@ -177,7 +211,7 @@ class SettingsGroupPage(QtWidgets.QWidget):
         self._leaf_keys: list[str] = [pg.key for pg in self.sub_pages]  # type: ignore[attr-defined]
         self._tab_buttons: dict[str, _SubTabButton] = {}
 
-        self.tab_bar = QtWidgets.QFrame(self)
+        self.tab_bar = _TabBarFrame(self)
         self.tab_bar.setFixedHeight(44)
         tab_items: list = []
         for tab_title, pg in tabs:
@@ -194,14 +228,9 @@ class SettingsGroupPage(QtWidgets.QWidget):
             self.sub_stack.addWidget(pg)
 
         self.setLayout(vbox(self.tab_bar, (self.sub_stack, 1), spacing=0, margins=(0, 0, 0, 0)))
-        settings_theme.changed.connect(self._apply_tab_bar_style)
-        self._apply_tab_bar_style()
+        settings_theme.changed.connect(self.tab_bar.update)
         if self._leaf_keys:
             self.show_leaf(self._leaf_keys[0])
-
-    def _apply_tab_bar_style(self):
-        sep = "rgba(255,255,255,14)" if settings_theme.dark else "rgba(0,0,0,12)"
-        self.tab_bar.setStyleSheet(f"QFrame{{background:transparent;border-bottom:1px solid {sep};}}")
 
     def current_leaf(self) -> QtWidgets.QWidget:
         return self.sub_stack.currentWidget()
@@ -281,14 +310,19 @@ class _CategoryButton(Hoverable):
 class SettingsWindow(QtWidgets.QWidget):
     """独立普通窗口的 Wisland 设置中心（单实例，关闭窗口不退出主程序）。"""
     _instance: SettingsWindow | None = None
+    _idle_release_ms: int = 20_000
     saved = QtCore.Signal()
 
-    def __init__(self, ctx=None, config_obj=None, parent=None):
+    def __init__(self, ctx=None, config_obj=None, parent=None, initial_category: str = "general"):
         super().__init__(parent, Qt.WindowType.Window)
         self.ctx = ctx
         self.cfg_obj = config_obj or cfg
         self._loading = False
         self._saving = False
+        self._idle_release_timer = QtCore.QTimer(self)
+        self._idle_release_timer.setSingleShot(True)
+        self._idle_release_timer.timeout.connect(self._on_idle_release)
+        self.setUpdatesEnabled(False)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setWindowTitle(SETTINGS_TITLE)
         self.resize(820, 600)
@@ -305,7 +339,8 @@ class SettingsWindow(QtWidgets.QWidget):
         settings_theme.set_mode(self.cfg_obj.get("settings_window.theme", "light"))
 
         # ---- 左侧导航栏（小型 logo + Wisland / 副标题“设置”） ----
-        self.sidebar = QtWidgets.QFrame(self)
+        self.sidebar = _PanelFrame("sidebar", self)
+        self.sidebar.setObjectName("settingsSidebar")
         self.sidebar.setFixedWidth(188)
 
         logo_lbl = QtWidgets.QLabel()
@@ -325,6 +360,7 @@ class SettingsWindow(QtWidgets.QWidget):
         mail_pg = MailAccountsSettingsPage(ctx, self)
         weather_pg = WeatherSettingsPage(ctx, self)
         quota_pg = QuotaSettingsPage(ctx, self)
+        bat_pg = BatterySettingsPage(ctx, self)
         sub_pg = SubtitlesSettingsPage(ctx, self)
         tl_pg = ToolsLifeSettingsPage(ctx, self)
         data_pg = DataSettingsPage(ctx, self, on_reload_draft=self._load_all_from_draft)
@@ -338,6 +374,7 @@ class SettingsWindow(QtWidgets.QWidget):
             mail_pg,
             weather_pg,
             quota_pg,
+            bat_pg,
             sub_pg,
             tl_pg,
             data_pg,
@@ -385,6 +422,7 @@ class SettingsWindow(QtWidgets.QWidget):
             ("messages", G.MAIL, "消息与邮件", grp_messages),
             ("weather", G.SUN, "天气", weather_pg),
             ("ai_content", G.CPU, "AI 与字幕", grp_ai),
+            ("battery", G.BOLT, "设备电量", bat_pg),
             ("tools_life", G.CLIP, "工具与生活", tl_pg),
             ("data_about", G.GEAR, "数据与关于", grp_data_about),
         ]
@@ -401,7 +439,8 @@ class SettingsWindow(QtWidgets.QWidget):
         self.sidebar.setLayout(vbox(*nav_items, spacing=4, margins=(12, 14, 12, 14)))
 
         # ---- 右侧纵向三段式：顶部标题栏 + 可伸缩 QStackedWidget(QScrollArea) + 独立底部操作栏 ----
-        self.header = QtWidgets.QFrame(self)
+        self.header = _PanelFrame("header", self)
+        self.header.setObjectName("settingsHeader")
         self.header.setFixedHeight(50)
         self.header_title = Label("外观与岛体", 16, W.Bold, 1)
         self.dirty_lbl = Label("", 12, W.DemiBold, 2)
@@ -418,7 +457,8 @@ class SettingsWindow(QtWidgets.QWidget):
         self.btn_save = PillButton("保存设置", G.CHECK, height=34, primary=True)
         self.btn_save.clicked.connect(self.save_settings)
 
-        self.footer = QtWidgets.QFrame(self)
+        self.footer = _PanelFrame("footer", self)
+        self.footer.setObjectName("settingsFooter")
         self.footer.setFixedHeight(58)
         self.footer.setLayout(hbox((self.status_lbl, 1), self.btn_cancel, self.btn_save, spacing=10, margins=(20, 10, 20, 12)))
 
@@ -431,8 +471,9 @@ class SettingsWindow(QtWidgets.QWidget):
         bind_theme_context(self, settings_theme)
         settings_theme.changed.connect(self._apply_window_style)
         self._apply_window_style()
-        self.switch_category("general")
+        self.switch_category(initial_category or "general")
         self._load_all_from_draft()
+        self.setUpdatesEnabled(True)
 
     @classmethod
     def open_instance(
@@ -442,12 +483,12 @@ class SettingsWindow(QtWidgets.QWidget):
         account_id: str | None = None,
     ) -> SettingsWindow:
         if cls._instance is None:
-            cls._instance = cls(ctx=ctx)
+            cls._instance = cls(ctx=ctx, initial_category=category or "general")
         else:
             cls._instance.ctx = ctx
             cls._instance.reload_draft_from_config()
-        if category:
-            cls._instance.switch_category(category)
+            if category:
+                cls._instance.switch_category(category)
         if category == "quota" and account_id:
             quota_pg = next(
                 (pg for pg in cls._instance.leaf_pages if isinstance(pg, QuotaSettingsPage)),
@@ -494,32 +535,34 @@ class SettingsWindow(QtWidgets.QWidget):
         self._tooltip_qss_active = False
 
     def showEvent(self, e):
+        self._idle_release_timer.stop()
         self._install_tooltip_style()
         super().showEvent(e)
 
     def hideEvent(self, e):
         self._restore_tooltip_style()
         super().hideEvent(e)
+        if SettingsWindow._instance is self and self._idle_release_ms > 0:
+            self._idle_release_timer.start(self._idle_release_ms)
+
+    def _on_idle_release(self):
+        if SettingsWindow._instance is not self or self.isVisible() or self._saving:
+            return
+        try:
+            if self.is_dirty():
+                return
+        except Exception:
+            return
+        SettingsWindow._instance = None
+        self.deleteLater()
+        QtCore.QTimer.singleShot(120, lambda: trim_working_set(collect_gc=True))
 
     def _apply_window_style(self):
-        if settings_theme.dark:
-            win_bg = "#181920"
-            side_bg = "#13141a"
-            head_bg = "#181920"
-            foot_bg = "#15161c"
-            sep = "rgba(255,255,255,18)"
-        else:
-            win_bg = "#f3f5f9"
-            side_bg = "#eaedf4"
-            head_bg = "#f3f5f9"
-            foot_bg = "#edf0f6"
-            sep = "rgba(0,0,0,16)"
-        self.setStyleSheet(f"SettingsWindow{{background:{win_bg};}}")
-        self.sidebar.setStyleSheet(f"QFrame{{background:{side_bg};border-right:1px solid {sep};}}")
-        self.header.setStyleSheet(f"QFrame{{background:{head_bg};border-bottom:1px solid {sep};}}")
-        self.footer.setStyleSheet(f"QFrame{{background:{foot_bg};border-top:1px solid {sep};}}")
         self.dirty_lbl.set_color(settings_theme.on_color())
         self._apply_tooltip_style()
+        self.sidebar.update()
+        self.header.update()
+        self.footer.update()
         self.update()
 
     def paintEvent(self, e):
@@ -536,10 +579,17 @@ class SettingsWindow(QtWidgets.QWidget):
             if on:
                 self.header_title.setText(gtitle)
                 self.stack.setCurrentIndex(i)
-                if isinstance(pg, SettingsGroupPage) and leaf_key:
-                    pg.show_leaf(leaf_key)
-                elif leaf_key == "about" or getattr(pg, "key", "") == "about":
-                    pg.load_from_draft(self.draft)  # type: ignore[attr-defined]
+                if isinstance(pg, SettingsGroupPage):
+                    if leaf_key:
+                        pg.show_leaf(leaf_key)
+                    cur = pg.current_leaf()
+                    if hasattr(cur, "ensure_built"):
+                        cur.ensure_built()  # type: ignore[attr-defined]
+                else:
+                    if hasattr(pg, "ensure_built"):
+                        pg.ensure_built()  # type: ignore[attr-defined]
+                    if leaf_key == "about" or getattr(pg, "key", "") == "about":
+                        pg.load_from_draft(self.draft)  # type: ignore[attr-defined]
 
     def reload_draft_from_config(self):
         """放弃未保存草稿，重新从当前生效配置创建新草稿并刷新控件。"""
@@ -552,25 +602,42 @@ class SettingsWindow(QtWidgets.QWidget):
         self._loading = True
         try:
             for pg in self.leaf_pages:
-                pg.load_from_draft(self.draft)
+                if getattr(pg, "_built", True):
+                    pg.load_from_draft(self.draft)
+                else:
+                    pg.defer_load_draft(self.draft)  # type: ignore[attr-defined]
             self._baseline_dict = self.collect_to_draft().to_dict()
         finally:
             self._loading = False
-        self._update_dirty_state()
+        self._update_dirty_state(collect=False)
 
     def collect_to_draft(self) -> ConfigDraft:
         for pg in self.leaf_pages:
-            pg.save_to_draft(self.draft)
+            if getattr(pg, "_built", True):
+                pg.save_to_draft(self.draft)
         return self.draft
 
-    def is_dirty(self) -> bool:
-        self.collect_to_draft()
+    def is_dirty(self, collect: bool = True) -> bool:
+        if collect:
+            self.collect_to_draft()
         gen_pg = self.leaf_pages[0]
-        auto_dirty = gen_pg.autostart_dirty() if isinstance(gen_pg, GeneralSettingsPage) else False
+        auto_dirty = (
+            gen_pg.autostart_dirty()
+            if (isinstance(gen_pg, GeneralSettingsPage) and getattr(gen_pg, "_built", True))
+            else False
+        )
         quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
-        quota_pending = quota_pg.has_pending_changes() if quota_pg is not None else False
+        quota_pending = (
+            quota_pg.has_pending_changes()
+            if (quota_pg is not None and getattr(quota_pg, "_built", True))
+            else False
+        )
         sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
-        subtitle_pending = sub_pg.has_pending_credentials() if sub_pg is not None else False
+        subtitle_pending = (
+            sub_pg.has_pending_credentials()
+            if (sub_pg is not None and getattr(sub_pg, "_built", True))
+            else False
+        )
         return (self.draft.to_dict() != self._baseline_dict) or auto_dirty or quota_pending or subtitle_pending
 
     def _on_any_page_changed(self):
@@ -578,10 +645,10 @@ class SettingsWindow(QtWidgets.QWidget):
             return
         self._update_dirty_state()
 
-    def _update_dirty_state(self):
+    def _update_dirty_state(self, collect: bool = True):
         if self._saving:
             return
-        dirty = self.is_dirty()
+        dirty = self.is_dirty(collect=collect)
         if dirty:
             self.dirty_lbl.set_color(settings_theme.on_color())
             self.dirty_lbl.setText("● 有未保存修改")
@@ -682,6 +749,8 @@ class SettingsWindow(QtWidgets.QWidget):
             finally:
                 if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                     quota_mgr.set_commit_sync_suppressed(False)
+            if getattr(self.ctx, "battery", None) is not None:
+                self.ctx.battery.apply_config()
 
             for pg in self.leaf_pages:
                 pg.clear_errors()

@@ -85,11 +85,11 @@ def test_01_settings_nav_order_and_real_actions_only(qt_app, tmp_path):
     cm, creds, _cache, mgr, _cfg_path = _make_quota_env(tmp_path)
     ctx = type("Ctx", (), {"quota": mgr})()
     win = SettingsWindow(ctx=ctx, config_obj=cm)
-    assert len(win.pages) == 7
+    assert len(win.pages) == 8
     group_keys = [k for k, _, _, _ in win._group_specs]
     group_titles = [t for _, _, t, _ in win._group_specs]
-    assert group_keys == ["appearance", "pages", "messages", "weather", "ai_content", "tools_life", "data_about"]
-    assert group_titles == ["外观与岛体", "页面与导航", "消息与邮件", "天气", "AI 与字幕", "工具与生活", "数据与关于"]
+    assert group_keys == ["appearance", "pages", "messages", "weather", "ai_content", "battery", "tools_life", "data_about"]
+    assert group_titles == ["外观与岛体", "页面与导航", "消息与邮件", "天气", "AI 与字幕", "设备电量", "工具与生活", "数据与关于"]
 
     keys = [pg.key for pg in win.leaf_pages]
     titles = [pg.title for pg in win.leaf_pages]

@@ -138,8 +138,9 @@ class IslandPetSettingsPage(SettingsPage):
     glyph = G.HOME
 
     def __init__(self, ctx=None, parent=None):
-        super().__init__(ctx, parent)
+        super().__init__(ctx, parent, lazy=True)
 
+    def _build_ui(self):
         self.cb_edge = ComboBox([
             ("top", "顶部边缘"),
             ("bottom", "底部边缘"),

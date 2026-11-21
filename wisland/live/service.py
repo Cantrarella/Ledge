@@ -111,7 +111,8 @@ class LiveService(QtCore.QObject):
         p.sig_live_zh.connect(self.live_zh)
         p.sig_final_zh.connect(self.final_zh)
         p.sig_level.connect(self.level)
-        p.finished.connect(lambda p=p: self._thread_finished(p))
+        p.finished.connect(self._on_pipe_finished)
+        p.finished.connect(p.deleteLater)
         self.pipe = p
         self.running = True
         self._last_error = ""
@@ -154,6 +155,12 @@ class LiveService(QtCore.QObject):
             return
         from ..core.bg import run_bg
         run_bg(lambda: p.stop(), on_done=lambda _r: setattr(self, "_stopping", None))
+
+    def _on_pipe_finished(self):
+        pipe = self.sender()
+        self._thread_finished(pipe)
+        from ..core.memory import trim_working_set
+        QtCore.QTimer.singleShot(150, lambda: trim_working_set(collect_gc=True))
 
     def _thread_finished(self, pipe):
         if self._stopping is pipe:

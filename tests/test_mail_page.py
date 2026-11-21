@@ -120,7 +120,7 @@ def test_01_registry_dimensions_and_empty_states(qt_app, tmp_path):
 
     reg = PageRegistry.create_default(ctx)
     assert reg.get_entry("msg") is None
-    assert list(reg.pages_dict().keys()) == ["home", "mail", "quota", "weather", "trans", "tools", "life"]
+    assert list(reg.pages_dict().keys()) == ["home", "mail", "quota", "battery", "weather", "trans", "tools", "life"]
     entry = reg.get_entry("mail")
     assert entry is not None
 

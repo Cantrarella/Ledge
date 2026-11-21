@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import json
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ import httpx
 from PySide6 import QtCore
 
 from wisland.core.bg import run_bg, ui
-from wisland.core.config import cfg
+from wisland.core.config import DATA_DIR, cfg
 
 API = "https://api.openweathermap.org/data/2.5"
 OM_API = "https://api.open-meteo.com/v1/forecast"
@@ -225,13 +226,17 @@ class WeatherService(QtCore.QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         ui(lambda: None)
-        self._client = httpx.Client(timeout=httpx.Timeout(12.0, connect=6.0), follow_redirects=True)
+        self._client = httpx.Client(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True)
         self._busy = False
         self._again = False
+        self._retry_count = 0
         self.last: dict = {}
         self.cities_data: list[dict] = []
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.refresh)
+        self._retry_timer = QtCore.QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self.refresh)
 
     # ---------- 城市列表 ----------
     def cities(self) -> list[dict]:
@@ -297,17 +302,57 @@ class WeatherService(QtCore.QObject):
 
         run_bg(geo, on_done=done, on_error=fail)
 
-    # ---------- 刷新 ----------
+    # ---------- 刷新与本地缓存 ----------
+    @staticmethod
+    def _cache_path():
+        return DATA_DIR / "weather_cache.json"
+
+    def _load_cache(self):
+        try:
+            p = self._cache_path()
+            if not p.is_file():
+                return
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            cached = raw.get("cities") if isinstance(raw, dict) else None
+            if not isinstance(cached, list) or not cached:
+                return
+            now = time.time()
+            # 超过 6 小时的旧缓存不作为启动兜底，避免显示过旧温度
+            valid = [d for d in cached if isinstance(d, dict) and d.get("ok") and now - float(d.get("time") or 0) <= 21600]
+            if not valid:
+                return
+            want_names = [c.get("name") for c in self.cities()]
+            by_name = {d.get("name"): d for d in valid}
+            matched = [dict(by_name[n]) for n in want_names if n in by_name]
+            if matched:
+                self.cities_data = matched
+                self._publish()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _save_cache(self):
+        try:
+            ok_list = [d for d in self.cities_data if isinstance(d, dict) and d.get("ok")]
+            if not ok_list:
+                return
+            p = self._cache_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"cities": ok_list}, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     def start(self):
         try:
             mins = max(5.0, float(cfg.get("weather.interval_min") or 15))
         except (TypeError, ValueError):
             mins = 15.0
+        self._load_cache()
         self._timer.start(int(mins * 60_000))
         self.refresh()
 
     def stop(self):
         self._timer.stop()
+        self._retry_timer.stop()
         try:
             self._client.close()
         except Exception:  # noqa: BLE001
@@ -379,10 +424,21 @@ class WeatherService(QtCore.QObject):
     def _fetch_all(self, key: str, cities: list[dict]) -> list[dict]:
         out = []
         for i, c in enumerate(cities):
-            try:
-                d = self._fetch_one(key, c)
-            except Exception as e:  # noqa: BLE001
-                d = {"ok": False, "error": self._friendly(e), "name": c.get("name", "?")}
+            last_err: Exception | None = None
+            d = None
+            for attempt in range(2):
+                try:
+                    d = self._fetch_one(key, c)
+                    break
+                except (httpx.TimeoutException, httpx.TransportError) as e:
+                    last_err = e
+                    if attempt == 0:
+                        time.sleep(0.4)
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    break
+            if d is None:
+                d = {"ok": False, "error": self._friendly(last_err or RuntimeError("未知错误")), "name": c.get("name", "?")}
             d["index"] = i
             out.append(d)
         return out
@@ -391,15 +447,25 @@ class WeatherService(QtCore.QObject):
         self._busy = False
         old = {d.get("name"): d for d in self.cities_data if d.get("ok")}
         merged = []
+        any_failed = False
         for d in data:
-            if not d.get("ok") and d.get("name") in old:      # 失败的城市保留上次数据
-                keep = dict(old[d["name"]])
-                keep.update(error=d.get("error"), index=d.get("index"))
-                merged.append(keep)
-            else:
-                merged.append(d)
+            if not d.get("ok"):
+                any_failed = True
+                if d.get("name") in old:      # 失败的城市保留上次数据
+                    keep = dict(old[d["name"]])
+                    keep.update(error=d.get("error"), index=d.get("index"))
+                    merged.append(keep)
+                    continue
+            merged.append(d)
         self.cities_data = merged
         self._publish()
+        if any(d.get("ok") for d in self.cities_data):
+            self._save_cache()
+        if any_failed and self._retry_count < 2:
+            self._retry_count += 1
+            self._retry_timer.start(6000)
+        elif not any_failed:
+            self._retry_count = 0
         if self._again:
             self._again = False
             self.refresh()
@@ -416,6 +482,9 @@ class WeatherService(QtCore.QObject):
         d = dict(self.last) if self.last.get("ok") else {}
         d.update({"ok": False, "error": self._friendly(e)})
         self._emit_first(d)
+        if self._retry_count < 2:
+            self._retry_count += 1
+            self._retry_timer.start(6000)
 
     @staticmethod
     def _friendly(e: Exception) -> str:

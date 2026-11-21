@@ -36,7 +36,7 @@ def _make_weather_page(qt_app) -> WeatherPage:
         open_settings=lambda *a, **k: None,
     )
     pg = WeatherPage(ctx)
-    pg.resize(419, 232)
+    pg.resize(419, 218)
     pg.show()
     qt_app.processEvents()
     return pg
@@ -137,7 +137,7 @@ def test_02_weather_page_layout_header_dedup_and_edge_cases(qt_app):
     pg = _make_weather_page(qt_app)
     try:
         assert pg.preferred_panel_width() == 419
-        assert pg.preferred_panel_height() == 232
+        assert pg.preferred_panel_height() == 218
 
         # 1) 正常天气数据
         pg.set_cities([_sample_weather()])
@@ -243,7 +243,7 @@ def test_03_weather_themes_compact_and_dpi_screenshots(qt_app, tmp_path):
         ):
             island_theme.set_mode(mode)
             qt_app.processEvents()
-            pix = QtGui.QPixmap(419, 232)
+            pix = QtGui.QPixmap(419, 218)
             pix.fill(QtGui.QColor(bg))
             pg.render(pix, QtCore.QPoint(), QtGui.QRegion(), QtWidgets.QWidget.RenderFlag.DrawChildren)
             assert pix.save(str(shot_dir / f"weather-{mode}.png"))
@@ -252,7 +252,7 @@ def test_03_weather_themes_compact_and_dpi_screenshots(qt_app, tmp_path):
         island_theme.set_mode("classic")
         qt_app.processEvents()
         for dpr, name in ((1.25, "weather-classic-125.png"), (2.0, "weather-classic-2x.png")):
-            pix_hi = QtGui.QPixmap(round(419 * dpr), round(232 * dpr))
+            pix_hi = QtGui.QPixmap(round(419 * dpr), round(218 * dpr))
             pix_hi.setDevicePixelRatio(dpr)
             pix_hi.fill(QtGui.QColor("#000000"))
             pg.render(pix_hi, QtCore.QPoint(), QtGui.QRegion(), QtWidgets.QWidget.RenderFlag.DrawChildren)

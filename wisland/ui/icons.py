@@ -341,3 +341,88 @@ def draw_document(p: QtGui.QPainter, cx: float, cy: float, size: float, color: Q
     p.drawLine(QtCore.QPointF(-2.4, -0.4), QtCore.QPointF(2.4, -0.4))
     p.drawLine(QtCore.QPointF(-2.4, 2.5), QtCore.QPointF(1.6, 2.5))
     p.restore()
+
+
+def draw_bolt(p: QtGui.QPainter, cx: float, cy: float, size: float, color: QtGui.QColor):
+    """绘制充电闪电符号（实心）。"""
+    p.save()
+    s = size / 14.0
+    p.translate(cx, cy)
+    p.scale(s, s)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    bolt = QtGui.QPainterPath()
+    bolt.moveTo(1.2, -5.8)
+    bolt.lineTo(-3.4, 0.4)
+    bolt.lineTo(0.2, 0.4)
+    bolt.lineTo(-1.2, 5.8)
+    bolt.lineTo(3.6, -0.4)
+    bolt.lineTo(0.0, -0.4)
+    bolt.closeSubpath()
+    p.drawPath(bolt)
+    p.restore()
+
+
+def draw_device_icon(p: QtGui.QPainter, kind: str, cx: float, cy: float, size: float, color: QtGui.QColor):
+    """绘制无线外设矢量图标（mouse/keyboard/headset/earbuds/gamepad/bluetooth）。"""
+    p.save()
+    s = size / 18.0
+    p.translate(cx, cy)
+    p.scale(s, s)
+    fill = QtGui.QColor(color)
+    fill.setAlphaF(min(1.0, color.alphaF() * 0.22))
+
+    if kind == "mouse":
+        p.setPen(_pen(color, 1.5))
+        p.setBrush(fill)
+        p.drawRoundedRect(QtCore.QRectF(-4.2, -6.5, 8.4, 13.0), 4.2, 4.2)
+        p.drawLine(QtCore.QPointF(0.0, -4.0), QtCore.QPointF(0.0, -1.6))
+    elif kind == "keyboard":
+        p.setPen(_pen(color, 1.5))
+        p.setBrush(fill)
+        p.drawRoundedRect(QtCore.QRectF(-7.2, -4.4, 14.4, 8.8), 2.0, 2.0)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        for ky in (-1.9, 0.2):
+            for kx in (-4.8, -2.4, 0.0, 2.4, 4.8):
+                p.drawEllipse(QtCore.QPointF(kx, ky), 0.75, 0.75)
+        p.drawRoundedRect(QtCore.QRectF(-3.6, 2.0, 7.2, 1.2), 0.6, 0.6)
+    elif kind == "headset":
+        p.setPen(_pen(color, 1.55))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        arc = QtGui.QPainterPath()
+        arc.arcMoveTo(-5.8, -5.8, 11.6, 11.6, 0)
+        arc.arcTo(-5.8, -5.8, 11.6, 11.6, 0, 180)
+        p.drawPath(arc)
+        p.setBrush(fill)
+        p.drawRoundedRect(QtCore.QRectF(-7.0, -0.2, 2.8, 5.6), 1.3, 1.3)
+        p.drawRoundedRect(QtCore.QRectF(4.2, -0.2, 2.8, 5.6), 1.3, 1.3)
+    elif kind == "earbuds":
+        p.setPen(_pen(color, 1.4))
+        p.setBrush(fill)
+        for sx in (-1.0, 1.0):
+            p.drawEllipse(QtCore.QPointF(sx * 3.4, -3.2), 2.3, 2.3)
+            p.drawRoundedRect(QtCore.QRectF(sx * 3.4 - 0.85, -1.2, 1.7, 6.2), 0.85, 0.85)
+    elif kind == "gamepad":
+        p.setPen(_pen(color, 1.5))
+        p.setBrush(fill)
+        p.drawRoundedRect(QtCore.QRectF(-7.2, -4.2, 14.4, 8.4), 3.6, 3.6)
+        p.setPen(_pen(color, 1.25))
+        p.drawLine(QtCore.QPointF(-4.8, 0.0), QtCore.QPointF(-2.2, 0.0))
+        p.drawLine(QtCore.QPointF(-3.5, -1.3), QtCore.QPointF(-3.5, 1.3))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawEllipse(QtCore.QPointF(3.8, -1.1), 0.85, 0.85)
+        p.drawEllipse(QtCore.QPointF(2.5, 0.4), 0.85, 0.85)
+    else:
+        p.setPen(_pen(color, 1.45))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        bt = QtGui.QPainterPath()
+        bt.moveTo(-2.5, -3.2)
+        bt.lineTo(2.8, 2.2)
+        bt.lineTo(0.0, 5.8)
+        bt.lineTo(0.0, -5.8)
+        bt.lineTo(2.8, -2.2)
+        bt.lineTo(-2.5, 3.2)
+        p.drawPath(bt)
+    p.restore()

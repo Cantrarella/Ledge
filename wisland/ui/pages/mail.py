@@ -1206,7 +1206,12 @@ class MailPage(Page):
         latest_otp_deadline: float | None = None
         if otp_on and mgr is not None:
             now_m = time.monotonic()
+            now_w = time.time()
+            ttl_s = max(30, int(cfg.get("mail.otp_hide_seconds", _OTP_PREVIEW_TTL_SECONDS) or _OTP_PREVIEW_TTL_SECONDS))
+            max_age_s = max(1800.0, float(ttl_s) * 3.0)
             for h in shown_hdrs:
+                if h.received_at and (now_w - float(h.received_at)) > max_age_s:
+                    continue
                 info = mgr.get_verification_code(h.account_id, h.uid, h.subject, h.uid_validity)
                 if info is not None:
                     tok = (h.account_id, str(h.uid), info.code)
@@ -1214,7 +1219,6 @@ class MailPage(Page):
                         break
                     dl = self._otp_deadlines.get(tok)
                     if dl is None:
-                        ttl_s = max(30, int(cfg.get("mail.otp_hide_seconds", _OTP_PREVIEW_TTL_SECONDS) or _OTP_PREVIEW_TTL_SECONDS))
                         dl = now_m + ttl_s
                         self._otp_deadlines[tok] = dl
                     if dl <= now_m:

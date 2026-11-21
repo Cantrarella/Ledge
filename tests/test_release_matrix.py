@@ -224,14 +224,14 @@ def test_02_dpi_multimonitor_hotplug_dock_edges_and_wake(qt_app):
     home = HomePage(ctx)
     weather = WeatherPage(ctx)
     home.resize(419, 140)
-    weather.resize(419, 232)
+    weather.resize(419, 218)
     home.show()
     weather.show()
     qt_app.processEvents()
 
     try:
         for dpr in (1.0, 1.25, 1.5, 2.0):
-            for w, pw, ph in ((home, 419, 140), (weather, 419, 232)):
+            for w, pw, ph in ((home, 419, 140), (weather, 419, 218)):
                 pix = QtGui.QPixmap(round(pw * dpr), round(ph * dpr))
                 pix.setDevicePixelRatio(dpr)
                 pix.fill(QtGui.QColor("#14151a"))

@@ -15,9 +15,10 @@ class GeneralSettingsPage(SettingsPage):
     glyph = G.GEAR
 
     def __init__(self, ctx=None, parent=None):
-        super().__init__(ctx, parent)
+        super().__init__(ctx, parent, lazy=True)
         self._autostart_init = False
 
+    def _build_ui(self):
         self.cb_theme = ComboBox(ISLAND_THEME_NAMES, width=196)
         self.cb_settings_theme = ComboBox(SETTINGS_THEME_NAMES, width=196)
         self.sw_autostart = Switch()

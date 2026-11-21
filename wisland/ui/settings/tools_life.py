@@ -17,8 +17,9 @@ class ToolsLifeSettingsPage(SettingsPage):
     glyph = G.CLIP
 
     def __init__(self, ctx=None, parent=None):
-        super().__init__(ctx, parent)
+        super().__init__(ctx, parent, lazy=True)
 
+    def _build_ui(self):
         # ---- 工具：文件置物架与剪贴板 ----
         self.sw_shelf = Switch()
         self.btn_clear_shelf = PillButton("清空置物架", G.TRASH, height=30, danger=True)

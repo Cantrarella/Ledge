@@ -596,14 +596,14 @@ class TestConfigAndSettings(unittest.TestCase):
         p_sub = SubtitlePage(ctx)
         p_tools = ToolsPage(ctx)
 
-        self.assertEqual((p_weather.preferred_panel_width(), p_weather.preferred_panel_height()), (419, 232))
+        self.assertEqual((p_weather.preferred_panel_width(), p_weather.preferred_panel_height()), (419, 218))
         self.assertEqual((p_sub.preferred_panel_width(), p_sub.preferred_panel_height()), (419, 185))
         self.assertEqual((p_tools.preferred_panel_width(), p_tools.preferred_panel_height()), (419, 140))
 
         isl = Island([p_weather, p_sub, p_tools])
         try:
             isl.show_page("weather")
-            self.assertEqual(isl.expanded_size(), (419.0, 232.0))
+            self.assertEqual(isl.expanded_size(), (419.0, 218.0))
             isl.show_page("trans")
             self.assertEqual(isl.expanded_size(), (419.0, 185.0))
             isl.show_page("tools")
@@ -1265,14 +1265,14 @@ class SettingsConsolidationAndTrayToggleTests(unittest.TestCase):
             win.show()
             self.app.processEvents()
             try:
-                # 1) 固定 7 个一级分类、11 个叶子页面
-                self.assertEqual(len(win.pages), 7)
-                self.assertEqual(len(win.leaf_pages), 11)
+                # 1) 固定 8 个一级分类（含新增「设备电量」）、12 个叶子页面
+                self.assertEqual(len(win.pages), 8)
+                self.assertEqual(len(win.leaf_pages), 12)
                 self.assertEqual(
                     [t for _, _, t, _ in win._group_specs],
-                    ["外观与岛体", "页面与导航", "消息与邮件", "天气", "AI 与字幕", "工具与生活", "数据与关于"],
+                    ["外观与岛体", "页面与导航", "消息与邮件", "天气", "AI 与字幕", "设备电量", "工具与生活", "数据与关于"],
                 )
-                self.assertEqual(len(win.nav_buttons), 7)
+                self.assertEqual(len(win.nav_buttons), 8)
 
                 # 2) 无双层纵向 QScrollArea 嵌套
                 for grp in win.pages:

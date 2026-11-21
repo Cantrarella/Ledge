@@ -21,6 +21,7 @@ datas += collect_data_files("winrt", includes=["**/*.pywinrt"])
 hiddenimports += collect_submodules("winrt")
 hiddenimports += collect_submodules("winrt.windows.ui.notifications")
 hiddenimports += collect_submodules("winrt.windows.applicationmodel")
+hiddenimports += collect_submodules("winrt.windows.devices.bluetooth.advertisement")
 tmp_ret = collect_all("sherpa_onnx")
 datas += tmp_ret[0]
 binaries += tmp_ret[1]

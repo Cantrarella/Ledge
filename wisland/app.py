@@ -219,6 +219,8 @@ def main():
     ctx.health = HealthReminderService(ctx.water, ctx.todo)
     from .live.service import LiveService
     ctx.live = LiveService()
+    from .services.battery import BatteryService
+    ctx.battery = BatteryService()
     ctx.notify.controller.set_focuser(ctx.windows.activate)
     ctx.windows.notice.connect(lambda t: ctx.island and ctx.island.activity({"glyph": _G().MESSAGE, "title": t}, 5.0))
     ctx.island = None
@@ -426,6 +428,18 @@ def main():
     ctx.live.running_changed.connect(on_running)
     island.play_pause_requested.connect(lambda: ctx.media.play_pause())
     ctx.live.error.connect(lambda m: island.activity({"glyph": G.LIVE, "title": "实时字幕", "sub": m}, 4))
+    ctx.battery.low_battery.connect(
+        lambda _id, name, pct, _k: island.activity(
+            {"glyph": G.BOLT, "title": f"{name} 电量低", "sub": f"剩余 {pct}%，请及时充电", "color": "#f87171"},
+            5.0,
+        )
+    )
+    ctx.battery.full_battery.connect(
+        lambda _id, name, _k: island.activity(
+            {"glyph": G.BOLT, "title": f"{name} 已充满", "sub": "电量 100%，可拔掉电源", "color": "#34d399"},
+            5.0,
+        )
+    )
 
     # ---------------- 生活提醒事件（岛内队列：water/sit 使用主题 SVG 图标；todo 保持不变） ----------------
     def on_life_reminder(kind: str, title: str, sub: str):
@@ -606,6 +620,8 @@ def main():
         except Exception:  # noqa: BLE001
             traceback.print_exc()
     fs_timer.start()
+    from .core.memory import trim_working_set
+    QtCore.QTimer.singleShot(8000, lambda: trim_working_set(collect_gc=True))
 
     def shutdown():
         fs_timer.stop()
@@ -619,6 +635,7 @@ def main():
         ctx.mail_monitor.stop()
         ctx.mail.shutdown()
         ctx.quota.stop()
+        ctx.battery.stop()
         for s in (ctx.media, ctx.audio, ctx.notify,
                   ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
             try:

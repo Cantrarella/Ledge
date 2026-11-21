@@ -10,6 +10,7 @@ winrt-Windows.Media.Control
 winrt-Windows.Foundation
 winrt-Windows.Foundation.Collections
 winrt-Windows.Storage.Streams
+winrt-Windows.Devices.Bluetooth.Advertisement
 # live Japanese subtitles (speech recognition)
 numpy>=1.26,<3
 SoundCard>=0.4,<1
