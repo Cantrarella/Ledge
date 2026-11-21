@@ -178,3 +178,31 @@ def test_battery_page_and_settings_draft():
     reg.sync_from_config(cfg)
     assert "battery" in reg.registered_keys()
     assert "battery" in DEFAULTS["pages"]["order"]
+
+
+def test_battery_service_lifecycle_deferred_start(monkeypatch):
+    """BatteryService 构造时不抢跑扫描/定时器，需显式 start() 后才启动，stop() 可干净停止。"""
+    from PySide6 import QtWidgets
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    calls = {"refresh": 0, "watcher_start": 0, "watcher_stop": 0}
+    monkeypatch.setattr(BatteryService, "refresh", lambda self, force_discover=False: calls.__setitem__("refresh", calls["refresh"] + 1))
+    monkeypatch.setattr(BatteryService, "_start_apple_watcher", lambda self: calls.__setitem__("watcher_start", calls["watcher_start"] + 1))
+    monkeypatch.setattr(BatteryService, "_stop_apple_watcher", lambda self: calls.__setitem__("watcher_stop", calls["watcher_stop"] + 1))
+
+    svc = BatteryService()
+    assert not svc._timer.isActive()
+    assert calls["refresh"] == 0
+    assert calls["watcher_start"] == 0
+
+    svc.apply_config()
+    assert not svc._timer.isActive()
+    assert calls["refresh"] == 0
+
+    svc.start()
+    assert svc._timer.isActive()
+    assert calls["refresh"] == 1
+    assert calls["watcher_start"] == 1
+
+    svc.stop()
+    assert not svc._timer.isActive()
+    assert calls["watcher_stop"] >= 1

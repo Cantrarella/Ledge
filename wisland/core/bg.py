@@ -9,7 +9,26 @@ from typing import Callable
 
 from PySide6 import QtCore
 
-_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wisland")
+_pool: ThreadPoolExecutor | None = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wisland")
+
+
+def _get_pool() -> ThreadPoolExecutor:
+    global _pool
+    if _pool is None:
+        _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wisland")
+    return _pool
+
+
+def shutdown(wait: bool = False) -> None:
+    """关闭全局后台线程池（应用退出时调用，避免残留工作线程）。"""
+    global _pool
+    pool = _pool
+    _pool = None
+    if pool is not None:
+        try:
+            pool.shutdown(wait=wait, cancel_futures=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -56,7 +75,7 @@ def run_bg(fn: Callable, *args, on_done: Callable | None = None, on_error: Calla
             return
         if on_done:
             ui(lambda: on_done(res))
-    return _pool.submit(task)
+    return _get_pool().submit(task)
 
 
 def run_hidden(args, timeout: float = 10.0, **kw) -> subprocess.CompletedProcess:

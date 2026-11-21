@@ -79,6 +79,10 @@ class BatteryService(QtCore.QObject):
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.refresh)
+        self._started = False
+
+    def start(self):
+        self._started = True
         self.apply_config()
 
     @property
@@ -102,11 +106,14 @@ class BatteryService(QtCore.QObject):
                 self._devices = []
             self.changed.emit()
             return
+        if not self._started:
+            return
         self._timer.start(sec * 1000)
         self._start_apple_watcher()
         self.refresh()
 
     def stop(self):
+        self._started = False
         self._timer.stop()
         self._stop_apple_watcher()
 

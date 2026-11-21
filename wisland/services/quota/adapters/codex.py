@@ -12,19 +12,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from ....core.http import open_no_redirect
 from ..models import AccountStatus, QuotaSnapshot, QuotaWindow
 
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CODEX_DEFAULT_TIMEOUT_S = 12.0
 CODEX_MAX_BYTES = 1024 * 1024
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def _finite_number(val) -> float | None:
@@ -268,10 +261,7 @@ def fetch_codex_usage(
         req.add_header("ChatGPT-Account-Id", str(auth_dict["account_id"]))
 
     try:
-        if http_opener is not None:
-            cm = http_opener(req, timeout=timeout_s)
-        else:
-            cm = _NO_REDIRECT_OPENER.open(req, timeout=timeout_s)
+        cm = open_no_redirect(req, timeout_s, http_opener=http_opener)
         with cm as resp:
             raw = resp.read(CODEX_MAX_BYTES)
     except urllib.error.HTTPError as e:

@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from ....core.http import open_no_redirect
 from ..models import AccountStatus, QuotaSnapshot, QuotaWindow
 
 GEMINI_ENDPOINT = "https://gemini.google.com/_/BardChatUi/graphql/schemas/GEMINI_WEB_GRAPHQL/executeQuery"
@@ -28,14 +29,6 @@ GEMINI_SIGNATURE = "2/dWbCvkVB0X16r9NPnxifeOAAqdCqMf0xeWvau9yPy7g="
 GEMINI_DEFAULT_TIMEOUT_S = 12.0
 GEMINI_MAX_BYTES = 1024 * 1024
 _GEMINI_SESSION_COOKIES = frozenset({"SID", "__Secure-1PSID", "__Secure-3PSID"})
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def validate_gemini_email(raw: str) -> tuple[bool, str]:
@@ -270,10 +263,7 @@ def fetch_gemini_usage(
         req.add_header("User-Agent", "Mozilla/5.0 Wisland")
 
         try:
-            if http_opener is not None:
-                cm = http_opener(req, timeout=timeout_s)
-            else:
-                cm = _NO_REDIRECT_OPENER.open(req, timeout=timeout_s)
+            cm = open_no_redirect(req, timeout_s, http_opener=http_opener)
             with cm as resp:
                 status = int(getattr(resp, "status", 200) or 200)
                 if 300 <= status < 400:

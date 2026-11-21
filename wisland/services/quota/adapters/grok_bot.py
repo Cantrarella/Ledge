@@ -16,6 +16,7 @@ import uuid
 import webbrowser
 from typing import Callable
 
+from ....core.http import open_no_redirect
 from ..models import AccountStatus, QuotaSnapshot, QuotaWindow
 
 GROK_BACKEND = "https://api2.cursor.sh"
@@ -23,14 +24,6 @@ GROK_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 GROK_USAGE_URL = f"{GROK_BACKEND}/aiserver.v1.DashboardService/GetSandUsageStatus"
 GROK_DEFAULT_TIMEOUT_S = 12.0
 GROK_MAX_BYTES = 1024 * 1024
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def _urlsafe_b64_nopad(raw: bytes) -> str:
@@ -171,9 +164,7 @@ def parse_grok_usage(payload: dict, account_id: str, fetched_at: float | None = 
 
 
 def _open_req(req: urllib.request.Request, timeout_s: float, http_opener=None):
-    if http_opener is not None:
-        return http_opener(req, timeout=timeout_s)
-    return _NO_REDIRECT_OPENER.open(req, timeout=timeout_s)
+    return open_no_redirect(req, timeout_s, http_opener=http_opener)
 
 
 def _renew_grok_session(

@@ -15,6 +15,7 @@ import webbrowser
 from pathlib import Path
 from typing import Callable
 
+from ....core.http import open_no_redirect
 from ..models import AccountStatus, QuotaSnapshot, QuotaWindow
 
 WORKBUDDY_ORIGIN = "https://www.codebuddy.cn"
@@ -33,16 +34,6 @@ _CREDIT_GROUP_LABELS = {
     "addon": "加量包",
     "benefit": "赠送",
 }
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """禁止跟随重定向，防止会话 Token/Cookie 跨域泄漏。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def workbuddy_slot(uid: str) -> str:
@@ -144,9 +135,7 @@ def parse_workbuddy_summary(payload: dict, account_id: str, fetched_at: float | 
 
 
 def _open_request(req: urllib.request.Request, timeout_s: float, http_opener=None):
-    if http_opener is not None:
-        return http_opener(req, timeout=timeout_s)
-    return _NO_REDIRECT_OPENER.open(req, timeout=timeout_s)
+    return open_no_redirect(req, timeout_s, http_opener=http_opener)
 
 
 def _http_json(

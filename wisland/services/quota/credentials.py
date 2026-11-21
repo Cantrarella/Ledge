@@ -4,46 +4,14 @@
 """
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import json
 import uuid
-from ctypes import wintypes
 
-CRED_TYPE_GENERIC = 1
-CRED_PERSIST_LOCAL_MACHINE = 2
-ERROR_NOT_FOUND = 1168
+from ...core.credentials import Win32CredentialBase
 
 _CHUNK_MAX_UTF16_BYTES = 1800
 _MANIFEST_PREFIX = "__WISLAND_CRED_MANIFEST_V1__:"
-
-
-class _CREDENTIALW(ctypes.Structure):
-    _fields_ = [
-        ("Flags", wintypes.DWORD),
-        ("Type", wintypes.DWORD),
-        ("TargetName", wintypes.LPWSTR),
-        ("Comment", wintypes.LPWSTR),
-        ("LastWritten", wintypes.FILETIME),
-        ("CredentialBlobSize", wintypes.DWORD),
-        ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
-        ("Persist", wintypes.DWORD),
-        ("AttributeCount", wintypes.DWORD),
-        ("Attributes", ctypes.c_void_p),
-        ("TargetAlias", wintypes.LPWSTR),
-        ("UserName", wintypes.LPWSTR),
-    ]
-
-
-_advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-_advapi32.CredWriteW.argtypes = [ctypes.POINTER(_CREDENTIALW), wintypes.DWORD]
-_advapi32.CredWriteW.restype = wintypes.BOOL
-_advapi32.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.POINTER(_CREDENTIALW))]
-_advapi32.CredReadW.restype = wintypes.BOOL
-_advapi32.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
-_advapi32.CredDeleteW.restype = wintypes.BOOL
-_advapi32.CredFree.argtypes = [ctypes.c_void_p]
-_advapi32.CredFree.restype = None
 
 
 def make_quota_credential_key(account_id: str) -> str:
@@ -81,80 +49,10 @@ def _split_secret_chunks(secret: str, max_utf16_bytes: int = _CHUNK_MAX_UTF16_BY
     return chunks
 
 
-class WindowsQuotaCredentialStore:
+class WindowsQuotaCredentialStore(Win32CredentialBase):
     """Windows Credential Manager 存储实现（专用于 AI 额度凭据，支持大内容安全分块）。"""
 
-    def __init__(self):
-        self.last_error: int = 0
-        self.last_error_message: str = ""
-
-    def _clear_error(self):
-        self.last_error = 0
-        self.last_error_message = ""
-
-    def _record_win_error(self, fallback: str):
-        err_code = int(ctypes.get_last_error() or 0)
-        self.last_error = err_code
-        if err_code:
-            try:
-                detail = str(ctypes.FormatError(err_code) or "").strip()
-            except Exception:
-                detail = ""
-            self.last_error_message = f"WinError {err_code}: {detail}" if detail else f"WinError {err_code}"
-        else:
-            self.last_error_message = fallback
-
-    def _write_single(self, target: str, username: str, secret: str) -> bool:
-        blob = secret.encode("utf-16-le")
-        arr = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
-        cred = _CREDENTIALW()
-        cred.Flags = 0
-        cred.Type = CRED_TYPE_GENERIC
-        cred.TargetName = target
-        cred.Comment = "Wisland Quota Credential"
-        cred.CredentialBlobSize = len(blob)
-        cred.CredentialBlob = ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte))
-        cred.Persist = CRED_PERSIST_LOCAL_MACHINE
-        cred.AttributeCount = 0
-        cred.Attributes = None
-        cred.TargetAlias = None
-        cred.UserName = username or target
-        ctypes.set_last_error(0)
-        ok = bool(_advapi32.CredWriteW(ctypes.byref(cred), 0))
-        if not ok:
-            self._record_win_error("CredWriteW 失败")
-        return ok
-
-    def _read_single(self, target: str) -> str | None:
-        if not target:
-            return None
-        p_cred = ctypes.POINTER(_CREDENTIALW)()
-        ctypes.set_last_error(0)
-        if not _advapi32.CredReadW(target, CRED_TYPE_GENERIC, 0, ctypes.byref(p_cred)):
-            err_code = int(ctypes.get_last_error() or 0)
-            if err_code and err_code != ERROR_NOT_FOUND:
-                self._record_win_error("CredReadW 失败")
-            return None
-        try:
-            cred = p_cred.contents
-            if not cred.CredentialBlob or cred.CredentialBlobSize <= 0:
-                return ""
-            raw = ctypes.string_at(cred.CredentialBlob, cred.CredentialBlobSize)
-            return raw.decode("utf-16-le", errors="replace")
-        finally:
-            _advapi32.CredFree(p_cred)
-
-    def _delete_single(self, target: str) -> bool:
-        if not target:
-            return False
-        ctypes.set_last_error(0)
-        ok = bool(_advapi32.CredDeleteW(target, CRED_TYPE_GENERIC, 0))
-        if not ok:
-            err_code = int(ctypes.get_last_error() or 0)
-            if err_code == ERROR_NOT_FOUND:
-                return True
-            self._record_win_error("CredDeleteW 失败")
-        return ok
+    _comment = "Wisland Quota Credential"
 
     @staticmethod
     def _parse_manifest(raw: str | None) -> tuple[bool, dict | None]:

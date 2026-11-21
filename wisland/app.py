@@ -613,7 +613,7 @@ def main():
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.mail_monitor, ctx.quota, ctx.clipboard, ctx.health):
+              ctx.weather, ctx.mail_monitor, ctx.quota, ctx.battery, ctx.clipboard, ctx.health):
         try:
             if hasattr(s, "start"):
                 s.start()
@@ -643,6 +643,7 @@ def main():
             except Exception:  # noqa: BLE001
                 pass
         cfg.save()
+        bg.shutdown(wait=False)
         lock.unlock()
     app.aboutToQuit.connect(shutdown)
     return app.exec()
