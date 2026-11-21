@@ -67,6 +67,7 @@ class _SettingsTooltipFilter(QtCore.QObject):
         super().__init__(win)
         self.win = win
         self._last_dark: bool | None = None
+        self._applying: bool = False
 
     def _belongs_to_settings(self) -> bool:
         if not self.win.isVisible():
@@ -77,17 +78,23 @@ class _SettingsTooltipFilter(QtCore.QObject):
         return self.win.isActiveWindow()
 
     def apply_to_tip(self, tip: QtWidgets.QWidget, force: bool = False):
-        if self._belongs_to_settings():
-            dark = bool(settings_theme.dark)
-            if force or self._last_dark != dark or _TOOLTIP_MARK_START not in tip.styleSheet():
-                tip.setStyleSheet(_build_tooltip_block(dark))
-                self._last_dark = dark
-        elif _TOOLTIP_MARK_START in tip.styleSheet():
-            tip.setStyleSheet("")
-            self._last_dark = None
+        if self._applying:
+            return
+        self._applying = True
+        try:
+            if self._belongs_to_settings():
+                dark = bool(settings_theme.dark)
+                if force or self._last_dark != dark or _TOOLTIP_MARK_START not in tip.styleSheet():
+                    tip.setStyleSheet(_build_tooltip_block(dark))
+                    self._last_dark = dark
+            elif _TOOLTIP_MARK_START in tip.styleSheet():
+                tip.setStyleSheet("")
+                self._last_dark = None
+        finally:
+            self._applying = False
 
     def eventFilter(self, obj, ev):
-        if ev.type() in (QtCore.QEvent.Type.Polish, QtCore.QEvent.Type.Show):
+        if ev.type() in (QtCore.QEvent.Type.Polish, QtCore.QEvent.Type.Show, QtCore.QEvent.Type.StyleChange):
             if isinstance(obj, QtWidgets.QWidget) and obj.metaObject().className() == "QTipLabel":
                 self.apply_to_tip(obj)
         return False
@@ -415,7 +422,7 @@ class SettingsWindow(QtWidgets.QWidget):
             lambda k: about_pg.load_from_draft(self.draft) if k == "about" else None
         )
 
-        # 一级导航固定 7 项：外观与岛体、页面与导航、消息与邮件、天气、AI 与字幕、工具与生活、数据与关于
+        # 一级导航固定 8 项：外观与岛体、页面与导航、消息与邮件、天气、AI 与字幕、设备电量、工具与生活、数据与关于
         self._group_specs: list[tuple[str, str, str, QtWidgets.QWidget]] = [
             ("appearance", G.SLIDERS, "外观与岛体", grp_appearance),
             ("pages", G.APPS, "页面与导航", nav_pg),

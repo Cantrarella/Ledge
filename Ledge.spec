@@ -1,9 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).resolve()
-SITE_PKGS = Path("D:/Codex/wisland-exe/build/site-packages")
+_extra_site = os.environ.get("LEDGE_SITE_PACKAGES", "").strip()
+SITE_PKGS = Path(_extra_site).resolve() if _extra_site else None
 
 datas = [
     (str(ROOT / "LICENSE"), "."),
@@ -28,7 +30,7 @@ binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
 pathex = [str(ROOT)]
-if SITE_PKGS.exists():
+if SITE_PKGS is not None and SITE_PKGS.exists():
     pathex.append(str(SITE_PKGS))
 
 a = Analysis(

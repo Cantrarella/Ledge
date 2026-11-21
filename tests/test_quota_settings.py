@@ -497,7 +497,7 @@ def test_08_save_settings_no_race_and_gemini_browser_connect(qt_app, tmp_path, m
     mgr.stop()
 
 
-def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
+def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path, monkeypatch):
     """验证设置窗口 QApplication 级 QToolTip 浅色/深色主题、防重复追加与关闭恢复。"""
     import os
     from pathlib import Path
@@ -545,7 +545,9 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
         # 触发原生 QToolTip 渲染并检查背景色（浅色白底，非系统黑框）
         card = quota_pg._cards[0]
         target_w = card.btn_remove
+        from PySide6 import QtGui
         gpos = win.mapToGlobal(win.rect().center())
+        monkeypatch.setattr(QtGui.QCursor, "pos", staticmethod(lambda: gpos))
         tip_txt_light = target_w.toolTip() or "从监控列表移除该账号"
         QtWidgets.QToolTip.showText(gpos, tip_txt_light, win)
         _wait_until(
@@ -554,7 +556,7 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
             timeout_s=1.0,
         )
         tip_widget = next(
-            (w for w in qt_app.topLevelWidgets() if w.metaObject().className() == "QTipLabel"),
+            (w for w in qt_app.topLevelWidgets() if w.metaObject().className() == "QTipLabel" and w.isVisible()),
             None,
         )
         assert tip_widget is not None
@@ -584,7 +586,7 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path):
             timeout_s=1.0,
         )
         tip_widget_dark = next(
-            (w for w in qt_app.topLevelWidgets() if w.metaObject().className() == "QTipLabel"),
+            (w for w in qt_app.topLevelWidgets() if w.metaObject().className() == "QTipLabel" and w.isVisible()),
             None,
         )
         assert tip_widget_dark is not None
