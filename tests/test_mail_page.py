@@ -345,7 +345,7 @@ def test_04_badge_visibility_and_provider_symbols(qt_app, tmp_path):
     qt_app.processEvents()
     assert len(pg1._rows) == 1
     assert pg1._rows[0].show_badge is False
-    assert pg1._rows[0].height() == 17
+    assert pg1._rows[0].height() == 23
     assert "GitHub Notification" in pg1._rows[0].toolTip()
     pg1.close()
 
@@ -908,7 +908,7 @@ def test_10_otp_preview_card_layout_interaction_and_filtering(qt_app, tmp_path):
     # 4) 右侧统一使用单行 _MailRow，不包含 "已隐藏" 标签，且内部滚轮消费
     assert all(isinstance(r, _MailRow) for r in pg._rows)
     assert all(r.show_otp_badge is False for r in pg._rows)
-    assert pg._rows[0].height() == 17
+    assert pg._rows[0].height() == 23
 
     sb = pg.scroll.verticalScrollBar()
     assert sb.maximum() > 0
@@ -973,7 +973,7 @@ def test_10_otp_preview_card_layout_interaction_and_filtering(qt_app, tmp_path):
     assert pg.otp_preview_card.isVisibleTo(pg)
     assert pg.otp_preview_card._info.code == "429954"
     assert len(pg._rows) >= 2
-    assert all(r.isVisibleTo(pg) and r.height() == 17 for r in pg._rows)
+    assert all(r.isVisibleTo(pg) and r.height() == 23 for r in pg._rows)
 
     # 8) 切换到无验证码的账号 a1：左侧预览卡完全隐藏，计时器停止，右侧列表恢复整宽
     pg.set_filter_mode("all")
@@ -1033,7 +1033,7 @@ def test_09_mail_scroll_clean_and_collapse_returns_to_list(qt_app, tmp_path):
         qt_app.processEvents()
         assert pg.scroll.inner.pos().y() == -sb.value()
         ys = [r.geometry().y() for r in pg._rows]
-        assert all(ys[i + 1] - ys[i] == 17 for i in range(len(ys) - 1))
+        assert all(ys[i + 1] - ys[i] == 25 for i in range(len(ys) - 1))
 
         # 2) 点开邮件详情（419×236），随后收起岛体 -> 自动回到邮件列表态（419×140）
         pg.open_detail(mgr._headers["a1"][0])

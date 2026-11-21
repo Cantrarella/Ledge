@@ -189,7 +189,7 @@ class _CompactChip(Hoverable):
 
 
 class _MailRow(Hoverable):
-    """单行邮件项（17px）：未读圆点 + 可选服务商徽章 + 发件人 + 标题 + 可选验证码隐藏标 + 时间。"""
+    """单行邮件项（23px）：未读圆点 + 可选服务商徽章 + 发件人 + 标题 + 时间。"""
     row_clicked = QtCore.Signal(str, str)  # account_id, uid
 
     def __init__(
@@ -213,7 +213,7 @@ class _MailRow(Hoverable):
         self.badge_text = _provider_badge_text(acc)
         self.selected = selected
         self.time_str = _format_mail_time(hdr.received_at)
-        self.setFixedHeight(17)
+        self.setFixedHeight(23)
         self.setToolTip(_format_mail_tooltip(hdr, acc))
         self.clicked.connect(lambda: self.row_clicked.emit(self.hdr.account_id, str(self.hdr.uid)))
 
@@ -262,7 +262,7 @@ class _MailRow(Hoverable):
         # 3. 时间（右对齐固定约 34px）
         time_w = 34.0
         time_r = QtCore.QRectF(r.right() - time_w - 5.0, r.top(), time_w, r.height())
-        p.setFont(ui_font(9.5, num=True))
+        p.setFont(ui_font(9.0, num=True))
         p.setPen(theme.text3())
         p.drawText(time_r, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self.time_str)
 
@@ -277,7 +277,7 @@ class _MailRow(Hoverable):
         avail_for_text = max(60.0, right_limit - sender_x - 6.0)
         sender_w = min(base_sender_w, max(46.0, avail_for_text * 0.38)) if r.width() < 280 else base_sender_w
         sender_r = QtCore.QRectF(sender_x, r.top(), sender_w, r.height())
-        f_sender = ui_font(10.5, weight)
+        f_sender = ui_font(10.0, weight)
         p.setFont(f_sender)
         p.setPen(theme.text() if unread else theme.text2())
         fm_s = QtGui.QFontMetrics(f_sender)
@@ -288,7 +288,7 @@ class _MailRow(Hoverable):
         subj_x = sender_x + sender_w + 6.0
         subj_w = max(36.0, right_limit - subj_x)
         subj_r = QtCore.QRectF(subj_x, r.top(), subj_w, r.height())
-        f_subj = ui_font(10.5, weight)
+        f_subj = ui_font(10.0, weight)
         p.setFont(f_subj)
         p.setPen(theme.text() if unread else theme.text2())
         fm_t = QtGui.QFontMetrics(f_subj)
@@ -676,7 +676,7 @@ class MailPage(Page):
         self.empty_no_mail.action_clicked.connect(self.sync_enabled_accounts)
 
         self.scroll = WheelScrollArea(self.stack, orientation="vertical")
-        self.scroll_lay = vbox(spacing=0, margins=(2, 1, 2, 1))
+        self.scroll_lay = vbox(spacing=2, margins=(2, 2, 2, 2))
         self.scroll.inner.setLayout(self.scroll_lay)
 
         self.stack.addWidget(self.empty_no_account)  # 0
