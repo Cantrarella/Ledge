@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt pyinstaller
+
+      - name: Ensure Inno Setup 6 is installed
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Run pytest suite
+        env:
+          QT_ENABLE_HIGHDPI_SCALING: "1"
+        run: python -m pytest tests -v --tb=short
+
+      - name: Build portable zip and setup installer
+        shell: pwsh
+        run: .\scripts\build.ps1
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ledge ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/Ledge-portable.zip
+            dist/Ledge-portable.zip.sha256
+            dist/Ledge-Setup-*.exe
+            dist/Ledge-Setup-*.exe.sha256
