@@ -1302,3 +1302,78 @@ def test_17_settings_backup_read_error_aborts_before_delete(qt_app, tmp_path, mo
     finally:
         win.close()
         mgr.stop()
+
+
+def test_18_chunked_quota_settings_backup_read_error_aborts_before_delete(qt_app, tmp_path, monkeypatch):
+    """分块凭据在设置层首次备份读取遇到短暂 WinError 5（read_secret 返回空串）时，必须中止删除。"""
+    from dataclasses import asdict
+    from wisland.services.quota.credentials import WindowsQuotaCredentialStore
+    from wisland.services.quota.models import QuotaSnapshot
+
+    fake_raw: dict[str, tuple[str, str]] = {}
+    creds = WindowsQuotaCredentialStore()
+    chunk0_reads = {"n": 0}
+    fail_delete_targets: set[str] = set()
+
+    def _fake_write(target: str, username: str, secret: str) -> bool:
+        fake_raw[target] = (username, secret)
+        return True
+
+    def _fake_read(target: str) -> str | None:
+        if target == "Wisland/quota/q1/chunk/0":
+            chunk0_reads["n"] += 1
+            if chunk0_reads["n"] == 1:
+                creds.last_error = 5
+                creds.last_error_message = "WinError 5: Access denied"
+                return None
+        item = fake_raw.get(target)
+        return item[1] if item is not None else None
+
+    def _fake_delete(target: str) -> bool:
+        if target in fail_delete_targets:
+            creds.last_error = 5
+            creds.last_error_message = "WinError 5: Access denied"
+            return False
+        fake_raw.pop(target, None)
+        return True
+
+    monkeypatch.setattr(creds, "_write_single", _fake_write)
+    monkeypatch.setattr(creds, "_read_single", _fake_read)
+    monkeypatch.setattr(creds, "_delete_single", _fake_delete)
+
+    cm, _, cache, old_mgr, _ = _make_quota_env(tmp_path)
+    old_mgr.stop()
+    from wisland.services.quota.manager import QuotaManager
+    mgr = QuotaManager(config_obj=cm, cred_store=creds, cache=cache)
+
+    q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+    q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+    sec1 = "chunked-secret-" + ("A1B2C3D4E5" * 260)
+    sec2 = "short-secret-2"
+    assert creds.save_secret(q1.credential_key, q1.identity, sec1) is True
+    assert creds.save_secret(q2.credential_key, q2.identity, sec2) is True
+
+    cache.put(QuotaSnapshot(account_id="q1", fetched_at=100.0, status="ok"), flush=True)
+    cache.put(QuotaSnapshot(account_id="q2", fetched_at=100.0, status="ok"), flush=True)
+    cm.set("quota.accounts", [asdict(q1), asdict(q2)], save=True)
+    mgr.load_from_config()
+
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        quota_pg._draft_accounts = []
+        quota_pg._deleted_accounts = [q1, q2]
+        win.draft.set("quota.accounts", [])
+        chunk0_reads["n"] = 0
+        fail_delete_targets.add(q2.credential_key)
+
+        assert win.save_settings() is False
+        assert len(cm.get("quota.accounts")) == 2
+        assert creds.read_secret(q1.credential_key) == sec1
+        assert creds.read_secret(q2.credential_key) == sec2
+    finally:
+        win.close()
+        mgr.stop()

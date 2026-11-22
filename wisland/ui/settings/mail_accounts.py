@@ -751,7 +751,7 @@ class MailAccountsSettingsPage(SettingsPage):
             if acc is None:
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
-            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+            if not prev and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
                 for tgt, usr, old_val in reversed(written_rollback):
                     if old_val is None:
                         self._mgr._creds.delete_secret(tgt)
@@ -796,7 +796,7 @@ class MailAccountsSettingsPage(SettingsPage):
             if not acc.credential_key:
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
-            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+            if not prev and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
                 rb_ok = True
                 for tgt, usr, old_val in reversed(del_rollback):
                     if old_val is not None and not self._mgr._creds.save_secret(tgt, usr, old_val):

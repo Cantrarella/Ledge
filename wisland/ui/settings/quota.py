@@ -982,7 +982,7 @@ class QuotaSettingsPage(SettingsPage):
             if acc is None or not sec:
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
-            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+            if not prev and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
                 self._last_commit_rollback = written_rollback
                 self._last_delete_rollback = []
                 rb_ok = self.rollback_credentials()
@@ -1010,7 +1010,7 @@ class QuotaSettingsPage(SettingsPage):
                 continue
             cred_key = str(del_acc.credential_key or "").strip() or make_quota_credential_key(del_acc.id)
             prev = self._mgr._creds.read_secret(cred_key)
-            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+            if not prev and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
                 self._last_delete_rollback = del_rollback
                 self._last_commit_rollback = written_rollback
                 rb_ok = self.rollback_credentials()
