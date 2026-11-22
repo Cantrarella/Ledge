@@ -776,16 +776,18 @@ class MailAccountsSettingsPage(SettingsPage):
         self._last_commit_rollback = []
         return all_ok
 
-    def finalize_commit(self):
-        """配置原子写入成功后清理待删除凭据并刷新管理器内存状态。"""
-        for acc in self._deleted_accounts:
-            self._mgr._creds.delete_secret(acc.credential_key)
+    def finalize_commit(self) -> tuple[bool, str]:
+        """配置原子写入成功后清理待删除凭据并刷新管理器内存状态；删除凭据失败时返回错误。"""
+        for acc in list(self._deleted_accounts):
+            if acc.credential_key and not self._mgr._creds.delete_secret(acc.credential_key):
+                return False, f"清理 {acc.email} 授权码失败"
         self._pending_secrets.clear()
         self._pending_ids.clear()
         self._deleted_accounts.clear()
         self._mgr.load_from_config()
         self._mgr.accounts_changed.emit()
         self._rebuild_account_list()
+        return True, ""
 
     def discard_pending(self):
         """取消或关闭时丢弃暂存账号、清空内存授权码并取消进行中的连接。"""

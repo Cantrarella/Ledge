@@ -373,6 +373,7 @@ class LyricsService(QtCore.QObject):
 
     def _download_kugou_candidate(self, cand: dict) -> Lyrics | None:
         """优先尝试下载并解密酷狗 KRC 逐字歌词，失败时回退 LRC。"""
+        last_net_err: Exception | None = None
         for fmt in ("krc", "lrc"):
             try:
                 rd = self._client.get(
@@ -401,8 +402,13 @@ class LyricsService(QtCore.QObject):
                     lines = parse_lrc(text)
                     if lines:
                         return Lyrics(lines, [])
+            except (httpx.HTTPError, OSError) as exc:
+                last_net_err = exc
+                continue
             except Exception:  # noqa: BLE001
                 continue
+        if last_net_err is not None:
+            raise last_net_err
         return None
 
     def _fetch_kugou_by_hash(self, kg_hash: str, dur: float, keyword: str = "") -> Lyrics | None:

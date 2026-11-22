@@ -277,18 +277,20 @@ class QuotaManager(QtCore.QObject):
                 return True
         return False
 
-    def remove_account_after_commit(self, account_id: str, credential_key: str = ""):
-        """在配置原子写入成功后删除对应凭据与本地额度缓存。"""
+    def remove_account_after_commit(self, account_id: str, credential_key: str = "") -> bool:
+        """在配置原子写入成功后删除对应凭据与本地额度缓存；凭据删除失败时返回 False。"""
         acc_id = str(account_id or "").strip()
         if not acc_id:
-            return
+            return True
         cred_key = str(credential_key or "").strip() or make_quota_credential_key(acc_id)
-        self._creds.delete_secret(cred_key)
+        if not self._creds.delete_secret(cred_key):
+            return False
         self._cache.remove(acc_id, flush=True)
         self._snapshots.pop(acc_id, None)
         self._rate_limit_until.pop(acc_id, None)
         self._accounts = [a for a in self._accounts if a.id != acc_id]
         self.accounts_changed.emit()
+        return True
 
     def cancel_test(self, req_id: str):
         """取消正在进行的连接测试并标记丢弃晚到结果。"""

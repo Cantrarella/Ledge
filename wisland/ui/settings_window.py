@@ -804,7 +804,30 @@ class SettingsWindow(QtWidgets.QWidget):
                         return False
 
                 if mail_pg is not None:
-                    mail_pg.finalize_commit()
+                    mail_res = mail_pg.finalize_commit()
+                    if isinstance(mail_res, tuple):
+                        mail_del_ok, mail_del_err = bool(mail_res[0]), str(mail_res[1] or "")
+                    else:
+                        mail_del_ok, mail_del_err = True, ""
+                    if not mail_del_ok:
+                        cfg_rb_ok = True
+                        if isinstance(prev_snapshot, dict) and prev_snapshot:
+                            try:
+                                cfg_rb_ok, _ = self.cfg_obj.commit_draft(prev_snapshot, strict=False, emit_changed=False)
+                            except Exception:  # noqa: BLE001
+                                cfg_rb_ok = False
+                        cred_rb_ok = _rollback_creds(
+                            quota_pg if quota_pg is not None else None,
+                            mail_pg if mail_written else None,
+                            sub_pg if sub_written else None,
+                        )
+                        self.status_lbl.set_color(settings_theme.up())
+                        msg = f"保存失败：{mail_del_err or '清理已删除邮箱凭据失败'}"
+                        if not (cfg_rb_ok and cred_rb_ok):
+                            msg += "（且部分凭据或配置回滚失败，请检查系统凭据管理器）"
+                        self.status_lbl.setText(msg)
+                        self.switch_category("mail_accounts")
+                        return False
             finally:
                 if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                     quota_mgr.set_commit_sync_suppressed(False)

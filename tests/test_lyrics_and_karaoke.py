@@ -141,3 +141,40 @@ def test_lyrics_network_error_backoff_partial_fallback_and_duration_change(monke
     m_id_240 = {"song_id": 12345, "title": "Preview", "artist": "Y", "duration": 240.0}
     assert svc.get(m_id_240) is None
     assert len(bg_calls) == 4
+
+
+def test_kugou_download_network_error_triggers_backoff(monkeypatch, tmp_path):
+    import httpx
+    import wisland.services.lyrics as lyr_mod
+
+    monkeypatch.setattr(lyr_mod, "_DISK_CACHE_FILE", tmp_path / "lyrics_cache.json")
+    svc = LyricsService()
+
+    class _FakeResp:
+        def __init__(self, data: dict):
+            self._data = data
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    class _FakeClient:
+        def get(self, url, params=None):
+            if "search/song" in url:
+                return _FakeResp({"data": {"info": [{"songname": "KgSong", "singername": "KgArtist", "duration": 200, "hash": "h1"}]}})
+            if "krcs.kugou.com/search" in url:
+                return _FakeResp({"candidates": [{"id": "1", "accesskey": "k", "duration": 200000}]})
+            raise httpx.ConnectError("download down")
+
+    svc._local.client = _FakeClient()
+    monkeypatch.setattr(svc, "_fetch_qq", lambda m: None)
+    monkeypatch.setattr(svc, "_fetch_lrclib", lambda m: None)
+    monkeypatch.setattr(svc, "_fetch_netease", lambda m: None)
+
+    try:
+        svc._fetch({"title": "KgSong", "artist": "KgArtist", "duration": 200.0})
+        assert False, "expected httpx.ConnectError from kugou download"
+    except httpx.ConnectError:
+        pass

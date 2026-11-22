@@ -777,3 +777,92 @@ def test_11_settings_save_full_rollback_matrix(qt_app, tmp_path, monkeypatch):
     finally:
         win.close()
         mgr.stop()
+
+
+def test_12_quota_rollback_failure_and_delete_secret_failure(qt_app, tmp_path, monkeypatch):
+    """验证配额凭据回滚失败提示，以及删除邮箱/配额凭据失败时回滚配置且不显示保存成功。"""
+    from wisland.services.mail.credentials import InMemoryCredentialStore, make_credential_key
+    from wisland.services.mail.manager import MailAccountManager
+    from wisland.services.mail.models import MailAccount
+    from wisland.ui.settings.mail_accounts import MailAccountsSettingsPage
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    mail_creds = InMemoryCredentialStore()
+    mail_acc = MailAccount(
+        id="m_del",
+        email="del@example.com",
+        provider="qq",
+        host="imap.qq.com",
+        port=993,
+        security="ssl",
+        username="del@example.com",
+        credential_key=make_credential_key("m_del"),
+    )
+    mail_creds.save_secret(mail_acc.credential_key, mail_acc.username, "mail-del-secret")
+
+    q_existing = QuotaAccount(id="q_del", provider=Provider.DEEPSEEK.value, alias="QD", identity="qd-id", credential_key="Wisland/quota/q_del")
+    creds.save_secret(q_existing.credential_key, q_existing.identity, "qd-secret")
+
+    cm.set("mail.accounts", [mail_acc.to_config_dict()], save=True)
+    cm.set("quota.accounts", [q_existing.__dict__], save=True)
+    mgr.load_from_config()
+    mail_mgr = MailAccountManager(config_obj=cm, cred_store=mail_creds)
+
+    changed_events: list[int] = []
+    cm.changed.connect(lambda: changed_events.append(1))
+
+    ctx = type("Ctx", (), {"quota": mgr, "mail": mail_mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        mail_pg = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        # 1) 配额第二笔写入失败且第一笔回滚删除也失败 -> 界面必须明确提示回滚失败
+        q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+        q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+        quota_pg._draft_accounts = [q_existing, q1, q2]
+        quota_pg._pending_secrets = {"q1": "q1-secret-val", "q2": "q2-secret-val"}
+
+        orig_save = creds.save_secret
+        orig_del = creds.delete_secret
+        monkeypatch.setattr(creds, "save_secret", lambda t, u, s: False if t == q2.credential_key else orig_save(t, u, s))
+        monkeypatch.setattr(creds, "delete_secret", lambda t: False if t == q1.credential_key else orig_del(t))
+
+        assert win.save_settings() is False
+        assert "回滚失败" in win.status_lbl.text()
+        assert "q1-secret-val" not in win.status_lbl.text()
+        assert changed_events == []
+
+        # 2) 删除邮箱凭据失败 -> 配置回滚保留该账号，不广播变更，界面提示保存失败
+        monkeypatch.setattr(creds, "save_secret", orig_save)
+        monkeypatch.setattr(creds, "delete_secret", orig_del)
+        quota_pg._draft_accounts = [q_existing]
+        quota_pg._pending_secrets = {}
+        mail_pg._draft_accounts = []
+        mail_pg._deleted_accounts = [mail_acc]
+        win.draft.set("mail.accounts", [])
+        monkeypatch.setattr(mail_creds, "delete_secret", lambda _t: False)
+
+        assert win.save_settings() is False
+        assert len(cm.get("mail.accounts")) == 1
+        assert changed_events == []
+        assert "保存失败" in win.status_lbl.text()
+
+        # 3) 删除配额凭据失败 -> 配置回滚保留该账号，不广播变更，界面提示保存失败
+        monkeypatch.setattr(mail_creds, "delete_secret", InMemoryCredentialStore.delete_secret.__get__(mail_creds, InMemoryCredentialStore))
+        mail_pg._draft_accounts = [mail_acc]
+        mail_pg._deleted_accounts = []
+        win.draft.set("mail.accounts", [mail_acc.to_config_dict()])
+        quota_pg._draft_accounts = []
+        quota_pg._deleted_accounts = [q_existing]
+        win.draft.set("quota.accounts", [])
+        monkeypatch.setattr(creds, "delete_secret", lambda _t: False)
+
+        assert win.save_settings() is False
+        assert len(cm.get("quota.accounts")) == 1
+        assert changed_events == []
+        assert "保存失败" in win.status_lbl.text()
+    finally:
+        win.close()
+        mgr.stop()
