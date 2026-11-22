@@ -800,7 +800,7 @@ class MailAccountsSettingsPage(SettingsPage):
         self._last_delete_rollback = del_rollback
         return True, ""
 
-    def apply_runtime_commit(self) -> None:
+    def apply_runtime_commit(self, emit_signal: bool = True) -> None:
         """全部配置与凭据提交成功后，清理草稿状态并刷新管理器运行时与通知。"""
         self._last_commit_rollback = []
         self._last_delete_rollback = []
@@ -808,7 +808,8 @@ class MailAccountsSettingsPage(SettingsPage):
         self._pending_ids.clear()
         self._deleted_accounts.clear()
         self._mgr.load_from_config()
-        self._mgr.accounts_changed.emit()
+        if emit_signal:
+            self._mgr.accounts_changed.emit()
         self._rebuild_account_list()
 
     def finalize_commit(self) -> tuple[bool, str]:

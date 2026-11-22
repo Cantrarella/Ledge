@@ -1005,9 +1005,14 @@ class QuotaSettingsPage(SettingsPage):
             cred_key = str(del_acc.credential_key or "").strip() or make_quota_credential_key(del_acc.id)
             prev = self._mgr._creds.read_secret(cred_key)
             if not self._mgr._creds.delete_secret(cred_key):
+                del_rb_ok = not bool(getattr(self._mgr._creds, "last_rollback_failed", False))
+                if del_rb_ok and prev is not None and prev != "":
+                    if self._mgr._creds.read_secret(cred_key) != prev:
+                        if not self._mgr._creds.save_secret(cred_key, del_acc.identity or del_acc.id, prev):
+                            del_rb_ok = False
                 self._last_delete_rollback = del_rollback
                 self._last_commit_rollback = written_rollback
-                rb_ok = self.rollback_credentials()
+                rb_ok = self.rollback_credentials() and del_rb_ok
                 rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
                 return False, f"清理已删除账号凭据失败{rb_note}"
             del_rollback.append((cred_key, del_acc.identity or del_acc.id, prev))
@@ -1016,8 +1021,8 @@ class QuotaSettingsPage(SettingsPage):
         self._last_delete_rollback = del_rollback
         return True, ""
 
-    def apply_runtime_commit(self) -> None:
-        """全部配置与凭据提交成功后，更新缓存、清理已删账号运行时状态并单次发出 accounts_changed。"""
+    def apply_runtime_commit(self, emit_signal: bool = True) -> None:
+        """全部配置与凭据提交成功后，更新缓存、清理已删账号运行时状态并按需发出 accounts_changed。"""
         remaining_ids = {a.id for a in self._draft_accounts}
         for acc_id in list(self._pending_secrets.keys()):
             acc = next((a for a in self._draft_accounts if a.id == acc_id), None)
@@ -1039,7 +1044,8 @@ class QuotaSettingsPage(SettingsPage):
             if acc_id in remaining_ids:
                 self._mgr._snapshots[acc_id] = copy.deepcopy(snap)
         self._mgr._sync_auto_timer()
-        self._mgr.accounts_changed.emit()
+        if emit_signal:
+            self._mgr.accounts_changed.emit()
         self._rebuild_account_cards()
 
     def finalize_commit(self) -> tuple[bool, str]:

@@ -819,9 +819,13 @@ class SettingsWindow(QtWidgets.QWidget):
                     return False
 
                 if quota_pg is not None:
-                    quota_pg.apply_runtime_commit()
+                    quota_pg.apply_runtime_commit(emit_signal=False)
                 if mail_pg is not None:
-                    mail_pg.apply_runtime_commit()
+                    mail_pg.apply_runtime_commit(emit_signal=False)
+                if quota_pg is not None:
+                    quota_pg._mgr.accounts_changed.emit()
+                if mail_pg is not None:
+                    mail_pg._mgr.accounts_changed.emit()
                 self.cfg_obj.changed.emit()
             finally:
                 if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):

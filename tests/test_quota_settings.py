@@ -989,3 +989,163 @@ def test_13_multi_delete_rollback_and_single_signal_commit(qt_app, tmp_path, mon
     finally:
         win.close()
         mgr.stop()
+
+
+def test_14_chunked_quota_partial_delete_rollback(qt_app, tmp_path, monkeypatch):
+    """分块配额凭据部分删除失败时，两笔凭据（含主清单/分块/校验和）必须完整恢复；恢复失败须提示。"""
+    from dataclasses import asdict
+    from wisland.services.quota.credentials import WindowsQuotaCredentialStore
+    from wisland.services.quota.models import QuotaSnapshot
+
+    # 使用真实的 WindowsQuotaCredentialStore 分块逻辑，仅替换底层单条 Win32 读写删
+    fake_raw: dict[str, tuple[str, str]] = {}
+    creds = WindowsQuotaCredentialStore()
+    fail_delete_targets: set[str] = set()
+    fail_write_targets: set[str] = set()
+
+    def _fake_write(target: str, username: str, secret: str) -> bool:
+        if target in fail_write_targets:
+            creds.last_error = 5
+            creds.last_error_message = "WinError 5: Access denied"
+            return False
+        fake_raw[target] = (username, secret)
+        return True
+
+    def _fake_read(target: str) -> str | None:
+        item = fake_raw.get(target)
+        return item[1] if item is not None else None
+
+    def _fake_delete(target: str) -> bool:
+        if target in fail_delete_targets:
+            creds.last_error = 5
+            creds.last_error_message = "WinError 5: Access denied"
+            return False
+        fake_raw.pop(target, None)
+        return True
+
+    monkeypatch.setattr(creds, "_write_single", _fake_write)
+    monkeypatch.setattr(creds, "_read_single", _fake_read)
+    monkeypatch.setattr(creds, "_delete_single", _fake_delete)
+
+    cm, _, cache, old_mgr, _ = _make_quota_env(tmp_path)
+    old_mgr.stop()
+    from wisland.services.quota.manager import QuotaManager
+    mgr = QuotaManager(config_obj=cm, cred_store=creds, cache=cache)
+
+    q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+    q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+    sec1 = "short-secret-1"
+    sec2 = "chunked-secret-" + ("A1B2C3D4E5" * 260)  # > 1800 UTF-16 bytes，触发主清单 + 多分块
+    assert creds.save_secret(q1.credential_key, q1.identity, sec1) is True
+    assert creds.save_secret(q2.credential_key, q2.identity, sec2) is True
+    assert f"{q2.credential_key}/chunk/0" in fake_raw
+    assert f"{q2.credential_key}/chunk/1" in fake_raw
+
+    cache.put(QuotaSnapshot(account_id="q1", fetched_at=100.0, status="ok"), flush=True)
+    cache.put(QuotaSnapshot(account_id="q2", fetched_at=100.0, status="ok"), flush=True)
+    cm.set("quota.accounts", [asdict(q1), asdict(q2)], save=True)
+    mgr.load_from_config()
+
+    cfg_signals: list[int] = []
+    quota_signals: list[int] = []
+    cm.changed.connect(lambda: cfg_signals.append(1))
+    mgr.accounts_changed.connect(lambda: quota_signals.append(1))
+
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        # 1) 第一笔正常删除，第二笔主清单删除成功但 chunk/1 删除失败
+        quota_pg._draft_accounts = []
+        quota_pg._deleted_accounts = [q1, q2]
+        win.draft.set("quota.accounts", [])
+        fail_delete_targets.add(f"{q2.credential_key}/chunk/1")
+
+        assert win.save_settings() is False
+        assert len(cm.get("quota.accounts")) == 2
+        assert creds.read_secret(q1.credential_key) == sec1
+        assert creds.read_secret(q2.credential_key) == sec2
+        assert cache.get("q1") is not None and cache.get("q2") is not None
+        assert [a.id for a in mgr.list_accounts()] == ["q1", "q2"]
+        assert cfg_signals == [] and quota_signals == []
+
+        # 2) 模拟部分删除后恢复写入也失败 -> 界面明确提示回滚失败且不含凭据明文
+        fail_write_targets.add(f"{q2.credential_key}/chunk/0")
+        assert win.save_settings() is False
+        st_txt = win.status_lbl.text()
+        assert "回滚失败" in st_txt
+        assert "chunked-secret-" not in st_txt
+        assert sec1 not in st_txt
+    finally:
+        win.close()
+        mgr.stop()
+
+
+def test_15_both_managers_updated_before_any_success_signal(qt_app, tmp_path, monkeypatch):
+    """同一次保存同时删除邮箱与配额账号时，两个管理器和缓存都必须先更新完毕再发送通知。"""
+    from dataclasses import asdict
+    from wisland.services.mail.credentials import InMemoryCredentialStore, make_credential_key
+    from wisland.services.mail.manager import MailAccountManager
+    from wisland.services.mail.models import MailAccount
+    from wisland.services.quota.models import QuotaSnapshot
+    from wisland.ui.settings.mail_accounts import MailAccountsSettingsPage
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    mail_creds = InMemoryCredentialStore()
+
+    m1 = MailAccount(id="m1", email="m1@example.com", provider="qq", host="imap.qq.com", port=993, security="ssl", username="m1@example.com", credential_key=make_credential_key("m1"))
+    m2 = MailAccount(id="m2", email="m2@example.com", provider="qq", host="imap.qq.com", port=993, security="ssl", username="m2@example.com", credential_key=make_credential_key("m2"))
+    mail_creds.save_secret(m1.credential_key, m1.username, "mail-sec-1")
+    mail_creds.save_secret(m2.credential_key, m2.username, "mail-sec-2")
+
+    q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+    q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+    creds.save_secret(q1.credential_key, q1.identity, "quota-sec-1")
+    creds.save_secret(q2.credential_key, q2.identity, "quota-sec-2")
+    cache.put(QuotaSnapshot(account_id="q1", fetched_at=100.0, status="ok"), flush=True)
+    cache.put(QuotaSnapshot(account_id="q2", fetched_at=100.0, status="ok"), flush=True)
+
+    cm.set("mail.accounts", [m1.to_config_dict(), m2.to_config_dict()], save=True)
+    cm.set("quota.accounts", [asdict(q1), asdict(q2)], save=True)
+    mgr.load_from_config()
+    mail_mgr = MailAccountManager(config_obj=cm, cred_store=mail_creds)
+
+    observations: list[tuple[str, list[str], list[str], bool]] = []
+
+    def _observe(tag: str):
+        observations.append((
+            tag,
+            [a.id for a in mgr.list_accounts()],
+            [a.id for a in mail_mgr.list_accounts()],
+            cache.get("q1") is None,
+        ))
+
+    mgr.accounts_changed.connect(lambda: _observe("quota"))
+    mail_mgr.accounts_changed.connect(lambda: _observe("mail"))
+    cm.changed.connect(lambda: _observe("cfg"))
+
+    ctx = type("Ctx", (), {"quota": mgr, "mail": mail_mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        mail_pg = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        quota_pg._draft_accounts = [q2]
+        quota_pg._deleted_accounts = [q1]
+        win.draft.set("quota.accounts", [asdict(q2)])
+        mail_pg._draft_accounts = [m2]
+        mail_pg._deleted_accounts = [m1]
+        win.draft.set("mail.accounts", [m2.to_config_dict()])
+
+        assert win.save_settings() is True
+        assert [tag for tag, *_ in observations] == ["quota", "mail", "cfg"]
+        for tag, q_ids, m_ids, q1_purged in observations:
+            assert q_ids == ["q2"], f"{tag} saw stale quota: {q_ids}"
+            assert m_ids == ["m2"], f"{tag} saw stale mail: {m_ids}"
+            assert q1_purged is True, f"{tag} saw unpurged q1 cache"
+    finally:
+        win.close()
+        mgr.stop()

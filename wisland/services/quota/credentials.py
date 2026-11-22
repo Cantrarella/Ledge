@@ -174,26 +174,54 @@ class WindowsQuotaCredentialStore(Win32CredentialBase):
 
     def delete_secret(self, target: str) -> bool:
         self._clear_error()
+        self.last_rollback_failed = False
         if not target:
             return False
         raw = self._read_single(target)
         is_manifest, manifest = self._parse_manifest(raw)
 
-        ok = self._delete_single(target)
+        # 收集待删条目快照以便部分删除失败时按逆序恢复
+        targets_to_delete: list[tuple[str, str | None]] = [(target, raw)]
+        seen_targets: set[str] = {target}
         if is_manifest and manifest is not None:
             prefix = str(manifest.get("prefix") or f"{target}/chunk")
-            if not self._cleanup_chunks(prefix, int(manifest.get("chunks") or 0)):
-                ok = False
+            count = int(manifest.get("chunks") or 0)
+            for i in range(max(0, count)):
+                ct = f"{prefix}/{i}"
+                if ct not in seen_targets:
+                    seen_targets.add(ct)
+                    targets_to_delete.append((ct, self._read_single(ct)))
 
-        # 额外清理默认 target/chunk/{i} 残留分块
         idx = 0
         while idx < 256:
             chunk_target = f"{target}/chunk/{idx}"
-            if self._read_single(chunk_target) is None:
+            val = self._read_single(chunk_target)
+            if val is None:
                 break
-            if not self._delete_single(chunk_target):
-                ok = False
+            if chunk_target not in seen_targets:
+                seen_targets.add(chunk_target)
+                targets_to_delete.append((chunk_target, val))
             idx += 1
+
+        deleted_items: list[tuple[str, str]] = []
+        ok = True
+        for tgt, old_val in targets_to_delete:
+            if not self._delete_single(tgt):
+                ok = False
+                break
+            if old_val is not None:
+                deleted_items.append((tgt, old_val))
+
+        if not ok:
+            saved_err = self.last_error
+            saved_msg = self.last_error_message
+            rb_ok = True
+            for tgt, old_val in reversed(deleted_items):
+                if not self._write_single(tgt, target, old_val):
+                    rb_ok = False
+            self.last_rollback_failed = not rb_ok
+            self.last_error = saved_err
+            self.last_error_message = saved_msg
         return ok
 
 
