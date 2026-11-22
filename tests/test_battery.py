@@ -206,3 +206,30 @@ def test_battery_service_lifecycle_deferred_start(monkeypatch):
     svc.stop()
     assert not svc._timer.isActive()
     assert calls["watcher_stop"] >= 1
+
+
+def test_battery_alias_clear_persists_after_commit(tmp_path):
+    """清空无线设备别名并提交草稿后，旧别名不得被 Config.validate() 重新合并回来。"""
+    from wisland.core.config import Config
+
+    cm = Config(tmp_path / "config.json")
+    draft = cm.create_draft()
+    draft.set("battery.aliases", {"dev_1": "耳机A", "dev_2": "键盘B"})
+    ok, errs = cm.commit_draft(draft, strict=True)
+    assert ok and not errs
+    assert cm.get("battery.aliases") == {"dev_1": "耳机A", "dev_2": "键盘B"}
+
+    # 清空 dev_1，只保留 dev_2，再全部清空
+    draft2 = cm.create_draft()
+    draft2.set("battery.aliases", {"dev_2": "键盘B"})
+    ok2, errs2 = cm.commit_draft(draft2, strict=True)
+    assert ok2 and not errs2
+    assert cm.get("battery.aliases") == {"dev_2": "键盘B"}
+
+    draft3 = cm.create_draft()
+    draft3.set("battery.aliases", {})
+    ok3, errs3 = cm.commit_draft(draft3, strict=True)
+    assert ok3 and not errs3
+    assert cm.get("battery.aliases") == {}
+    cm2 = Config(tmp_path / "config.json")
+    assert cm2.get("battery.aliases") == {}

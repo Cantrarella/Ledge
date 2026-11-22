@@ -151,3 +151,93 @@ def test_dist_ledges_reuses_source_models(tmp_path: Path):
     models.mkdir(parents=True)
     dist.mkdir(parents=True)
     assert _resolve_models_path(dist, Path("models")) == models
+
+
+def test_live_service_prevents_restart_while_stopping_and_waits_on_exit(monkeypatch):
+    from wisland.live.service import LiveService
+
+    svc = LiveService()
+    waited = {"stop_calls": 0, "wait_calls": 0, "started_new": 0}
+
+    class _FakePipe:
+        def __init__(self):
+            self._running = True
+
+        def isRunning(self):
+            return self._running
+
+        def stop(self, max_wait=None):
+            waited["stop_calls"] += 1
+            if max_wait is not None:
+                self._running = False
+                return True
+            # 模拟后台 stop 超时且线程仍在运行
+            return False
+
+        def wait(self):
+            waited["wait_calls"] += 1
+            self._running = False
+
+    fake_pipe = _FakePipe()
+    svc.pipe = fake_pipe
+    svc.running = True
+
+    bg_tasks = []
+    import wisland.core.bg as bg_mod
+    monkeypatch.setattr(
+        bg_mod,
+        "run_bg",
+        lambda fn, *a, on_done=None, on_error=None: bg_tasks.append((fn, on_done)),
+    )
+    monkeypatch.setattr(svc, "available", lambda: (True, ""))
+    import wisland.live.pipeline as pipe_mod
+    monkeypatch.setattr(
+        pipe_mod,
+        "Pipeline",
+        lambda *_a, **_kw: waited.__setitem__("started_new", waited["started_new"] + 1),
+    )
+
+    # 1) 异步停止尚未完成时，再次 start_listen() 不得启动第二条流水线
+    svc.stop(wait=False)
+    assert svc.running is False
+    assert svc._stopping is fake_pipe
+    svc.start_listen()
+    assert waited["started_new"] == 0
+
+    # 2) 后台 stop() 超时返回 False 且线程仍在跑时，_stopping 不应被清空
+    fn, on_done = bg_tasks.pop()
+    res = fn()
+    if on_done:
+        on_done(res)
+    assert svc._stopping is fake_pipe
+
+    # 3) 退出时 stop(wait=True) 必须等待旧流水线结束
+    svc.stop(wait=True)
+    assert waited["stop_calls"] >= 2
+    assert svc._stopping is None
+
+
+def test_live_service_preload_skips_missing_model_and_sets_openblas_env(monkeypatch):
+    import os
+    from wisland.live.service import LiveService
+
+    svc = LiveService()
+    bg_calls = []
+    import wisland.core.bg as bg_mod
+    monkeypatch.setattr(bg_mod, "run_bg", lambda fn, *a, **kw: bg_calls.append(fn))
+
+    # 1) 模型未下载时，preload() 不触发后台导入
+    monkeypatch.setattr(svc, "available", lambda: (False, "缺少识别模型"))
+    svc.preload()
+    assert svc._preloaded is False
+    assert bg_calls == []
+
+    # 2) 模型已下载时，preload() 设置单线程环境变量并只调度一次
+    monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.setattr(svc, "available", lambda: (True, ""))
+    svc.preload()
+    assert svc._preloaded is True
+    assert len(bg_calls) == 1
+    assert os.environ.get("OPENBLAS_NUM_THREADS") == "1"
+    assert os.environ.get("OMP_NUM_THREADS") == "1"

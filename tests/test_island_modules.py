@@ -59,3 +59,21 @@ def test_life_reminder_banner_signals_and_close_hit():
     )
     banner.mouseReleaseEvent(ev_close)
     assert dismissed == [True]
+
+
+def test_backdrop_thread_blocks_when_want_is_none(monkeypatch):
+    from PySide6 import QtWidgets
+    from wisland.ui.glass import Backdrop
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    bd = Backdrop()
+    wait_timeouts = []
+
+    def fake_wait(timeout=None):
+        wait_timeouts.append(timeout)
+        bd._stop = True
+        return True
+
+    monkeypatch.setattr(bd._wake, "wait", fake_wait)
+    bd._run()
+    assert wait_timeouts == [None]

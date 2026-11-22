@@ -60,14 +60,22 @@ class LiveService(QtCore.QObject):
         self.running = False
         self._dl = None
         self._stopping = None
+        self._stopping_pipes: list = []
         self._last_error = ""
         self._preloaded = False
 
+    @staticmethod
+    def _configure_native_threads():
+        """限制 OpenBLAS / OMP 线程数为 1，避免导入 numpy 时额外提交数百 MB 虚拟内存与数十条线程。"""
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+
     def preload(self):
         """按需在后台预导入语音识别重型依赖，避免未启用实时字幕时常驻占用数百 MB 提交内存。"""
-        if self._preloaded:
+        if self._preloaded or not self.available()[0]:
             return
         self._preloaded = True
+        self._configure_native_threads()
         from ..core.bg import run_bg
         run_bg(lambda: __import__("wisland.live.pipeline"))
 
@@ -98,10 +106,14 @@ class LiveService(QtCore.QObject):
     def start_listen(self):
         if self.running or self.downloading:
             return
+        if self._stopping is not None or self._stopping_pipes:
+            self.status.emit("正在停止上一次聆听，请稍候…")
+            return
         ok, msg = self.available()
         if not ok:
             self._download()
             return
+        self._configure_native_threads()
         from .pipeline import Pipeline       # 重依赖（numpy / sherpa-onnx）用到时才导入
         p = Pipeline(_LiveConfig())
         p.sig_status.connect(self.status)
@@ -138,23 +150,42 @@ class LiveService(QtCore.QObject):
         else:
             self.error.emit(msg)
 
+    def _clear_stopping(self, pipe):
+        if pipe in self._stopping_pipes:
+            self._stopping_pipes.remove(pipe)
+        if self._stopping is pipe:
+            self._stopping = self._stopping_pipes[-1] if self._stopping_pipes else None
+
     def stop(self, wait: bool = False):
         """停止聆听。等待音频线程结束放到后台，不阻塞界面（退出程序时 wait=True）。"""
         p, self.pipe = self.pipe, None
         self._last_error = ""
         self._finished()
+        if p is not None:
+            if p not in self._stopping_pipes:
+                self._stopping_pipes.append(p)
+            self._stopping = p
+
+        if wait:
+            for sp in list(self._stopping_pipes):
+                try:
+                    if not sp.stop(max_wait=20.0):
+                        sp.wait()
+                except Exception:  # noqa: BLE001
+                    pass
+                finally:
+                    self._clear_stopping(sp)
+            return
+
         if p is None:
             return
-        self._stopping = p
-        if wait:
-            try:
-                if not p.stop(max_wait=20.0):
-                    p.wait()
-            except Exception:  # noqa: BLE001
-                pass
-            return
         from ..core.bg import run_bg
-        run_bg(lambda: p.stop(), on_done=lambda _r: setattr(self, "_stopping", None))
+        run_bg(
+            lambda: p.stop(),
+            on_done=lambda stopped_ok, pipe=p: (
+                self._clear_stopping(pipe) if (stopped_ok or not pipe.isRunning()) else None
+            ),
+        )
 
     def _on_pipe_finished(self):
         pipe = self.sender()
@@ -163,8 +194,7 @@ class LiveService(QtCore.QObject):
         QtCore.QTimer.singleShot(150, lambda: trim_working_set(collect_gc=True))
 
     def _thread_finished(self, pipe):
-        if self._stopping is pipe:
-            self._stopping = None
+        self._clear_stopping(pipe)
         if self.pipe is pipe:
             self._finished()
 

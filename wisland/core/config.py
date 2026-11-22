@@ -753,6 +753,10 @@ class Config(QtCore.QObject):
                     combined[k] = _merge(combined[k], v)
                 else:
                     combined[k] = copy.deepcopy(v)
+            # 动态键值映射字段（如设备别名）以草稿整体为准，避免被旧键递归合并恢复
+            if isinstance(raw.get("battery"), dict) and "aliases" in raw["battery"]:
+                if isinstance(combined.get("battery"), dict):
+                    combined["battery"]["aliases"] = copy.deepcopy(raw["battery"]["aliases"])
         return validate_config(combined, strict=strict)
 
     def commit_draft(self, draft_or_dict: ConfigDraft | dict, strict: bool = True) -> tuple[bool, list[str]]:
@@ -761,8 +765,13 @@ class Config(QtCore.QObject):
         if not ok:
             return False, errors
         with self._lock:
+            old_data = self.data
             self.data = cleaned
-            self.save()
+            try:
+                self.save()
+            except Exception:
+                self.data = old_data
+                raise
         self.changed.emit()
         return True, []
 

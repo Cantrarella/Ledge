@@ -157,8 +157,12 @@ class Backdrop(QtCore.QObject):
         last = 0.0
         while not self._stop:
             with self._lock:
+                want = self._want
                 interval = self._interval
-            self._wake.wait(max(0.0, interval - (time.perf_counter() - last)))
+            if want is None:
+                self._wake.wait()
+            else:
+                self._wake.wait(max(0.0, interval - (time.perf_counter() - last)))
             self._wake.clear()
             if self._stop:
                 break

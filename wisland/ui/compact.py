@@ -524,6 +524,34 @@ class CompactView:
         extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
         return base_w + extra_w, H_IDLE
 
+    def _karaoke_glow_strength(self, idx: int, pos_now: float, cur_frac: float) -> float:
+        """计算当前歌词交界微光强度；暂停态下返回 0，避免亮边定格在原地。"""
+        if not self.playing() or self.lyrics is None:
+            return 0.0
+
+        def _ease(v: float) -> float:
+            v = clamp(v, 0.0, 1.0)
+            return v * v * (3.0 - 2.0 * v)
+
+        words_line = self.lyrics.words[idx] if idx < len(self.lyrics.words) else None
+        if words_line:
+            for wi, (ws, we, _tok) in enumerate(words_line):
+                prev_we = words_line[wi - 1][1] if wi > 0 else None
+                next_ws = words_line[wi + 1][0] if wi + 1 < len(words_line) else None
+                if ws <= pos_now < we:
+                    prog = (pos_now - ws) / max(0.02, we - ws)
+                    fade_in = 1.0 if (prev_we is not None and ws - prev_we <= 0.14) else _ease(prog / 0.08)
+                    fade_out = 1.0 if (next_ws is not None and next_ws - we <= 0.14) else _ease((1.0 - prog) / 0.12)
+                    return 0.72 * fade_in * fade_out
+                if pos_now < ws:
+                    if prev_we is not None and (ws - prev_we) <= 0.14:
+                        # 短间隔内微光直接顺滑衔接滑向下一词
+                        return 0.72
+                    return 0.0
+        elif 0.0 < cur_frac < 1.0:
+            return 0.60 * _ease(cur_frac / 0.08) * _ease((1.0 - cur_frac) / 0.12)
+        return 0.0
+
     # --- 绘制 ---
     def paint(self, p: QtGui.QPainter, r: QtCore.QRectF, alpha: float, peak: float):
         if alpha <= 0.01 or r.width() < 40:
@@ -815,29 +843,7 @@ class CompactView:
                 self._lyr_word_cache = (done_s, cur_s, w_done, w_cur, w_after)
             fill_w = clamp(w_done + w_cur * cur_frac, 0.0, float(full))
             glow_w = fill_w
-
-            def _ease(v: float) -> float:
-                v = clamp(v, 0.0, 1.0)
-                return v * v * (3.0 - 2.0 * v)
-
-            words_line = self.lyrics.words[idx] if idx < len(self.lyrics.words) else None
-            if words_line:
-                for wi, (ws, we, _tok) in enumerate(words_line):
-                    prev_we = words_line[wi - 1][1] if wi > 0 else None
-                    next_ws = words_line[wi + 1][0] if wi + 1 < len(words_line) else None
-                    if ws <= pos_now < we:
-                        prog = (pos_now - ws) / max(0.02, we - ws)
-                        fade_in = 1.0 if (prev_we is not None and ws - prev_we <= 0.14) else _ease(prog / 0.08)
-                        fade_out = 1.0 if (next_ws is not None and next_ws - we <= 0.14) else _ease((1.0 - prog) / 0.12)
-                        glow_strength = 0.72 * fade_in * fade_out
-                        break
-                    if pos_now < ws:
-                        if prev_we is not None and (ws - prev_we) <= 0.14:
-                            # 短间隔内微光直接顺滑衔接滑向下一词
-                            glow_strength = 0.72
-                        break
-            elif 0.0 < cur_frac < 1.0:
-                glow_strength = 0.60 * _ease(cur_frac / 0.08) * _ease((1.0 - cur_frac) / 0.12)
+            glow_strength = self._karaoke_glow_strength(idx, pos_now, cur_frac)
 
         def _draw_karaoke(rect_line: QtCore.QRectF, align_flag):
             if fill_w < 0.0:

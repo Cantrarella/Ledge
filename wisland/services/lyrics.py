@@ -204,6 +204,8 @@ class LyricsService(QtCore.QObject):
         ui(lambda: None)
         self._local = threading.local()
         self._cache: dict[str, Lyrics | None] = {}
+        self._miss_until: dict[str, float] = {}
+        self._err_backoff: dict[str, tuple[int, float]] = {}
         self._pending: set[str] = set()
         self._lock = threading.Lock()
         self._disk_lock = threading.Lock()
@@ -237,24 +239,47 @@ class LyricsService(QtCore.QObject):
                 # SMTC 切歌初期 duration 常暂时为 0，等待下次轮询拿到有效时长后再查，避免把 None 写死进缓存
                 return None
         k = self.key(m)
+        now = time.monotonic()
         with self._lock:
             if k in self._cache:
                 return self._cache[k]
+            miss_exp = self._miss_until.get(k)
+            if miss_exp is not None:
+                if now < miss_exp:
+                    return None
+                self._miss_until.pop(k, None)
+            err_ent = self._err_backoff.get(k)
+            if err_ent is not None and now < err_ent[1]:
+                return None
             if k in self._pending:
                 return None
             self._pending.add(k)
         cache_none = (dur != 60.0)
-        run_bg(self._fetch, dict(m), on_done=lambda res, k=k, cn=cache_none: self._done(k, res, cn),
-               on_error=lambda e, k=k: self._done(k, None, False))
+        run_bg(self._fetch, dict(m), on_done=lambda res, k=k, cn=cache_none: self._done(k, res, cn, is_error=False),
+               on_error=lambda e, k=k: self._done(k, None, False, is_error=True))
         return None
 
-    def _done(self, k: str, res, cache_none: bool = True):
+    def _done(self, k: str, res, cache_none: bool = True, is_error: bool = False):
+        now = time.monotonic()
         with self._lock:
             self._pending.discard(k)
-            if res is not None or cache_none:
+            if res is not None:
+                self._miss_until.pop(k, None)
+                self._err_backoff.pop(k, None)
                 self._cache[k] = res
                 if len(self._cache) > 200:
                     self._cache.pop(next(iter(self._cache)))
+            elif is_error:
+                prev_cnt = self._err_backoff.get(k, (0, 0.0))[0] + 1
+                wait_s = min(300.0, 5.0 * (2 ** min(prev_cnt - 1, 5)))
+                self._err_backoff[k] = (prev_cnt, now + wait_s)
+            elif cache_none:
+                self._miss_until.pop(k, None)
+                self._cache[k] = None
+                if len(self._cache) > 200:
+                    self._cache.pop(next(iter(self._cache)))
+            else:
+                self._miss_until[k] = now + 30.0
         self.ready.emit(k)
 
     def _ensure_disk_cache(self):

@@ -706,7 +706,16 @@ class SettingsWindow(QtWidgets.QWidget):
         QtWidgets.QApplication.processEvents()
 
         try:
+            import copy
             self.collect_to_draft()
+            pre_ok, pre_errors, _ = self.cfg_obj.validate(self.draft, strict=True)
+            if not pre_ok:
+                err_msg = pre_errors[0] if pre_errors else "配置校验未通过"
+                self._route_field_errors(pre_errors)
+                self.status_lbl.set_color(settings_theme.up())
+                self.status_lbl.setText(f"保存失败：{err_msg}")
+                return False
+
             mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
             quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
             sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
@@ -732,6 +741,7 @@ class SettingsWindow(QtWidgets.QWidget):
                     self.switch_category("quota")
                     return False
 
+            prev_snapshot = copy.deepcopy(getattr(self.cfg_obj, "data", {}))
             quota_mgr = getattr(quota_pg, "_mgr", None) if quota_pg is not None else None
             if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                 quota_mgr.set_commit_sync_suppressed(True)
@@ -749,6 +759,8 @@ class SettingsWindow(QtWidgets.QWidget):
                 if quota_pg is not None:
                     fin_ok, fin_err = quota_pg.finalize_commit()
                     if not fin_ok:
+                        if isinstance(prev_snapshot, dict) and prev_snapshot:
+                            self.cfg_obj.commit_draft(prev_snapshot, strict=False)
                         self.status_lbl.set_color(settings_theme.up())
                         self.status_lbl.setText(f"保存失败：{fin_err or '会话凭据保存失败，未写入系统凭据管理器'}")
                         self.switch_category("quota")

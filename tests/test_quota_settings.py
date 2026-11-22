@@ -622,3 +622,49 @@ def test_09_settings_tooltip_theme_and_qss_lifecycle(qt_app, tmp_path, monkeypat
         settings_theme.set_mode(orig_set_mode)
         island_theme.set_mode(orig_isl_mode)
         mgr.stop()
+
+
+def test_10_settings_save_atomicity_and_disk_write_rollback(qt_app, tmp_path, monkeypatch):
+    """配置校验失败时不得先写入凭据；磁盘写失败不得污染内存；finalize_commit 失败应回滚配置。"""
+    from wisland.ui.settings.subtitles import SubtitlesSettingsPage
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    orig_interval = cm.get("weather.interval_min")
+
+    # 1) 模拟磁盘拒写：commit_draft 抛异常后内存数据不得变成新值
+    draft_bad_disk = cm.create_draft()
+    draft_bad_disk.set("weather.interval_min", 45)
+    monkeypatch.setattr(cm, "save", lambda: (_ for _ in ()).throw(PermissionError("disk readonly")))
+    try:
+        cm.commit_draft(draft_bad_disk, strict=True)
+        assert False, "expected PermissionError"
+    except PermissionError:
+        pass
+    assert cm.get("weather.interval_min") == orig_interval
+    monkeypatch.undo()
+
+    # 2) 配置校验失败时，不得先写入字幕凭据
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        sub_pg = next(pg for pg in win.leaf_pages if isinstance(pg, SubtitlesSettingsPage))
+        sub_called = {"n": 0}
+        monkeypatch.setattr(sub_pg, "has_pending_credentials", lambda: True)
+        monkeypatch.setattr(sub_pg, "commit_credentials", lambda: (sub_called.__setitem__("n", sub_called["n"] + 1) or (True, "")))
+
+        win.draft.set("weather.interval_min", 99999)  # 非法刷新间隔
+        # 让 collect_to_draft 保留非法值
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+        assert win.save_settings() is False
+        assert sub_called["n"] == 0
+
+        # 3) finalize_commit 失败时，已提交的配置应回滚
+        win.draft.set("weather.interval_min", 30)
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(quota_pg, "commit_credentials", lambda: (True, ""))
+        monkeypatch.setattr(quota_pg, "finalize_commit", lambda: (False, "cred write failed"))
+        assert win.save_settings() is False
+        assert cm.get("weather.interval_min") == orig_interval
+    finally:
+        win.close()
+        mgr.stop()
