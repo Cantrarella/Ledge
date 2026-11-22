@@ -801,37 +801,50 @@ class CompactView:
         t = t - self._lyr_t                           # 滚动从这一行出现时开始计时
         line_alpha = a * (k if self._lyr_prev else 1.0)
         fill_w = -1.0
-        done_s = ""
-        cur_s = ""
-        cur_frac = 0.0
-        has_krc_word = False
-        w_done = 0.0
-        w_cur = 0.0
-        w_after = 0.0
+        glow_w = -1.0
+        glow_strength = 0.0
         if line and self.lyrics is not None:
-            done_s, cur_s, cur_frac = self.lyrics.sweep_at(idx, self.media_pos())
+            pos_now = self.media_pos()
+            done_s, cur_s, cur_frac = self.lyrics.sweep_at(idx, pos_now)
             if self._lyr_word_cache[0] == done_s and self._lyr_word_cache[1] == cur_s:
-                _, _, w_done, w_cur, w_after = self._lyr_word_cache
+                _, _, w_done, w_cur, _w_after = self._lyr_word_cache
             else:
                 w_done = float(fm.horizontalAdvance(done_s)) if done_s else 0.0
                 w_cur = float(fm.horizontalAdvance(cur_s)) if cur_s else 0.0
                 w_after = float(fm.horizontalAdvance(done_s + cur_s)) if (done_s or cur_s) else 0.0
                 self._lyr_word_cache = (done_s, cur_s, w_done, w_cur, w_after)
             fill_w = clamp(w_done + w_cur * cur_frac, 0.0, float(full))
-            has_krc_word = (
-                bool(cur_s.strip())
-                and idx < len(self.lyrics.words)
-                and bool(self.lyrics.words[idx])
-                and bool(self.media.get("playing"))
-                and 0.02 < cur_frac < 0.98
-            )
+            glow_w = fill_w
+
+            def _ease(v: float) -> float:
+                v = clamp(v, 0.0, 1.0)
+                return v * v * (3.0 - 2.0 * v)
+
+            words_line = self.lyrics.words[idx] if idx < len(self.lyrics.words) else None
+            if words_line:
+                for wi, (ws, we, _tok) in enumerate(words_line):
+                    prev_we = words_line[wi - 1][1] if wi > 0 else None
+                    next_ws = words_line[wi + 1][0] if wi + 1 < len(words_line) else None
+                    if ws <= pos_now < we:
+                        prog = (pos_now - ws) / max(0.02, we - ws)
+                        fade_in = 1.0 if (prev_we is not None and ws - prev_we <= 0.14) else _ease(prog / 0.08)
+                        fade_out = 1.0 if (next_ws is not None and next_ws - we <= 0.14) else _ease((1.0 - prog) / 0.12)
+                        glow_strength = 0.72 * fade_in * fade_out
+                        break
+                    if pos_now < ws:
+                        if prev_we is not None and (ws - prev_we) <= 0.14:
+                            # 短间隔内微光直接顺滑衔接滑向下一词
+                            glow_strength = 0.72
+                        break
+            elif 0.0 < cur_frac < 1.0:
+                glow_strength = 0.60 * _ease(cur_frac / 0.08) * _ease((1.0 - cur_frac) / 0.12)
 
         def _draw_karaoke(rect_line: QtCore.QRectF, align_flag):
             if fill_w < 0.0:
                 p.setPen(theme.text(line_alpha))
                 p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
                 return
-            unsung_c = theme.text(0.38 * line_alpha)
+            unsung_c = theme.text(0.40 * line_alpha)
             sung_c = theme.text(line_alpha)
             if fill_w <= 0.5 or full <= 1.0:
                 p.setPen(unsung_c)
@@ -844,58 +857,55 @@ class CompactView:
             text_x = rect_line.x()
             if align_flag == Qt.AlignmentFlag.AlignHCenter and full < rect_line.width():
                 text_x = rect_line.x() + (rect_line.width() - full) / 2.0
-            # 文字笔画级羽化渐变扫色（无任何背景矩形色块）
-            feather = 10.0
-            x0 = text_x + max(0.0, fill_w - feather)
-            x1 = text_x + min(float(full), fill_w + feather * 0.45)
+            # 24px 宽羽化水流渐变扫光（整句原生统一字距）
+            feather = 24.0
+            x0 = text_x + max(0.0, fill_w - feather * 0.72)
+            x1 = text_x + min(float(full), fill_w + feather * 0.48)
             if x1 <= x0 + 0.5:
                 x1 = x0 + 1.0
             grad = QtGui.QLinearGradient(x0, 0.0, x1, 0.0)
             grad.setColorAt(0.0, sung_c)
+            grad.setColorAt(0.55, theme.text(0.76 * line_alpha))
             grad.setColorAt(1.0, unsung_c)
             pen = QtGui.QPen(QtGui.QBrush(grad), 0)
-
-            # 前沿正在唱的字/词原位原生矢量字号微弹（1.0 -> 1.08 -> 1.0），无位图拉伸与重影模糊
-            if has_krc_word:
-                wx0 = text_x + w_done
-                wx1 = text_x + w_after
-                word_w = wx1 - wx0
-                if word_w > 1.0 and wx1 > tx and wx0 < tx + tw:
-                    clip_y = rect_line.y() - 6.0
-                    clip_h = rect_line.height() + 12.0
-                    if wx0 > tx:
-                        p.save()
-                        p.setClipRect(QtCore.QRectF(tx, clip_y, wx0 - tx + 0.05, clip_h), Qt.ClipOperation.IntersectClip)
-                        p.setPen(pen)
-                        p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
-                        p.restore()
-                    if wx1 < tx + tw:
-                        p.save()
-                        p.setClipRect(QtCore.QRectF(wx1 - 0.05, clip_y, tx + tw - wx1 + 0.05, clip_h), Qt.ClipOperation.IntersectClip)
-                        p.setPen(pen)
-                        p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
-                        p.restore()
-                    pulse = math.sin(cur_frac * math.pi)
-                    scale = 1.0 + 0.08 * pulse
-                    zf = self._lyr_zoom_font
-                    if self._lyr_font.pixelSize() > 0:
-                        dpi_y = max(72.0, float(p.device().logicalDpiY()))
-                        zf.setPointSizeF((self._lyr_font.pixelSize() * 72.0 / dpi_y) * scale)
-                    else:
-                        zf.setPointSizeF(self._lyr_font.pointSizeF() * scale)
-                    zf.setWeight(W.DemiBold if pulse > 0.35 else self._lyr_font.weight())
-                    cx_w = (wx0 + wx1) * 0.5
-                    span_w = word_w * scale + 10.0
-                    word_rect = QtCore.QRectF(cx_w - span_w * 0.5, rect_line.y() - 0.5 * pulse, span_w, rect_line.height())
-                    p.save()
-                    p.setFont(zf)
-                    p.setPen(pen)
-                    p.drawText(word_rect, Qt.AlignmentFlag.AlignCenter, cur_s)
-                    p.restore()
-                    return
-
             p.setPen(pen)
             p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+
+            # 贴着亮暗交界的连续微光（短间隔衔接、长停顿与句尾淡出，无任何矩形底块）
+            if glow_strength > 0.02 and glow_w >= 0.0:
+                gx = text_x + glow_w
+                half_span = 9.0
+                if gx + half_span > tx and gx - half_span < tx + tw:
+                    if theme.dark:
+                        core_c = QtGui.QColor(244, 255, 249, round(255 * glow_strength * line_alpha))
+                        halo_c = QtGui.QColor(165, 235, 198, round(95 * glow_strength * line_alpha))
+                    else:
+                        accent = QtGui.QColor(theme.on_color())
+                        core_c = QtGui.QColor(accent)
+                        core_c.setAlphaF(clamp(0.85 * glow_strength * line_alpha, 0.0, 1.0))
+                        halo_c = QtGui.QColor(accent)
+                        halo_c.setAlphaF(clamp(0.28 * glow_strength * line_alpha, 0.0, 1.0))
+
+                    def _make_glow_pen(col: QtGui.QColor) -> QtGui.QPen:
+                        c0 = QtGui.QColor(col)
+                        c0.setAlpha(0)
+                        g = QtGui.QLinearGradient(gx - half_span, 0.0, gx + half_span, 0.0)
+                        g.setColorAt(0.0, c0)
+                        g.setColorAt(0.5, col)
+                        g.setColorAt(1.0, c0)
+                        return QtGui.QPen(QtGui.QBrush(g), 0)
+
+                    p.save()
+                    p.setClipRect(
+                        QtCore.QRectF(gx - half_span, rect_line.y() - 3.0, half_span * 2.0, rect_line.height() + 6.0),
+                        Qt.ClipOperation.IntersectClip,
+                    )
+                    p.setPen(_make_glow_pen(halo_c))
+                    for dx, dy in ((-0.7, 0.0), (0.7, 0.0), (0.0, -0.7), (0.0, 0.7)):
+                        p.drawText(rect_line.translated(dx, dy), Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                    p.setPen(_make_glow_pen(core_c))
+                    p.drawText(rect_line, Qt.AlignmentFlag.AlignVCenter | align_flag, text)
+                    p.restore()
 
         if full <= tw:
             # 歌词居中显示；歌名 · 歌手靠左
