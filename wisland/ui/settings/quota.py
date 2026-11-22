@@ -982,6 +982,12 @@ class QuotaSettingsPage(SettingsPage):
             if acc is None or not sec:
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
+            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+                self._last_commit_rollback = written_rollback
+                self._last_delete_rollback = []
+                rb_ok = self.rollback_credentials()
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"读取凭据备份失败{rb_note}"
             ok = bool(self._mgr._creds.save_secret(acc.credential_key, acc.identity or acc.id, sec))
             if not ok:
                 rb_ok = True
@@ -1004,6 +1010,12 @@ class QuotaSettingsPage(SettingsPage):
                 continue
             cred_key = str(del_acc.credential_key or "").strip() or make_quota_credential_key(del_acc.id)
             prev = self._mgr._creds.read_secret(cred_key)
+            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+                self._last_delete_rollback = del_rollback
+                self._last_commit_rollback = written_rollback
+                rb_ok = self.rollback_credentials()
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"读取待删除凭据备份失败{rb_note}"
             if not self._mgr._creds.delete_secret(cred_key):
                 del_rb_ok = not bool(getattr(self._mgr._creds, "last_rollback_failed", False))
                 if del_rb_ok and prev is not None and prev != "":

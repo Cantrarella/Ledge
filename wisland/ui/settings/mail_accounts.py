@@ -751,6 +751,13 @@ class MailAccountsSettingsPage(SettingsPage):
             if acc is None:
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
+            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+                for tgt, usr, old_val in reversed(written_rollback):
+                    if old_val is None:
+                        self._mgr._creds.delete_secret(tgt)
+                    else:
+                        self._mgr._creds.save_secret(tgt, usr, old_val)
+                return False, f"读取 {acc.email} 授权码备份失败"
             if not self._mgr._creds.save_secret(acc.credential_key, acc.username or acc.email, sec):
                 # 回滚本次已写入的凭据
                 for tgt, usr, old_val in written_rollback:
@@ -789,6 +796,13 @@ class MailAccountsSettingsPage(SettingsPage):
             if not acc.credential_key:
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
+            if prev is None and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
+                rb_ok = True
+                for tgt, usr, old_val in reversed(del_rollback):
+                    if old_val is not None and not self._mgr._creds.save_secret(tgt, usr, old_val):
+                        rb_ok = False
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"读取 {acc.email} 授权码备份失败{rb_note}"
             if not self._mgr._creds.delete_secret(acc.credential_key):
                 rb_ok = True
                 for tgt, usr, old_val in reversed(del_rollback):

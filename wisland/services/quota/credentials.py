@@ -254,6 +254,8 @@ class InMemoryQuotaCredentialStore:
         return True
 
     def read_secret(self, target: str) -> str | None:
+        self.last_error = 0
+        self.last_error_message = ""
         item = self._data.get(target)
         return item[1] if item is not None else None
 
