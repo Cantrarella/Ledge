@@ -228,3 +228,11 @@ def test_lyrics_backoff_auto_retries_current_track_and_cancels_on_switch(monkeyp
     now[0] += 1.0
     assert svc.get(track_a) is None  # 仍在退避期，切回 track_a
     assert len(scheduled) == 1 and scheduled[0] > 0
+
+    # 4) 切到刚切入且无 ID、时长为 0 的新曲目时，必须取消旧曲目的退避定时器
+    cancelled = []
+    monkeypatch.setattr(svc._retry_timer, "stop", lambda: cancelled.append(True))
+    track_b_init = {"title": "SongB", "artist": "ArtB", "duration": 0.0}
+    assert svc.get(track_b_init) is None
+    assert len(cancelled) >= 1
+    assert svc._active_key is None

@@ -251,6 +251,7 @@ class LyricsService(QtCore.QObject):
         if not m.get("song_id") and not m.get("kugou_hash"):
             if not (30 <= dur <= 15 * 60):
                 # SMTC 切歌初期 duration 常暂时为 0，等待下次轮询拿到有效时长后再查，避免把 None 写死进缓存
+                self.cancel_retry()
                 return None
         k = self.key(m)
         switched = k != self._active_key
