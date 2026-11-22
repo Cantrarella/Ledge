@@ -747,7 +747,7 @@ class SettingsWindow(QtWidgets.QWidget):
                     rb_ok = _rollback_creds(sub_pg if sub_written else None)
                     self.status_lbl.set_color(settings_theme.up())
                     msg = f"保存失败：{cred_err}"
-                    if not rb_ok:
+                    if not rb_ok and "回滚失败" not in cred_err:
                         msg += "（且部分凭据回滚失败，请检查系统凭据管理器）"
                     self.status_lbl.setText(msg)
                     self.switch_category("mail_accounts")

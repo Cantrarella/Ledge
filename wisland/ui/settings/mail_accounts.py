@@ -743,6 +743,16 @@ class MailAccountsSettingsPage(SettingsPage):
             self.changed.emit()
 
     # ---------------- 统一草稿提交与取消语义 ----------------
+    def _rollback_written_list(self, written_rollback: list[tuple[str, str, str | None]]) -> bool:
+        all_ok = True
+        for tgt, usr, old_val in reversed(written_rollback):
+            if old_val is None:
+                if not self._mgr._creds.delete_secret(tgt):
+                    all_ok = False
+            elif not self._mgr._creds.save_secret(tgt, usr, old_val):
+                all_ok = False
+        return all_ok
+
     def commit_credentials(self) -> tuple[bool, str]:
         """在保存 config.json 前提交暂存的新增/重连凭据；任一步失败立即返回错误且不提交配置。"""
         written_rollback: list[tuple[str, str, str | None]] = []
@@ -752,20 +762,13 @@ class MailAccountsSettingsPage(SettingsPage):
                 continue
             prev = self._mgr._creds.read_secret(acc.credential_key)
             if not prev and (getattr(self._mgr._creds, "last_error", 0) or getattr(self._mgr._creds, "last_error_message", "")):
-                for tgt, usr, old_val in reversed(written_rollback):
-                    if old_val is None:
-                        self._mgr._creds.delete_secret(tgt)
-                    else:
-                        self._mgr._creds.save_secret(tgt, usr, old_val)
-                return False, f"读取 {acc.email} 授权码备份失败"
+                rb_ok = self._rollback_written_list(written_rollback)
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"读取 {acc.email} 授权码备份失败{rb_note}"
             if not self._mgr._creds.save_secret(acc.credential_key, acc.username or acc.email, sec):
-                # 回滚本次已写入的凭据
-                for tgt, usr, old_val in written_rollback:
-                    if old_val is None:
-                        self._mgr._creds.delete_secret(tgt)
-                    else:
-                        self._mgr._creds.save_secret(tgt, usr, old_val)
-                return False, f"保存 {acc.email} 授权码至 Windows 凭据管理器失败"
+                rb_ok = self._rollback_written_list(written_rollback)
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"保存 {acc.email} 授权码至 Windows 凭据管理器失败{rb_note}"
             written_rollback.append((acc.credential_key, acc.username or acc.email, prev))
         self._last_commit_rollback = written_rollback
         return True, ""

@@ -211,6 +211,20 @@ class LyricsService(QtCore.QObject):
         self._disk_lock = threading.Lock()
         self._disk_loaded = False
         self._disk_cache: dict[str, dict] = {}
+        self._active_key: str | None = None
+        self._active_track: dict | None = None
+        self._retry_timer = QtCore.QTimer(self, singleShot=True)
+        self._retry_timer.timeout.connect(self._on_retry_timeout)
+
+    def cancel_retry(self):
+        """切歌或停止播放时取消待执行的退避补查定时器。"""
+        self._retry_timer.stop()
+        self._active_key = None
+        self._active_track = None
+
+    def _on_retry_timeout(self):
+        if self._active_key and self._active_track is not None:
+            self.get(self._active_track)
 
     @property
     def _client(self) -> httpx.Client:
@@ -239,6 +253,10 @@ class LyricsService(QtCore.QObject):
                 # SMTC 切歌初期 duration 常暂时为 0，等待下次轮询拿到有效时长后再查，避免把 None 写死进缓存
                 return None
         k = self.key(m)
+        if k != self._active_key:
+            self._retry_timer.stop()
+            self._active_key = k
+        self._active_track = dict(m)
         dur_bucket = int(round(dur / 5.0) * 5)
         now = time.monotonic()
         with self._lock:
@@ -267,6 +285,7 @@ class LyricsService(QtCore.QObject):
 
     def _done(self, k: str, res, cache_none: bool = True, is_error: bool = False, dur_bucket: int = 0):
         now = time.monotonic()
+        retry_ms = 0
         with self._lock:
             self._pending.discard(k)
             if res is not None:
@@ -279,10 +298,14 @@ class LyricsService(QtCore.QObject):
                 prev_cnt = self._err_backoff.get(k, (0, 0.0))[0] + 1
                 wait_s = min(300.0, 5.0 * (2 ** min(prev_cnt - 1, 5)))
                 self._err_backoff[k] = (prev_cnt, now + wait_s)
+                if k == self._active_key and self._active_track is not None:
+                    retry_ms = int(wait_s * 1000) + 50
             else:
                 # 确认无匹配使用有限期缓存（试听 60s 为 30s，常规为 300s），不写死永久空缓存
                 ttl = 300.0 if cache_none else 30.0
                 self._miss_until[k] = (dur_bucket, now + ttl)
+        if retry_ms > 0:
+            self._retry_timer.start(retry_ms)
         self.ready.emit(k)
 
     def _ensure_disk_cache(self):

@@ -178,3 +178,44 @@ def test_kugou_download_network_error_triggers_backoff(monkeypatch, tmp_path):
         assert False, "expected httpx.ConnectError from kugou download"
     except httpx.ConnectError:
         pass
+
+
+def test_lyrics_backoff_auto_retries_current_track_and_cancels_on_switch(monkeypatch, tmp_path):
+    import httpx
+    import wisland.services.lyrics as lyr_mod
+    from PySide6 import QtWidgets
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    monkeypatch.setattr(lyr_mod, "_DISK_CACHE_FILE", tmp_path / "lyrics_cache.json")
+    now = [100.0]
+    monkeypatch.setattr("wisland.services.lyrics.time.monotonic", lambda: now[0])
+
+    svc = LyricsService()
+    bg_calls = []
+    monkeypatch.setattr(
+        "wisland.services.lyrics.run_bg",
+        lambda fn, *args, on_done=None, on_error=None: bg_calls.append((fn, args, on_done, on_error)),
+    )
+
+    scheduled = []
+    monkeypatch.setattr(svc._retry_timer, "start", lambda ms: scheduled.append(ms))
+
+    track_a = {"title": "SongA", "artist": "ArtA", "duration": 200.0}
+    track_b = {"title": "SongB", "artist": "ArtB", "duration": 210.0}
+
+    # 1) 首次查询失败并调度单次退避补查
+    assert svc.get(track_a) is None
+    assert len(bg_calls) == 1
+    _fn, _args, _on_done, on_err = bg_calls[0]
+    on_err(httpx.ConnectError("offline"))
+    assert len(scheduled) == 1 and scheduled[0] >= 5000
+
+    # 2) 退避到期后自动补查同一首歌（无需拖动进度）
+    now[0] += scheduled[0] / 1000.0 + 0.1
+    svc._on_retry_timeout()
+    assert len(bg_calls) == 2
+
+    # 3) 切歌到 track_b 时取消旧定时器；旧歌曲不再自动补查
+    assert svc.get(track_b) is None
+    assert len(bg_calls) == 3
+    assert svc._active_key == svc.key(track_b)

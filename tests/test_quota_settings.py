@@ -1377,3 +1377,79 @@ def test_18_chunked_quota_settings_backup_read_error_aborts_before_delete(qt_app
     finally:
         win.close()
         mgr.stop()
+
+
+def test_19_mail_commit_rollback_failure_reported(qt_app, tmp_path, monkeypatch):
+    """同时更新两个邮箱授权码时，第二笔备份读错或写入失败且第一笔恢复失败，界面必须提示回滚失败。"""
+    from wisland.services.mail.credentials import InMemoryCredentialStore, make_credential_key
+    from wisland.services.mail.manager import MailAccountManager
+    from wisland.services.mail.models import MailAccount
+    from wisland.ui.settings.mail_accounts import MailAccountsSettingsPage
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    mail_creds = InMemoryCredentialStore()
+    m1 = MailAccount(id="m1", email="m1@example.com", provider="qq", host="imap.qq.com", port=993, security="ssl", username="m1@example.com", credential_key=make_credential_key("m1"))
+    m2 = MailAccount(id="m2", email="m2@example.com", provider="qq", host="imap.qq.com", port=993, security="ssl", username="m2@example.com", credential_key=make_credential_key("m2"))
+    mail_creds.save_secret(m1.credential_key, m1.username, "old-mail-1")
+    mail_creds.save_secret(m2.credential_key, m2.username, "old-mail-2")
+    cm.set("mail.accounts", [m1.to_config_dict(), m2.to_config_dict()], save=True)
+    mail_mgr = MailAccountManager(config_obj=cm, cred_store=mail_creds)
+
+    ctx = type("Ctx", (), {"quota": mgr, "mail": mail_mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        mail_pg = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        orig_read = mail_creds.read_secret
+        orig_save = mail_creds.save_secret
+
+        # 1) m2 备份读取失败 + m1 恢复写入失败
+        mail_pg._draft_accounts = [m1, m2]
+        mail_pg._pending_secrets = {"m1": "new-mail-1", "m2": "new-mail-2"}
+
+        def _fail_m2_read(target):
+            if target == m2.credential_key:
+                mail_creds.last_error = 5
+                mail_creds.last_error_message = "WinError 5"
+                return None
+            mail_creds.last_error = 0
+            mail_creds.last_error_message = ""
+            return orig_read(target)
+
+        def _fail_m1_restore(target, user, sec):
+            if target == m1.credential_key and sec == "old-mail-1":
+                return False
+            return orig_save(target, user, sec)
+
+        monkeypatch.setattr(mail_creds, "read_secret", _fail_m2_read)
+        monkeypatch.setattr(mail_creds, "save_secret", _fail_m1_restore)
+
+        assert win.save_settings() is False
+        st1 = win.status_lbl.text()
+        assert "回滚失败" in st1
+        assert "new-mail-1" not in st1 and "old-mail-1" not in st1
+
+        # 2) m2 写入失败 + m1 恢复写入失败
+        monkeypatch.setattr(mail_creds, "read_secret", orig_read)
+        monkeypatch.setattr(mail_creds, "save_secret", orig_save)
+        mail_creds.last_error = 0
+        mail_creds.last_error_message = ""
+        mail_creds.save_secret(m1.credential_key, m1.username, "old-mail-1")
+        mail_pg._pending_secrets = {"m1": "new-mail-1", "m2": "new-mail-2"}
+
+        def _fail_m2_write_and_m1_restore(target, user, sec):
+            if target == m2.credential_key:
+                return False
+            if target == m1.credential_key and sec == "old-mail-1":
+                return False
+            return orig_save(target, user, sec)
+
+        monkeypatch.setattr(mail_creds, "save_secret", _fail_m2_write_and_m1_restore)
+        assert win.save_settings() is False
+        st2 = win.status_lbl.text()
+        assert "回滚失败" in st2
+        assert "new-mail-1" not in st2 and "old-mail-1" not in st2
+    finally:
+        win.close()
+        mgr.stop()

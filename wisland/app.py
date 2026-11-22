@@ -249,10 +249,12 @@ def main():
         if k != media_st["lyr"]:
             media_st["lyr"] = k
             compact.set_lyrics(None)
-        if k:
-            lyr = ctx.lyrics.get(m)
-            if lyr is not None and compact.lyrics is not lyr:
-                compact.set_lyrics(lyr)
+        if not k:
+            ctx.lyrics.cancel_retry()
+            return
+        lyr = ctx.lyrics.get(m)
+        if lyr is not None and compact.lyrics is not lyr:
+            compact.set_lyrics(lyr)
 
     def on_lyrics_ready(k):
         if k == media_st["lyr"]:
