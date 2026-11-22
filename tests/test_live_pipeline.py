@@ -241,3 +241,82 @@ def test_live_service_preload_skips_missing_model_and_sets_openblas_env(monkeypa
     assert len(bg_calls) == 1
     assert os.environ.get("OPENBLAS_NUM_THREADS") == "1"
     assert os.environ.get("OMP_NUM_THREADS") == "1"
+
+
+def test_subtitle_page_on_show_triggers_live_preload(monkeypatch):
+    from types import SimpleNamespace
+    from PySide6 import QtWidgets
+    from wisland.live.service import LiveService
+    from wisland.ui.pages.subtitle import SubtitlePage
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    svc = LiveService()
+    bg_calls = []
+    import wisland.core.bg as bg_mod
+    monkeypatch.setattr(bg_mod, "run_bg", lambda fn, *a, **kw: bg_calls.append(fn))
+
+    ctx = SimpleNamespace(live=svc, open_settings=lambda *a, **kw: None)
+    pg = SubtitlePage(ctx)
+
+    # 无模型时切入字幕页：不报错、不预加载、不触发下载
+    dl_calls = []
+    monkeypatch.setattr(svc, "available", lambda: (False, "缺少识别模型"))
+    monkeypatch.setattr(svc, "_download", lambda: dl_calls.append(True))
+    pg.on_show()
+    assert bg_calls == []
+    assert dl_calls == []
+
+    # 有模型时首次切入触发一次预加载，反复切入不重复调度
+    monkeypatch.setattr(svc, "available", lambda: (True, ""))
+    pg.on_show()
+    pg.on_show()
+    assert len(bg_calls) == 1
+    pg.close()
+
+
+def test_live_service_late_stop_callback_after_qthread_deleted(monkeypatch):
+    from PySide6 import QtCore, QtWidgets
+    from wisland.live.service import LiveService
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    svc = LiveService()
+
+    class _RealThread(QtCore.QThread):
+        def run(self):
+            pass
+
+        def stop(self, max_wait=None):
+            return False
+
+    old_t = _RealThread()
+    old_t.finished.connect(svc._on_pipe_finished)
+    old_t.finished.connect(old_t.deleteLater)
+    svc.pipe = old_t
+    svc.running = True
+    old_t.start()
+    old_t.wait(2000)
+
+    bg_tasks = []
+    import wisland.core.bg as bg_mod
+    monkeypatch.setattr(
+        bg_mod,
+        "run_bg",
+        lambda fn, *a, on_done=None, on_error=None: bg_tasks.append((fn, on_done)),
+    )
+
+    svc.stop(wait=False)
+    # 先让 QThread finished 与 deleteLater() 生效，销毁底层 C++ 对象
+    app.processEvents()
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+    # 再交付迟到的后台 stop 回调：不得抛出 RuntimeError，也不得污染新流水线状态
+    new_sentinel = object()
+    svc.pipe = new_sentinel
+    svc.running = True
+    fn, on_done = bg_tasks.pop()
+    res = fn()
+    on_done(res)
+    assert svc.pipe is new_sentinel
+    assert svc.running is True
+    assert svc._stopping is None

@@ -239,13 +239,15 @@ class LyricsService(QtCore.QObject):
                 # SMTC 切歌初期 duration 常暂时为 0，等待下次轮询拿到有效时长后再查，避免把 None 写死进缓存
                 return None
         k = self.key(m)
+        dur_bucket = int(round(dur / 5.0) * 5)
         now = time.monotonic()
         with self._lock:
             if k in self._cache:
                 return self._cache[k]
-            miss_exp = self._miss_until.get(k)
-            if miss_exp is not None:
-                if now < miss_exp:
+            miss_ent = self._miss_until.get(k)
+            if miss_ent is not None:
+                miss_dur, miss_exp = miss_ent
+                if miss_dur == dur_bucket and now < miss_exp:
                     return None
                 self._miss_until.pop(k, None)
             err_ent = self._err_backoff.get(k)
@@ -255,11 +257,15 @@ class LyricsService(QtCore.QObject):
                 return None
             self._pending.add(k)
         cache_none = (dur != 60.0)
-        run_bg(self._fetch, dict(m), on_done=lambda res, k=k, cn=cache_none: self._done(k, res, cn, is_error=False),
-               on_error=lambda e, k=k: self._done(k, None, False, is_error=True))
+        run_bg(
+            self._fetch,
+            dict(m),
+            on_done=lambda res, k=k, cn=cache_none, db=dur_bucket: self._done(k, res, cn, is_error=False, dur_bucket=db),
+            on_error=lambda e, k=k, db=dur_bucket: self._done(k, None, False, is_error=True, dur_bucket=db),
+        )
         return None
 
-    def _done(self, k: str, res, cache_none: bool = True, is_error: bool = False):
+    def _done(self, k: str, res, cache_none: bool = True, is_error: bool = False, dur_bucket: int = 0):
         now = time.monotonic()
         with self._lock:
             self._pending.discard(k)
@@ -273,13 +279,10 @@ class LyricsService(QtCore.QObject):
                 prev_cnt = self._err_backoff.get(k, (0, 0.0))[0] + 1
                 wait_s = min(300.0, 5.0 * (2 ** min(prev_cnt - 1, 5)))
                 self._err_backoff[k] = (prev_cnt, now + wait_s)
-            elif cache_none:
-                self._miss_until.pop(k, None)
-                self._cache[k] = None
-                if len(self._cache) > 200:
-                    self._cache.pop(next(iter(self._cache)))
             else:
-                self._miss_until[k] = now + 30.0
+                # 确认无匹配使用有限期缓存（试听 60s 为 30s，常规为 300s），不写死永久空缓存
+                ttl = 300.0 if cache_none else 30.0
+                self._miss_until[k] = (dur_bucket, now + ttl)
         self.ready.emit(k)
 
     def _ensure_disk_cache(self):
@@ -339,23 +342,33 @@ class LyricsService(QtCore.QObject):
         return res
 
     def _fetch_remote(self, m: dict) -> Lyrics | None:
+        last_net_err: Exception | None = None
         if m.get("kugou_hash"):
-            lyr = self._fetch_kugou_by_hash(
-                str(m["kugou_hash"]),
-                float(m.get("duration") or 0),
-                f"{self._clean_title(m.get('title') or '')} {self._clean_artist(m.get('artist') or '')}".strip(),
-            )
-            if lyr:
-                return lyr
+            try:
+                lyr = self._fetch_kugou_by_hash(
+                    str(m["kugou_hash"]),
+                    float(m.get("duration") or 0),
+                    f"{self._clean_title(m.get('title') or '')} {self._clean_artist(m.get('artist') or '')}".strip(),
+                )
+                if lyr:
+                    return lyr
+            except (httpx.HTTPError, OSError) as exc:
+                last_net_err = exc
         if m.get("song_id"):
             order = (self._fetch_netease, self._fetch_kugou, self._fetch_qq, self._fetch_lrclib)
         else:
             # 优先酷狗（支持 KRC 逐字卡拉 OK 歌词），其次 QQ / LRCLIB / 网易云
             order = (self._fetch_kugou, self._fetch_qq, self._fetch_lrclib, self._fetch_netease)
         for fn in order:
-            lyr = fn(m)
+            try:
+                lyr = fn(m)
+            except (httpx.HTTPError, OSError) as exc:
+                last_net_err = exc
+                continue
             if lyr:
                 return lyr
+        if last_net_err is not None:
+            raise last_net_err
         return None
 
     def _download_kugou_candidate(self, cand: dict) -> Lyrics | None:
@@ -413,6 +426,8 @@ class LyricsService(QtCore.QObject):
             if not cands:
                 return None
             return self._download_kugou_candidate(cands[0])
+        except (httpx.HTTPError, OSError):
+            raise
         except Exception:  # noqa: BLE001
             return None
 
@@ -502,6 +517,8 @@ class LyricsService(QtCore.QObject):
             trans = parse_lrc((j.get("tlyric") or {}).get("lyric", ""))
             lyr = Lyrics(lines, trans)
             return lyr if lyr else None
+        except (httpx.HTTPError, OSError):
+            raise
         except Exception:  # noqa: BLE001
             return None
 
@@ -595,6 +612,8 @@ class LyricsService(QtCore.QObject):
             lines = parse_lrc(lrc_txt)
             lyr = Lyrics(lines, [])
             return lyr if lyr else None
+        except (httpx.HTTPError, OSError):
+            raise
         except Exception:  # noqa: BLE001
             return None
 
@@ -646,6 +665,8 @@ class LyricsService(QtCore.QObject):
             if not cands:
                 return None
             return self._download_kugou_candidate(cands[0])
+        except (httpx.HTTPError, OSError):
+            raise
         except Exception:  # noqa: BLE001
             return None
 
@@ -689,5 +710,7 @@ class LyricsService(QtCore.QObject):
             lines = parse_lrc(best["syncedLyrics"])
             lyr = Lyrics(lines, [])
             return lyr if lyr else None
+        except (httpx.HTTPError, OSError):
+            raise
         except Exception:  # noqa: BLE001
             return None

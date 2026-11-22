@@ -957,24 +957,30 @@ class QuotaSettingsPage(SettingsPage):
 
     def finalize_commit(self) -> tuple[bool, str]:
         """在 config.json 原子保存成功后，正式写入新增/重连凭据并清理已删除账号的凭据与缓存。"""
-        saved_ids: list[str] = []
+        written_rollback: list[tuple[str, str, str | None]] = []
         for acc_id, sec in list(self._pending_secrets.items()):
             acc = next((a for a in self._draft_accounts if a.id == acc_id), None)
             if acc is None or not sec:
-                saved_ids.append(acc_id)
                 continue
+            prev = self._mgr._creds.read_secret(acc.credential_key)
             ok = bool(self._mgr._creds.save_secret(acc.credential_key, acc.identity or acc.id, sec))
             if not ok:
-                # 保留未保存成功的暂存凭据，不把对应快照标记为已保存，也不触发后续自动刷新
-                for sid in saved_ids:
-                    self._pending_secrets.pop(sid, None)
+                for tgt, usr, old_val in reversed(written_rollback):
+                    if old_val is None:
+                        self._mgr._creds.delete_secret(tgt)
+                    else:
+                        self._mgr._creds.save_secret(tgt, usr, old_val)
                 win_err = getattr(self._mgr._creds, "last_error", 0)
                 detail = f" (WinError {win_err})" if win_err else ""
                 return False, f"会话凭据保存失败，未写入系统凭据管理器{detail}"
-            saved_ids.append(acc_id)
-            snap = self._draft_snapshots.get(acc.id)
-            if snap is not None:
-                self._mgr._cache.put(snap, flush=True)
+            written_rollback.append((acc.credential_key, acc.identity or acc.id, prev))
+
+        for acc_id in list(self._pending_secrets.keys()):
+            acc = next((a for a in self._draft_accounts if a.id == acc_id), None)
+            if acc is not None:
+                snap = self._draft_snapshots.get(acc.id)
+                if snap is not None:
+                    self._mgr._cache.put(snap, flush=True)
 
         remaining_ids = {a.id for a in self._draft_accounts}
         for del_acc in list(self._deleted_accounts):

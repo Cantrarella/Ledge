@@ -156,6 +156,19 @@ class LiveService(QtCore.QObject):
         if self._stopping is pipe:
             self._stopping = self._stopping_pipes[-1] if self._stopping_pipes else None
 
+    @staticmethod
+    def _is_pipe_running(pipe) -> bool:
+        try:
+            return bool(pipe.isRunning())
+        except RuntimeError:
+            return False
+
+    def _on_bg_stop_done(self, pipe, stopped_ok: bool):
+        if pipe not in self._stopping_pipes:
+            return
+        if stopped_ok or not self._is_pipe_running(pipe):
+            self._clear_stopping(pipe)
+
     def stop(self, wait: bool = False):
         """停止聆听。等待音频线程结束放到后台，不阻塞界面（退出程序时 wait=True）。"""
         p, self.pipe = self.pipe, None
@@ -182,9 +195,7 @@ class LiveService(QtCore.QObject):
         from ..core.bg import run_bg
         run_bg(
             lambda: p.stop(),
-            on_done=lambda stopped_ok, pipe=p: (
-                self._clear_stopping(pipe) if (stopped_ok or not pipe.isRunning()) else None
-            ),
+            on_done=lambda stopped_ok, pipe=p: self._on_bg_stop_done(pipe, bool(stopped_ok)),
         )
 
     def _on_pipe_finished(self):

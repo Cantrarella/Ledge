@@ -77,10 +77,23 @@ class SubtitlesSettingsPage(SettingsPage):
 
     def commit_credentials(self) -> tuple[bool, str]:
         """在配置提交前保存密钥；失败时不写 config.json。"""
+        prev = self._loaded_api_key
         if save_translate_api_key(self.ed_api_key.text()):
+            self._last_rollback_key = prev
             self._loaded_api_key = self.ed_api_key.text().strip()
             return True, ""
         return False, "API Key 无法写入 Windows 凭据管理器"
+
+    def rollback_credentials(self) -> bool:
+        """在后续提交步骤失败时回滚本次已写入的翻译密钥。"""
+        if not hasattr(self, "_last_rollback_key"):
+            return True
+        prev = self._last_rollback_key
+        ok = bool(save_translate_api_key(prev))
+        if ok:
+            self._loaded_api_key = prev
+            del self._last_rollback_key
+        return ok
 
     def has_pending_credentials(self) -> bool:
         return self.ed_api_key.text().strip() != self._loaded_api_key

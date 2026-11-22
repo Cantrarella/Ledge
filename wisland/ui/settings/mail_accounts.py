@@ -760,7 +760,21 @@ class MailAccountsSettingsPage(SettingsPage):
                         self._mgr._creds.save_secret(tgt, usr, old_val)
                 return False, f"保存 {acc.email} 授权码至 Windows 凭据管理器失败"
             written_rollback.append((acc.credential_key, acc.username or acc.email, prev))
+        self._last_commit_rollback = written_rollback
         return True, ""
+
+    def rollback_credentials(self) -> bool:
+        """在后续提交步骤失败时回滚本次已写入的邮箱凭据。"""
+        rb = list(getattr(self, "_last_commit_rollback", []) or [])
+        all_ok = True
+        for tgt, usr, old_val in reversed(rb):
+            if old_val is None:
+                if not self._mgr._creds.delete_secret(tgt):
+                    all_ok = False
+            elif not self._mgr._creds.save_secret(tgt, usr, old_val):
+                all_ok = False
+        self._last_commit_rollback = []
+        return all_ok
 
     def finalize_commit(self):
         """配置原子写入成功后清理待删除凭据并刷新管理器内存状态。"""

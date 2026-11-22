@@ -70,3 +70,74 @@ def test_compact_karaoke_glow_disabled_when_paused():
     # 播放态下在同一词内保持正常微光
     c.media["playing"] = True
     assert c._karaoke_glow_strength(0, 1.0, 0.5) > 0.5
+
+
+def test_lyrics_network_error_backoff_partial_fallback_and_duration_change(monkeypatch, tmp_path):
+    import httpx
+    import wisland.services.lyrics as lyr_mod
+
+    monkeypatch.setattr(lyr_mod, "_DISK_CACHE_FILE", tmp_path / "lyrics_cache.json")
+    now = [200.0]
+    monkeypatch.setattr("wisland.services.lyrics.time.monotonic", lambda: now[0])
+
+    svc = LyricsService()
+    sample = Lyrics([(0.0, "ok")], [])
+
+    # 1) 部分供应商抛 ConnectError，其余供应商成功 -> 正常返回歌词
+    monkeypatch.setattr(svc, "_fetch_kugou", lambda m: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    monkeypatch.setattr(svc, "_fetch_qq", lambda m: sample)
+    monkeypatch.setattr(svc, "_fetch_lrclib", lambda m: None)
+    monkeypatch.setattr(svc, "_fetch_netease", lambda m: None)
+    assert svc._fetch({"title": "A", "artist": "B", "duration": 180.0}) is sample
+
+    # 2) 所有供应商都抛网络错误 -> 必须抛出异常进入退避，不得写入空缓存；恢复后可重查
+    monkeypatch.setattr(svc, "_fetch_qq", lambda m: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    monkeypatch.setattr(svc, "_fetch_lrclib", lambda m: (_ for _ in ()).throw(httpx.ReadTimeout("timeout")))
+    monkeypatch.setattr(svc, "_fetch_netease", lambda m: (_ for _ in ()).throw(httpx.ConnectError("down")))
+
+    bg_calls = []
+    monkeypatch.setattr(
+        "wisland.services.lyrics.run_bg",
+        lambda fn, *args, on_done=None, on_error=None: bg_calls.append((fn, args, on_done, on_error)),
+    )
+
+    m_net = {"title": "NetFail", "artist": "X", "duration": 210.0}
+    assert svc.get(m_net) is None
+    assert len(bg_calls) == 1
+    fn, args, on_done, on_err = bg_calls[0]
+    try:
+        res = fn(*args)
+    except Exception as exc:
+        on_err(exc)
+    else:
+        on_done(res)
+
+    # 退避期内不重查
+    assert svc.get(m_net) is None
+    assert len(bg_calls) == 1
+
+    # 退避期满后可重查，且网络恢复后能拿到歌词
+    now[0] += 6.0
+    assert svc.get(m_net) is None
+    assert len(bg_calls) == 2
+
+    # 3) 同一 song_id 从 60s 试听无匹配更新为 240s 完整时长 -> 立即重查一次
+    monkeypatch.setattr(svc, "_fetch_netease", lambda m: None)
+    monkeypatch.setattr(svc, "_fetch_kugou", lambda m: None)
+    monkeypatch.setattr(svc, "_fetch_qq", lambda m: None)
+    monkeypatch.setattr(svc, "_fetch_lrclib", lambda m: None)
+
+    m_id_60 = {"song_id": 12345, "title": "Preview", "artist": "Y", "duration": 60.0}
+    assert svc.get(m_id_60) is None
+    assert len(bg_calls) == 3
+    fn3, args3, on_done3, _ = bg_calls[2]
+    on_done3(fn3(*args3))
+
+    # 同一时长下被 30s 缓存拦住
+    assert svc.get(m_id_60) is None
+    assert len(bg_calls) == 3
+
+    # 时长更新为 240s 后立即允许重查一次
+    m_id_240 = {"song_id": 12345, "title": "Preview", "artist": "Y", "duration": 240.0}
+    assert svc.get(m_id_240) is None
+    assert len(bg_calls) == 4

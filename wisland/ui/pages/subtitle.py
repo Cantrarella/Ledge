@@ -251,6 +251,7 @@ class SubtitlePage(Page):
         self.setLayout(vbox(self.header, status_bar, (live_card, 1), spacing=4, margins=(0, 0, 0, 2)))
 
         lv = ctx.live
+        self.live = lv
         lv.segment.connect(self.view.on_segment)
         lv.live_zh.connect(self.view.on_live)
         lv.final_zh.connect(self.view.on_final)
@@ -268,7 +269,8 @@ class SubtitlePage(Page):
     def on_show(self):
         super().on_show()
         self.header.refresh_clock()
-        self.live.preload()
+        if getattr(self, "live", None) is not None:
+            self.live.preload()
 
     def show_live(self):
         pass

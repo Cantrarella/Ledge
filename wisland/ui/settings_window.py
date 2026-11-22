@@ -719,6 +719,19 @@ class SettingsWindow(QtWidgets.QWidget):
             mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
             quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
             sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
+
+            def _rollback_creds(*pages) -> bool:
+                all_ok = True
+                for pg in pages:
+                    if pg is not None and hasattr(pg, "rollback_credentials"):
+                        try:
+                            if not pg.rollback_credentials():
+                                all_ok = False
+                        except Exception:  # noqa: BLE001
+                            all_ok = False
+                return all_ok
+
+            sub_written = False
             if sub_pg is not None and sub_pg.has_pending_credentials():
                 sub_ok, sub_err = sub_pg.commit_credentials()
                 if not sub_ok:
@@ -726,18 +739,29 @@ class SettingsWindow(QtWidgets.QWidget):
                     self.status_lbl.setText(f"保存失败：{sub_err}")
                     self.switch_category("subtitles")
                     return False
+                sub_written = True
+            mail_written = False
             if mail_pg is not None:
                 cred_ok, cred_err = mail_pg.commit_credentials()
                 if not cred_ok:
+                    rb_ok = _rollback_creds(sub_pg if sub_written else None)
                     self.status_lbl.set_color(settings_theme.up())
-                    self.status_lbl.setText(f"保存失败：{cred_err}")
+                    msg = f"保存失败：{cred_err}"
+                    if not rb_ok:
+                        msg += "（且部分凭据回滚失败，请检查系统凭据管理器）"
+                    self.status_lbl.setText(msg)
                     self.switch_category("mail_accounts")
                     return False
+                mail_written = True
             if quota_pg is not None:
                 q_ok, q_err = quota_pg.commit_credentials()
                 if not q_ok:
+                    rb_ok = _rollback_creds(mail_pg if mail_written else None, sub_pg if sub_written else None)
                     self.status_lbl.set_color(settings_theme.up())
-                    self.status_lbl.setText(f"保存失败：{q_err}")
+                    msg = f"保存失败：{q_err}"
+                    if not rb_ok:
+                        msg += "（且部分凭据回滚失败，请检查系统凭据管理器）"
+                    self.status_lbl.setText(msg)
                     self.switch_category("quota")
                     return False
 
@@ -746,28 +770,46 @@ class SettingsWindow(QtWidgets.QWidget):
             if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                 quota_mgr.set_commit_sync_suppressed(True)
             try:
-                ok, errors = self.cfg_obj.commit_draft(self.draft, strict=True)
+                try:
+                    ok, errors = self.cfg_obj.commit_draft(self.draft, strict=True, emit_changed=False)
+                except Exception as exc:  # noqa: BLE001
+                    ok, errors = False, [f"写入配置文件失败：{type(exc).__name__}"]
                 if not ok:
                     err_msg = errors[0] if errors else "配置校验未通过"
+                    rb_ok = _rollback_creds(mail_pg if mail_written else None, sub_pg if sub_written else None)
                     self._route_field_errors(errors)
                     self.status_lbl.set_color(settings_theme.up())
-                    self.status_lbl.setText(f"保存失败：{err_msg}")
+                    msg = f"保存失败：{err_msg}"
+                    if not rb_ok:
+                        msg += "（且部分凭据回滚失败，请检查系统凭据管理器）"
+                    self.status_lbl.setText(msg)
                     return False
 
-                if mail_pg is not None:
-                    mail_pg.finalize_commit()
                 if quota_pg is not None:
                     fin_ok, fin_err = quota_pg.finalize_commit()
                     if not fin_ok:
+                        cfg_rb_ok = True
                         if isinstance(prev_snapshot, dict) and prev_snapshot:
-                            self.cfg_obj.commit_draft(prev_snapshot, strict=False)
+                            try:
+                                cfg_rb_ok, _ = self.cfg_obj.commit_draft(prev_snapshot, strict=False, emit_changed=False)
+                            except Exception:  # noqa: BLE001
+                                cfg_rb_ok = False
+                        cred_rb_ok = _rollback_creds(mail_pg if mail_written else None, sub_pg if sub_written else None)
                         self.status_lbl.set_color(settings_theme.up())
-                        self.status_lbl.setText(f"保存失败：{fin_err or '会话凭据保存失败，未写入系统凭据管理器'}")
+                        msg = f"保存失败：{fin_err or '会话凭据保存失败，未写入系统凭据管理器'}"
+                        if not (cfg_rb_ok and cred_rb_ok):
+                            msg += "（且部分凭据或配置回滚失败，请检查系统凭据管理器）"
+                        self.status_lbl.setText(msg)
                         self.switch_category("quota")
                         return False
+
+                if mail_pg is not None:
+                    mail_pg.finalize_commit()
             finally:
                 if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                     quota_mgr.set_commit_sync_suppressed(False)
+
+            self.cfg_obj.changed.emit()
             if getattr(self.ctx, "battery", None) is not None:
                 self.ctx.battery.apply_config()
 

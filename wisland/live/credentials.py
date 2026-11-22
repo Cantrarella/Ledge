@@ -36,6 +36,6 @@ def save_translate_api_key(value: str, config=cfg, store=None) -> bool:
         "Ledge",
         key,
     )
-    if ok:
+    if ok and config.get("translate.api_key"):
         config.set("translate.api_key", "", save=True)
     return ok

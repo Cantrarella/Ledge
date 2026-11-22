@@ -759,7 +759,7 @@ class Config(QtCore.QObject):
                     combined["battery"]["aliases"] = copy.deepcopy(raw["battery"]["aliases"])
         return validate_config(combined, strict=strict)
 
-    def commit_draft(self, draft_or_dict: ConfigDraft | dict, strict: bool = True) -> tuple[bool, list[str]]:
+    def commit_draft(self, draft_or_dict: ConfigDraft | dict, strict: bool = True, emit_changed: bool = True) -> tuple[bool, list[str]]:
         """校验并提交草稿：校验失败时不修改内存与磁盘原配置；成功后原子写入并发出 changed 信号。"""
         ok, errors, cleaned = self.validate(draft_or_dict, strict=strict)
         if not ok:
@@ -772,7 +772,8 @@ class Config(QtCore.QObject):
             except Exception:
                 self.data = old_data
                 raise
-        self.changed.emit()
+        if emit_changed:
+            self.changed.emit()
         return True, []
 
     def reset_to_defaults(self, preserve_unknown: bool = True):

@@ -668,3 +668,112 @@ def test_10_settings_save_atomicity_and_disk_write_rollback(qt_app, tmp_path, mo
     finally:
         win.close()
         mgr.stop()
+
+
+def test_11_settings_save_full_rollback_matrix(qt_app, tmp_path, monkeypatch):
+    """验证跨模块保存失败回滚：校验失败、os.replace 拒写、配额第二笔凭据失败、回滚失败提示、仅广播一次 changed。"""
+    import wisland.live.credentials as live_creds
+    from wisland.services.mail.credentials import InMemoryCredentialStore, make_credential_key
+    from wisland.services.mail.manager import MailAccountManager
+    from wisland.services.mail.models import MailAccount
+    from wisland.ui.settings.mail_accounts import MailAccountsSettingsPage
+    from wisland.ui.settings.subtitles import SubtitlesSettingsPage
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    sub_store = InMemoryCredentialStore()
+    monkeypatch.setattr(live_creds, "_store", lambda: sub_store)
+    live_creds.save_translate_api_key("sub-old-secret", config=cm, store=sub_store)
+    monkeypatch.setattr(
+        "wisland.ui.settings.subtitles.save_translate_api_key",
+        lambda val: live_creds.save_translate_api_key(val, config=cm, store=sub_store),
+    )
+    monkeypatch.setattr(
+        "wisland.ui.settings.subtitles.get_translate_api_key",
+        lambda: live_creds.get_translate_api_key(config=cm, store=sub_store),
+    )
+
+    mail_creds = InMemoryCredentialStore()
+    mail_acc = MailAccount(
+        id="m1",
+        email="old@example.com",
+        provider="qq",
+        host="imap.qq.com",
+        port=993,
+        security="ssl",
+        username="old@example.com",
+        credential_key=make_credential_key("m1"),
+    )
+    mail_creds.save_secret(mail_acc.credential_key, mail_acc.username, "mail-old-secret")
+    cm.set("mail.accounts", [mail_acc.to_config_dict()], save=True)
+    mail_mgr = MailAccountManager(config_obj=cm, cred_store=mail_creds)
+
+    changed_events: list[int] = []
+    cm.changed.connect(lambda: changed_events.append(cm.get("weather.interval_min")))
+
+    ctx = type("Ctx", (), {"quota": mgr, "mail": mail_mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        sub_pg = next(pg for pg in win.leaf_pages if isinstance(pg, SubtitlesSettingsPage))
+        mail_pg = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+
+        # 路径 1：同次修改字幕密钥、删除邮件账号、改天气间隔，并让配额第二笔凭据写入失败
+        sub_pg.ed_api_key.setText("sub-new-secret")
+        mail_pg._draft_accounts = []
+        mail_pg._deleted_accounts = [mail_acc]
+
+        q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+        q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+        quota_pg._draft_accounts = [q1, q2]
+        quota_pg._pending_secrets = {"q1": "q1-new-secret", "q2": "q2-new-secret"}
+
+        orig_save_secret = creds.save_secret
+        def _fail_second_quota(target, username, secret):
+            if target == q2.credential_key:
+                creds.last_error = 5
+                return False
+            return orig_save_secret(target, username, secret)
+        monkeypatch.setattr(creds, "save_secret", _fail_second_quota)
+
+        orig_interval = cm.get("weather.interval_min")
+        win.draft.set("weather.interval_min", 25)
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        assert win.save_settings() is False
+        # 配置内存/磁盘未变，运行中服务从未收到未提交配置
+        assert cm.get("weather.interval_min") == orig_interval
+        assert changed_events == []
+        # 字幕旧密钥恢复，邮件旧授权码未被删除，配额第一笔新增凭据被回滚清除
+        assert sub_store.read_secret(live_creds.TRANSLATE_CREDENTIAL_KEY) == "sub-old-secret"
+        assert mail_creds.read_secret(mail_acc.credential_key) == "mail-old-secret"
+        assert creds.read_secret(q1.credential_key) is None
+        assert "保存失败" in win.status_lbl.text()
+
+        # 路径 2：os.replace 拒写时，不抛出异常，且回滚已写入的字幕密钥
+        monkeypatch.setattr(creds, "save_secret", orig_save_secret)
+        quota_pg._draft_accounts = []
+        quota_pg._pending_secrets = {}
+        monkeypatch.setattr("wisland.core.config.os.replace", lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("readonly")))
+        assert win.save_settings() is False
+        assert cm.get("weather.interval_min") == orig_interval
+        assert changed_events == []
+        assert sub_store.read_secret(live_creds.TRANSLATE_CREDENTIAL_KEY) == "sub-old-secret"
+
+        # 路径 3：回滚本身也失败时，界面明确报告回滚失败且不含密钥明文
+        monkeypatch.setattr(sub_pg, "rollback_credentials", lambda: False)
+        assert win.save_settings() is False
+        status_txt = win.status_lbl.text()
+        assert "回滚失败" in status_txt
+        assert "sub-new-secret" not in status_txt
+        assert "sub-old-secret" not in status_txt
+        monkeypatch.undo()
+
+        # 路径 4：全部成功时只广播一次配置变更
+        changed_events.clear()
+        win.draft.set("weather.interval_min", 25)
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+        assert win.save_settings() is True
+        assert changed_events == [25]
+    finally:
+        win.close()
+        mgr.stop()
