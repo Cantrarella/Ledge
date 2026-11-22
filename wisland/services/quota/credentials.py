@@ -178,9 +178,11 @@ class WindowsQuotaCredentialStore(Win32CredentialBase):
         if not target:
             return False
         raw = self._read_single(target)
+        if raw is None and self.last_error:
+            return False
         is_manifest, manifest = self._parse_manifest(raw)
 
-        # 收集待删条目快照以便部分删除失败时按逆序恢复
+        # 收集待删条目快照以便部分删除失败时按逆序恢复；主清单分块或任意读取出错时中止删除
         targets_to_delete: list[tuple[str, str | None]] = [(target, raw)]
         seen_targets: set[str] = {target}
         if is_manifest and manifest is not None:
@@ -190,13 +192,22 @@ class WindowsQuotaCredentialStore(Win32CredentialBase):
                 ct = f"{prefix}/{i}"
                 if ct not in seen_targets:
                     seen_targets.add(ct)
-                    targets_to_delete.append((ct, self._read_single(ct)))
+                    self._clear_error()
+                    cval = self._read_single(ct)
+                    if cval is None:
+                        if not self.last_error_message:
+                            self.last_error_message = f"待删除分块备份失败 (chunk {i})"
+                        return False
+                    targets_to_delete.append((ct, cval))
 
         idx = 0
         while idx < 256:
             chunk_target = f"{target}/chunk/{idx}"
+            self._clear_error()
             val = self._read_single(chunk_target)
             if val is None:
+                if self.last_error:
+                    return False
                 break
             if chunk_target not in seen_targets:
                 seen_targets.add(chunk_target)

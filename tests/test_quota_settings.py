@@ -1149,3 +1149,80 @@ def test_15_both_managers_updated_before_any_success_signal(qt_app, tmp_path, mo
     finally:
         win.close()
         mgr.stop()
+
+
+def test_16_chunked_quota_backup_read_error_aborts_before_delete(qt_app, tmp_path, monkeypatch):
+    """分块备份读取出错（如 WinError 5）时，必须在删除前中止并保留原凭据完整可读。"""
+    from dataclasses import asdict
+    from wisland.services.quota.credentials import WindowsQuotaCredentialStore
+    from wisland.services.quota.models import QuotaSnapshot
+
+    fake_raw: dict[str, tuple[str, str]] = {}
+    creds = WindowsQuotaCredentialStore()
+    fail_read_targets: set[str] = set()
+    fail_delete_targets: set[str] = set()
+
+    def _fake_write(target: str, username: str, secret: str) -> bool:
+        fake_raw[target] = (username, secret)
+        return True
+
+    def _fake_read(target: str) -> str | None:
+        if target in fail_read_targets:
+            creds.last_error = 5
+            creds.last_error_message = "WinError 5: Access denied"
+            return None
+        item = fake_raw.get(target)
+        return item[1] if item is not None else None
+
+    def _fake_delete(target: str) -> bool:
+        if target in fail_delete_targets:
+            creds.last_error = 5
+            creds.last_error_message = "WinError 5: Access denied"
+            return False
+        fake_raw.pop(target, None)
+        return True
+
+    monkeypatch.setattr(creds, "_write_single", _fake_write)
+    monkeypatch.setattr(creds, "_read_single", _fake_read)
+    monkeypatch.setattr(creds, "_delete_single", _fake_delete)
+
+    cm, _, cache, old_mgr, _ = _make_quota_env(tmp_path)
+    old_mgr.stop()
+    from wisland.services.quota.manager import QuotaManager
+    mgr = QuotaManager(config_obj=cm, cred_store=creds, cache=cache)
+
+    q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+    q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+    sec1 = "short-secret-1"
+    sec2 = "chunked-secret-" + ("A1B2C3D4E5" * 260)
+    assert creds.save_secret(q1.credential_key, q1.identity, sec1) is True
+    assert creds.save_secret(q2.credential_key, q2.identity, sec2) is True
+
+    cache.put(QuotaSnapshot(account_id="q1", fetched_at=100.0, status="ok"), flush=True)
+    cache.put(QuotaSnapshot(account_id="q2", fetched_at=100.0, status="ok"), flush=True)
+    cm.set("quota.accounts", [asdict(q1), asdict(q2)], save=True)
+    mgr.load_from_config()
+
+    ctx = type("Ctx", (), {"quota": mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        # 让 q2 首个分块读取返回 WinError 5（但允许删除），同时让下一分块删除失败
+        quota_pg._draft_accounts = []
+        quota_pg._deleted_accounts = [q1, q2]
+        win.draft.set("quota.accounts", [])
+        fail_read_targets.add(f"{q2.credential_key}/chunk/0")
+        fail_delete_targets.add(f"{q2.credential_key}/chunk/1")
+
+        assert win.save_settings() is False
+        assert len(cm.get("quota.accounts")) == 2
+
+        # 恢复正常读取权限后，两笔凭据都必须完整可读（q2 未被部分删除）
+        fail_read_targets.clear()
+        assert creds.read_secret(q1.credential_key) == sec1
+        assert creds.read_secret(q2.credential_key) == sec2
+    finally:
+        win.close()
+        mgr.stop()
