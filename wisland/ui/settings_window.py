@@ -707,6 +707,24 @@ class SettingsWindow(QtWidgets.QWidget):
 
         try:
             import copy
+            # 先同步最新运行期岛体停靠位置（防止设置窗口已打开时用户拖拽了岛体，点保存时把旧位置写回）
+            isl_pg = next((pg for pg in self.leaf_pages if isinstance(pg, IslandPetSettingsPage)), None)
+            if isl_pg is not None and getattr(isl_pg, "_built", False):
+                if (isl_pg.cb_edge.current_value() or "top") == getattr(isl_pg, "_loaded_edge", None):
+                    self.draft.set("island.edge", self.cfg_obj.get("island.edge", "top"))
+                if int(isl_pg.sp_pos.value()) == getattr(isl_pg, "_loaded_pos_pct", None):
+                    raw_cur_pos = self.cfg_obj.get("island.pos", 0.5)
+                    self.draft.set("island.pos", 0.5 if raw_cur_pos is None else raw_cur_pos)
+                scr_v = isl_pg.cb_screen.current_value()
+                if (int(scr_v) if scr_v is not None else 0) == getattr(isl_pg, "_loaded_screen", None):
+                    raw_cur_scr = self.cfg_obj.get("island.screen", 0)
+                    self.draft.set("island.screen", 0 if raw_cur_scr is None else raw_cur_scr)
+            else:
+                self.draft.set("island.edge", self.cfg_obj.get("island.edge", "top"))
+                raw_cur_pos = self.cfg_obj.get("island.pos", 0.5)
+                self.draft.set("island.pos", 0.5 if raw_cur_pos is None else raw_cur_pos)
+                raw_cur_scr = self.cfg_obj.get("island.screen", 0)
+                self.draft.set("island.screen", 0 if raw_cur_scr is None else raw_cur_scr)
             self.collect_to_draft()
             pre_ok, pre_errors, _ = self.cfg_obj.validate(self.draft, strict=True)
             if not pre_ok:
@@ -842,6 +860,12 @@ class SettingsWindow(QtWidgets.QWidget):
 
             settings_theme.set_mode(self.cfg_obj.get("settings_window.theme", "light"))
             self.draft = self.cfg_obj.create_draft()
+            if isl_pg is not None and getattr(isl_pg, "_built", False):
+                self._loading = True
+                try:
+                    isl_pg.load_from_draft(self.draft)
+                finally:
+                    self._loading = False
             self._baseline_dict = self.collect_to_draft().to_dict()
             self.status_lbl.set_color(settings_theme.down())
             self.status_lbl.setText("✓ 设置已保存并生效")

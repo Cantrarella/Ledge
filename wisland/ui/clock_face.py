@@ -485,6 +485,238 @@ def paint_clock(
     p.restore()
 
 
+_VERT_PAIR_UNION_CACHE: dict[str, tuple[QtCore.QRectF, QtCore.QRectF, dict]] = {}
+
+
+def _vertical_pair_union_metrics(style_key: str) -> tuple[QtCore.QRectF, QtCore.QRectF, dict]:
+    """计算指定字体在固定双数字槽位下所有数字(00~99)的字墨联合包围盒与含发光描边包围盒。"""
+    m88 = measure_clock(style_key, "88")
+    key = m88["style"]
+    if key in _VERT_PAIR_UNION_CACHE:
+        return _VERT_PAIR_UNION_CACHE[key]
+
+    spec = CLOCK_STYLE_MAP.get(key, CLOCK_STYLE_MAP["minimal"])
+    glow = bool(spec.get("glow"))
+    sw0 = m88["slot_widths"][0]
+    sw1 = m88["slot_widths"][1] if len(m88["slot_widths"]) > 1 else sw0
+    gap = m88["gap"]
+
+    union_path = QtGui.QPainterPath()
+    if key == "segment":
+        seg_h = m88["height"]
+        top_y = -seg_h * 0.5
+        _add_segment_digit(union_path, "8", 0.0, top_y, sw0, seg_h)
+        _add_segment_digit(union_path, "8", sw0 + gap, top_y, sw1, seg_h)
+    else:
+        font: QtGui.QFont = m88["font"]
+        fm = QtGui.QFontMetricsF(font)
+        baseline_y = (fm.ascent() - fm.descent()) * 0.5
+        for d in "0123456789":
+            ch_w = fm.horizontalAdvance(d)
+            union_path.addText((sw0 - ch_w) * 0.5, baseline_y, font, d)
+            union_path.addText(sw0 + gap + (sw1 - ch_w) * 0.5, baseline_y, font, d)
+
+    ink_br = union_path.boundingRect()
+    if glow:
+        pen_w = 2.8 if key == "segment" else 3.2
+        stroker = QtGui.QPainterPathStroker()
+        stroker.setWidth(pen_w)
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        stroked_br = stroker.createStroke(union_path).boundingRect().united(ink_br)
+        # 额外计入半宽兜底，确保包含描边极值
+        pad = pen_w * 0.5
+        glow_br = stroked_br.united(ink_br.adjusted(-pad, -pad, pad, pad))
+    else:
+        glow_br = QtCore.QRectF(ink_br)
+
+    res = (ink_br, glow_br, m88)
+    _VERT_PAIR_UNION_CACHE[key] = res
+    return res
+
+
+def measure_vertical_clock_pair(
+    style_key: str,
+    text: str = "88",
+    max_core_w: float = 26.0,
+    max_clip_w: float = 30.0,
+    rect: QtCore.QRectF | None = None,
+) -> dict:
+    """按固定双槽位与字墨联合包围盒测量竖向单行两位数（如 'HH' 或 'MM'），同一字体使用固定缩放比例。"""
+    pair = (str(text or "88") + "88")[:2]
+    union_ink_br, union_glow_br, m88 = _vertical_pair_union_metrics(style_key)
+    key = m88["style"]
+    spec = CLOCK_STYLE_MAP.get(key, CLOCK_STYLE_MAP["minimal"])
+    glow = bool(spec.get("glow"))
+    sw0 = m88["slot_widths"][0]
+    sw1 = m88["slot_widths"][1] if len(m88["slot_widths"]) > 1 else sw0
+    gap = m88["gap"]
+
+    core_limit = max(4.0, float(max_core_w))
+    # 光晕外缘在裁剪区内侧预留固定 1.5px 抗锯齿缓冲，避免在裁剪边界（含 22.32px 挤压帧）被硬切出垂直平边
+    aa_pad = 1.5
+    clip_limit = max(4.0, float(max_clip_w) - 2.0 * aa_pad)
+
+    scale = min(
+        1.0,
+        core_limit / max(1.0, union_ink_br.width()),
+        clip_limit / max(1.0, union_glow_br.width()),
+    )
+
+    dim_path = QtGui.QPainterPath()
+    lit_path = QtGui.QPainterPath()
+    if key == "segment":
+        seg_h = m88["height"]
+        top_y = -seg_h * 0.5
+        _add_segment_digit(dim_path, "8", 0.0, top_y, sw0, seg_h)
+        _add_segment_digit(dim_path, "8", sw0 + gap, top_y, sw1, seg_h)
+        _add_segment_digit(lit_path, pair[0], 0.0, top_y, sw0, seg_h)
+        _add_segment_digit(lit_path, pair[1], sw0 + gap, top_y, sw1, seg_h)
+    else:
+        font: QtGui.QFont = m88["font"]
+        fm = QtGui.QFontMetricsF(font)
+        baseline_y = (fm.ascent() - fm.descent()) * 0.5
+        w0 = fm.horizontalAdvance(pair[0])
+        w1 = fm.horizontalAdvance(pair[1])
+        lit_path.addText((sw0 - w0) * 0.5, baseline_y, font, pair[0])
+        lit_path.addText(sw0 + gap + (sw1 - w1) * 0.5, baseline_y, font, pair[1])
+
+    uc = union_ink_br.center()
+    rc = rect.center() if rect is not None else QtCore.QPointF(0.0, 0.0)
+    tr = QtGui.QTransform()
+    tr.translate(rc.x(), rc.y())
+    tr.scale(scale, scale)
+    tr.translate(-uc.x(), -uc.y())
+
+    mapped_lit = tr.map(lit_path)
+    mapped_dim = tr.map(dim_path) if key == "segment" else QtGui.QPainterPath()
+    text_ink_br = mapped_lit.boundingRect()
+    union_ink_mapped = tr.mapRect(union_ink_br)
+    union_glow_mapped = tr.mapRect(union_glow_br)
+
+    if glow:
+        pen_w = (2.8 if key == "segment" else 3.2) * scale
+        stroker = QtGui.QPainterPathStroker()
+        stroker.setWidth(pen_w)
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        text_glow_br = stroker.createStroke(mapped_lit).boundingRect().united(text_ink_br)
+        pad = pen_w * 0.5
+        text_glow_br = text_glow_br.united(text_ink_br.adjusted(-pad, -pad, pad, pad))
+    else:
+        text_glow_br = QtCore.QRectF(text_ink_br)
+
+    slot0_cx = tr.map(QtCore.QPointF(sw0 * 0.5, uc.y())).x()
+    slot1_cx = tr.map(QtCore.QPointF(sw0 + gap + sw1 * 0.5, uc.y())).x()
+
+    return {
+        "style": key,
+        "glow": glow,
+        "scale": float(scale),
+        "transform": tr,
+        "lit_path": lit_path,
+        "dim_path": dim_path,
+        "mapped_lit": mapped_lit,
+        "mapped_dim": mapped_dim,
+        "union_ink_rect": union_ink_mapped,
+        "union_glow_rect": union_glow_mapped,
+        "text_ink_rect": text_ink_br,
+        "text_glow_rect": text_glow_br,
+        "slot0_cx": float(slot0_cx),
+        "slot1_cx": float(slot1_cx),
+        "total_w": float(union_ink_mapped.width()),
+        "glow_w": float(union_glow_mapped.width()),
+        "height": float(union_ink_mapped.height()),
+    }
+
+
+def paint_vertical_clock_pair(
+    p: QtGui.QPainter,
+    rect: QtCore.QRectF,
+    text: str,
+    style_key: str,
+    palette: Sequence[QtGui.QColor],
+    dark: bool = True,
+    alpha: float = 1.0,
+    max_core_w: float = 26.0,
+    max_clip_w: float = 30.0,
+) -> dict:
+    """在竖条单行 rect 内绘制两位数字（'HH' 或 'MM'），与 measure_vertical_clock_pair 共用同一变换与缩放。"""
+    m = measure_vertical_clock_pair(
+        style_key,
+        text=text,
+        max_core_w=max_core_w,
+        max_clip_w=max_clip_w,
+        rect=rect,
+    )
+    if alpha <= 0.01 or not text:
+        return m
+
+    key = m["style"]
+    glow = m["glow"]
+    scale = m["scale"]
+    mapped_lit: QtGui.QPainterPath = m["mapped_lit"]
+    mapped_dim: QtGui.QPainterPath = m["mapped_dim"]
+    brush_rect = m["union_ink_rect"] if not m["union_ink_rect"].isEmpty() else rect
+
+    p.save()
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+
+    if key == "segment":
+        dim_col = QtGui.QColor(255, 255, 255, round(18 * alpha)) if dark else QtGui.QColor(0, 0, 0, round(20 * alpha))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(dim_col)
+        p.drawPath(mapped_dim)
+
+        if glow:
+            glow_brush = _make_brush(brush_rect, palette, alpha * (0.24 if dark else 0.16))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(
+                QtGui.QPen(
+                    glow_brush,
+                    2.8 * scale,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
+            p.drawPath(mapped_lit)
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_make_brush(brush_rect, palette, alpha))
+        p.drawPath(mapped_lit)
+        p.restore()
+        return m
+
+    if glow:
+        outer_pen = QtGui.QPen(
+            _make_brush(brush_rect, palette, alpha * (0.22 if dark else 0.14)),
+            3.2 * scale,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        inner_pen = QtGui.QPen(
+            _make_brush(brush_rect, palette, alpha * (0.36 if dark else 0.22)),
+            1.4 * scale,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(outer_pen)
+        p.drawPath(mapped_lit)
+        p.setPen(inner_pen)
+        p.drawPath(mapped_lit)
+
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_make_brush(brush_rect, palette, alpha))
+    p.drawPath(mapped_lit)
+    p.restore()
+    return m
+
+
 def _blend_color(c1: QtGui.QColor, c2: QtGui.QColor, t: float) -> QtGui.QColor:
     """线性混合两个 QColor。"""
     t = max(0.0, min(1.0, float(t)))
@@ -657,6 +889,143 @@ def paint_temperature(
         p.setPen(QtGui.QPen(color, 1.3))
         p.drawEllipse(QtCore.QPointF(deg_cx, deg_cy), 1.65, 1.65)
     p.restore()
+
+
+def measure_vertical_temperature(
+    style_key: str,
+    temp_text: str,
+    max_core_w: float = 26.0,
+    rect: QtCore.QRectF | None = None,
+) -> dict:
+    """将负号、数字、度数圆环及圆环描边作为整体计算联合包围盒、统一缩放比例与居中几何。"""
+    m = measure_temperature(style_key, temp_text)
+    key = m["style"]
+    num_text = m["num_text"]
+    has_deg = m["has_deg"]
+
+    num_path = QtGui.QPainterPath()
+    deg_center = QtCore.QPointF(0.0, 0.0)
+    deg_r = 1.65
+    deg_pen_w = 1.3
+
+    if key == "segment":
+        seg_h = m["height"]
+        top_y = -seg_h * 0.5
+        cx = 0.0
+        for ch in num_text:
+            _add_segment_digit(num_path, ch, cx, top_y, m["digit_w"], seg_h)
+            cx += m["digit_w"] + m["gap"]
+        if has_deg:
+            deg_center = QtCore.QPointF(cx + 2.4, top_y + 2.0)
+            deg_r = 1.55
+            deg_pen_w = 1.2
+    else:
+        font: QtGui.QFont = m["font"]
+        fm = QtGui.QFontMetricsF(font)
+        baseline_y = (fm.ascent() - fm.descent()) * 0.5
+        if num_text:
+            num_path.addText(-m["ink_left"], baseline_y, font, num_text)
+        if has_deg:
+            deg_cx = m["num_w"] + (4.2 if key == "serif" else 3.6)
+            deg_cy = baseline_y - fm.ascent() * 0.68
+            deg_center = QtCore.QPointF(deg_cx, deg_cy)
+            deg_r = 1.65
+            deg_pen_w = 1.3
+
+    full_br = num_path.boundingRect()
+    if has_deg:
+        outer_r = deg_r + deg_pen_w * 0.5
+        deg_outer_br = QtCore.QRectF(
+            deg_center.x() - outer_r,
+            deg_center.y() - outer_r,
+            outer_r * 2.0,
+            outer_r * 2.0,
+        )
+        full_br = full_br.united(deg_outer_br) if not full_br.isEmpty() else deg_outer_br
+
+    if full_br.isEmpty():
+        full_br = QtCore.QRectF(0.0, -6.0, 12.0, 12.0)
+
+    core_limit = max(4.0, float(max_core_w))
+    scale = min(1.0, core_limit / max(1.0, full_br.width()))
+
+    fc = full_br.center()
+    rc = rect.center() if rect is not None else QtCore.QPointF(0.0, 0.0)
+    tr = QtGui.QTransform()
+    tr.translate(rc.x(), rc.y())
+    tr.scale(scale, scale)
+    tr.translate(-fc.x(), -fc.y())
+
+    mapped_num = tr.map(num_path)
+    mapped_deg_center = tr.map(deg_center)
+    mapped_deg_r = deg_r * scale
+    mapped_deg_pen_w = deg_pen_w * scale
+    mapped_full_br = tr.mapRect(full_br)
+
+    num_ink_br = mapped_num.boundingRect()
+    if has_deg:
+        mr = mapped_deg_r + mapped_deg_pen_w * 0.5
+        deg_ink_br = QtCore.QRectF(
+            mapped_deg_center.x() - mr,
+            mapped_deg_center.y() - mr,
+            mr * 2.0,
+            mr * 2.0,
+        )
+        ink_br = num_ink_br.united(deg_ink_br) if not num_ink_br.isEmpty() else deg_ink_br
+    else:
+        deg_ink_br = QtCore.QRectF()
+        ink_br = num_ink_br
+
+    return {
+        "style": key,
+        "has_deg": has_deg,
+        "scale": float(scale),
+        "mapped_num": mapped_num,
+        "mapped_deg_center": mapped_deg_center,
+        "mapped_deg_r": float(mapped_deg_r),
+        "mapped_deg_pen_w": float(mapped_deg_pen_w),
+        "num_ink_rect": num_ink_br,
+        "deg_ink_rect": deg_ink_br,
+        "ink_rect": ink_br if not ink_br.isEmpty() else mapped_full_br,
+        "total_w": float((ink_br if not ink_br.isEmpty() else mapped_full_br).width()),
+        "height": float((ink_br if not ink_br.isEmpty() else mapped_full_br).height()),
+    }
+
+
+def paint_vertical_temperature(
+    p: QtGui.QPainter,
+    rect: QtCore.QRectF,
+    temp_text: str,
+    style_key: str,
+    color: QtGui.QColor,
+    max_core_w: float = 26.0,
+) -> dict:
+    """在竖条温度行 rect 内整体居中并等比缩放绘制温度（含负号、数字、度数圆环与描边）。"""
+    m = measure_vertical_temperature(
+        style_key,
+        temp_text=temp_text,
+        max_core_w=max_core_w,
+        rect=rect,
+    )
+    if not temp_text or color.alpha() <= 0:
+        return m
+
+    p.save()
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+
+    if not m["mapped_num"].isEmpty():
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawPath(m["mapped_num"])
+
+    if m["has_deg"]:
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QtGui.QPen(color, m["mapped_deg_pen_w"]))
+        p.drawEllipse(m["mapped_deg_center"], m["mapped_deg_r"], m["mapped_deg_r"])
+
+    p.restore()
+    return m
 
 
 def infer_weather_kind(icon_code: str = "", glyph: str = "") -> str:

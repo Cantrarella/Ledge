@@ -257,15 +257,26 @@ def test_02_dpi_multimonitor_hotplug_dock_edges_and_wake(qt_app):
             isl.apply_config()
             qt_app.processEvents()
             assert isl.edge == edge
-            c = isl._center_on_edge(edge, isl._anchor_along(146, 40), 0, 146, 40)
+            tw, th = isl.target_size()
+            c = isl._center_on_edge(edge, isl._anchor_along(tw, th), 0, tw, th)
             if edge == "top":
-                assert abs(c.y() - (R.top() + 20)) <= 2.0
+                assert th == 34.0
+                assert tw >= 96.0
+                assert abs(c.y() - (R.top() + 17.0)) <= 2.0
             elif edge == "bottom":
-                assert abs(c.y() - (R.bottom() + 1 - 20)) <= 2.0
+                assert th == 34.0
+                assert tw >= 96.0
+                assert abs(c.y() - (R.bottom() - 17.0)) <= 2.0
             elif edge == "left":
-                assert abs(c.x() - (R.left() + 73)) <= 2.0
+                assert tw == 36.0
+                assert th in (92.0, 104.0, 136.0, 148.0)
+                assert abs(isl.body.width() - 36.0) <= 0.5
+                assert abs(c.x() - (R.left() + 18.0)) <= 2.0
             elif edge == "right":
-                assert abs(c.x() - (R.right() + 1 - 73)) <= 2.0
+                assert tw == 36.0
+                assert th in (92.0, 104.0, 136.0, 148.0)
+                assert abs(isl.body.width() - 36.0) <= 0.5
+                assert abs(c.x() - (R.right() - 18.0)) <= 2.0
 
         # 模拟配置了不存在的第二显示器索引（热拔出后自动回退主屏，不崩溃、不越界）
         cfg.set("island.screen", 99, save=False)
@@ -298,6 +309,7 @@ def test_02_dpi_multimonitor_hotplug_dock_edges_and_wake(qt_app):
         cfg.set("island.edge", orig_edge, save=False)
         cfg.set("island.pos", orig_pos, save=False)
         cfg.set("island.screen", orig_scr, save=False)
+        cfg.save()
         isl.close()
 
 
@@ -403,6 +415,8 @@ def test_04_repeated_settings_and_tray_stress(qt_app, tmp_path):
         qt_app.setStyleSheet(orig_qss)
 
     # 托盘菜单反复展开与收起 20 次
+    orig_edge = cfg.get("island.edge", "top")
+    cfg.set("island.edge", "top", save=False)
     ctx = SimpleNamespace(open_settings=lambda *a, **k: None)
     isl = Island([_DummyPage(ctx)])
     try:
@@ -426,6 +440,8 @@ def test_04_repeated_settings_and_tray_stress(qt_app, tmp_path):
 
 def test_05_adaptive_fps_memory_stability_and_clean_thread_exit(qt_app, tmp_path):
     """验证空闲 30 FPS (33ms) / 动态 60 FPS (16ms) 自适应帧率、长循环内存无明显增长及后台线程干净退出。"""
+    orig_edge = cfg.get("island.edge", "top")
+    cfg.set("island.edge", "top", save=False)
     ctx = SimpleNamespace(open_settings=lambda *a, **k: None)
     isl = Island([_DummyPage(ctx)])
     try:
@@ -452,6 +468,7 @@ def test_05_adaptive_fps_memory_stability_and_clean_thread_exit(qt_app, tmp_path
         isl._tick()
         assert isl.timer.interval() == 16
     finally:
+        cfg.set("island.edge", orig_edge, save=False)
         isl.close()
         assert not isl.timer.isActive()
         assert not isl.poll.isActive()

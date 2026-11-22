@@ -322,6 +322,14 @@ def main():
     )
 
     def on_wheel(d):
+        if island.edge in ("left", "right"):
+            # 侧边不加小表情：仅在 clock ↔ music 间切换
+            v = "music" if compact.view != "music" else "clock"
+            compact.set_view(v)
+            compact._view_t = time.monotonic()
+            cfg.set("island.compact_view", v)
+            island._kick()
+            return
         v = compact.cycle_view(d)
         cfg.set("island.compact_view", v)
         island._kick()
@@ -591,7 +599,7 @@ def main():
 
     # ---------------- 收起态：时间天气与小形象每隔几十秒自动轮换 ----------------
     def auto_cycle():
-        if island.expanded or island.passthrough() or compact.view not in ("clock", "pet"):
+        if island.expanded or island.passthrough() or island.edge in ("left", "right") or compact.view not in ("clock", "pet"):
             return
         compact.set_view("pet" if compact.view == "clock" else "clock")
         island._kick()

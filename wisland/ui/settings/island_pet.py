@@ -264,10 +264,15 @@ class IslandPetSettingsPage(SettingsPage):
 
     def load_from_draft(self, draft: ConfigDraft):
         self._populate_screens()
-        self.cb_edge.set_value(draft.get("island.edge", "top"))
-        pos_frac = float(draft.get("island.pos", 0.5) or 0.5)
-        self.sp_pos.setValue(round(pos_frac * 100))
-        self.cb_screen.set_value(int(draft.get("island.screen", 0) or 0))
+        self._loaded_edge = str(draft.get("island.edge", "top") or "top")
+        raw_pos = draft.get("island.pos", 0.5)
+        self._loaded_pos = float(0.5 if raw_pos is None else raw_pos)
+        self._loaded_pos_pct = round(self._loaded_pos * 100)
+        raw_scr = draft.get("island.screen", 0)
+        self._loaded_screen = int(0 if raw_scr is None else raw_scr)
+        self.cb_edge.set_value(self._loaded_edge)
+        self.sp_pos.setValue(self._loaded_pos_pct)
+        self.cb_screen.set_value(self._loaded_screen)
         self.cb_compact.set_value(draft.get("island.compact_view", "clock"))
         self.sp_cycle.setValue(int(draft.get("island.auto_cycle_s", 30) or 0))
         self.cb_clock_style.set_value(draft.get("island.clock_style", "minimal"))
@@ -290,10 +295,17 @@ class IslandPetSettingsPage(SettingsPage):
         self.sw_netease_log.setChecked(bool(draft.get("media.netease_log", True)))
 
     def save_to_draft(self, draft: ConfigDraft):
-        draft.set("island.edge", self.cb_edge.current_value() or "top")
-        draft.set("island.pos", round(self.sp_pos.value() / 100.0, 4))
+        cur_edge = self.cb_edge.current_value() or "top"
+        cur_pos_pct = int(self.sp_pos.value())
         scr_val = self.cb_screen.current_value()
-        draft.set("island.screen", int(scr_val) if scr_val is not None else 0)
+        cur_screen = int(scr_val) if scr_val is not None else 0
+        # 仅当用户在设置页实际改动了停靠边/位置/显示器时才覆盖草稿；否则保留拖拽保存的精确位置
+        if cur_edge != getattr(self, "_loaded_edge", cur_edge):
+            draft.set("island.edge", cur_edge)
+        if cur_pos_pct != getattr(self, "_loaded_pos_pct", cur_pos_pct):
+            draft.set("island.pos", round(cur_pos_pct / 100.0, 4))
+        if cur_screen != getattr(self, "_loaded_screen", cur_screen):
+            draft.set("island.screen", cur_screen)
         draft.set("island.compact_view", self.cb_compact.current_value() or "clock")
         draft.set("island.auto_cycle_s", int(self.sp_cycle.value()))
         draft.set("island.clock_style", self.cb_clock_style.current_value() or "minimal")

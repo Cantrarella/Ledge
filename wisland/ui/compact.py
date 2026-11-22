@@ -10,14 +10,18 @@ import time
 
 from PySide6 import QtCore, QtGui
 
-from .anim import clamp, ease_out
+from .anim import clamp, ease_out, smooth
 from .clock_face import (
     extract_cover_color,
     infer_weather_kind,
     measure_clock,
     measure_temperature,
+    measure_vertical_clock_pair,
+    measure_vertical_temperature,
     paint_clock,
     paint_temperature,
+    paint_vertical_clock_pair,
+    paint_vertical_temperature,
     paint_weather_icon,
     resolve_clock_palette,
     resolve_weather_colors,
@@ -32,6 +36,11 @@ H_MEDIA = 36
 H_NOTIFY = 36
 H_ACT = 40
 H_SUB = 60          # 实时字幕：上日语、下中文两行
+W_VERT_IDLE = 36
+H_VERT_IDLE = 92
+H_VERT_WEATHER = 136
+H_VERT_BADGE_EXTRA = 12
+_MIN_DISMISS_BANNER_W = 68.0
 SUB_HOLD_S = 7.0    # 最后一句字幕之后保留多久再回到原来的视图
 W_TEXT = 640        # 显示歌词 / 实时字幕时的胶囊宽度（约为普通收起态的 3 倍）
 _IDLE_WEATHER_GAP = 14.0
@@ -296,12 +305,25 @@ class CompactView:
         self.media: dict = {}
         self.cover: QtGui.QPixmap | None = None
         self.activity: dict | None = None
+        self._activity_seq: int = 0
         self._notify_dismiss_rect: QtCore.QRectF | None = None
+        self._dismiss_rect_seq: int = -1
         self.notify_dismiss_hover: float = 0.0
         self.badges: dict[str, int] = {}
         self.weather: tuple | None = None   # (glyph, "18°", font_family)
+        self.edge: str = "top"
         self._mode = "idle"
-        self._mode_t = 0.0
+        self._mode_t = -10.0
+        self._full_state: tuple = ("horizontal", "idle", "", 0)
+        self._last_horiz_snap: dict | None = None
+        self._outgoing_horiz_snap: dict | None = None
+        self._outgoing_t0: float = -100.0
+        self._last_vert_vol_snap: dict | None = None
+        self._outgoing_vert_vol_snap: dict | None = None
+        self._outgoing_vert_vol_t0: float = -100.0
+        self._banner_pinned_rest_h: float | None = None
+        self._wea_h0: float = 36.0
+        self.on_state_changed = None
         # 收起态视图（滚轮切换）：clock = 时间天气，pet = 可爱形象，music = 音乐
         self.views = ["clock", "pet", "music"]
         self.view = "clock"
@@ -402,11 +424,50 @@ class CompactView:
         self.cover = rounded_pixmap(img, 26, 7) if img is not None else None
         self.cover_color = extract_cover_color(img) if img is not None else None
 
+    def _clear_interactive_rects(self):
+        self.play_rect = None
+        self._notify_dismiss_rect = None
+        self._dismiss_rect_seq = -1
+        self.play_hover = 0.0
+        self.notify_dismiss_hover = 0.0
+
+    def set_edge(self, edge: str):
+        e = str(edge or "top")
+        if e not in ("top", "bottom", "left", "right"):
+            e = "top"
+        if e != self.edge:
+            self.edge = e
+            self.layout_state()
+            if self._outgoing_horiz_snap is None:
+                self._mode_t = -10.0
+
+    def has_outgoing_horizontal(self, cur_w: float | None = None) -> bool:
+        """当前是否仍处于横向横幅向竖时钟回收的过渡期。"""
+        if self._outgoing_horiz_snap is None:
+            return False
+        if (time.monotonic() - self._outgoing_t0) >= 0.45:
+            self._outgoing_horiz_snap = None
+            return False
+        if cur_w is not None and float(cur_w) <= 36.2:
+            self._outgoing_horiz_snap = None
+            return False
+        return True
+
+    def current_activity_seq(self) -> int:
+        if self.activity is None:
+            return 0
+        return int(self.activity.get("seq") or 0)
+
     def show_activity(self, act: dict, duration: float = 2.4):
+        now = time.monotonic()
+        self._activity_seq += 1
         a = dict(act)
-        a["until"] = time.monotonic() + duration
-        a["start"] = time.monotonic()
+        a["seq"] = self._activity_seq
+        a["until"] = now + duration
+        a["start"] = now
         self.activity = a
+        self._clear_interactive_rects()
+        self.layout_state()
 
     def update_activity(self, **kw):
         """原地更新（例如连续调音量时不重新入场）。"""
@@ -418,7 +479,8 @@ class CompactView:
             return
         if act_type is None or self.activity.get("type") == act_type:
             self.activity = None
-            self._notify_dismiss_rect = None
+            self._clear_interactive_rects()
+            self.layout_state()
 
     def set_view(self, v: str):
         if v in self.views:
@@ -433,7 +495,8 @@ class CompactView:
     def playing(self) -> bool:
         return bool(self.media.get("has_session") and self.media.get("playing") and self.media.get("title"))
 
-    def mode(self) -> str:
+    def layout_state(self) -> tuple[str, str]:
+        """返回由停靠边和内容模式共同决定的显式布局状态 (orientation, mode)。"""
         now = time.monotonic()
         if self.activity and now < self.activity["until"]:
             m = "activity"
@@ -442,15 +505,76 @@ class CompactView:
             self.activity = None
         else:
             self.activity = None
-            m = {"music": "media", "pet": "pet"}.get(self.view, "idle")
-        if m != self._mode:
+            if self.edge in ("left", "right"):
+                # 首版侧边支持竖时钟与竖版音乐视图，不显示小表情（保留 self.view 偏好待拖回顶/底边后恢复）
+                m = "media" if self.view == "music" else "idle"
+            else:
+                m = {"music": "media", "pet": "pet"}.get(self.view, "idle")
+
+        act_type = str((self.activity or {}).get("type") or "") if m == "activity" else ""
+        act_seq = int((self.activity or {}).get("seq") or 0) if m == "activity" else 0
+        is_side_vert = (self.edge in ("left", "right")) and (
+            m in ("idle", "media") or (m == "activity" and act_type == "volume")
+        )
+        orientation = "vertical" if is_side_vert else "horizontal"
+        full_state = (orientation, m, act_type, act_seq)
+
+        prev_orient, prev_m, _prev_t, _prev_s = self._full_state
+        if full_state != self._full_state:
+            if prev_orient == "horizontal" and prev_m in ("activity", "subtitle") and orientation == "vertical":
+                self._wea_h0 = 36.0
+                self._outgoing_vert_vol_snap = None
+                if self._last_horiz_snap is not None:
+                    self._outgoing_horiz_snap = dict(self._last_horiz_snap)
+                    self._outgoing_t0 = now
+            elif prev_orient == "vertical" and prev_m == "activity" and _prev_t == "volume" and orientation == "vertical" and m in ("idle", "media"):
+                self._outgoing_horiz_snap = None
+                self._wea_h0 = float(H_VERT_IDLE)
+                if self._last_vert_vol_snap is not None:
+                    self._outgoing_vert_vol_snap = dict(self._last_vert_vol_snap)
+                    self._outgoing_vert_vol_t0 = now
+            elif orientation == "horizontal":
+                self._outgoing_horiz_snap = None
+                self._outgoing_vert_vol_snap = None
+                if m in ("activity", "subtitle") and prev_orient == "vertical":
+                    self._banner_pinned_rest_h = self.vertical_rest_height()
+            elif orientation == "vertical":
+                self._outgoing_horiz_snap = None
+                self._outgoing_vert_vol_snap = None
+                self._wea_h0 = float(H_VERT_IDLE)
+            self._full_state = full_state
             self._mode = m
             self._mode_t = now
-        return m
+            self._clear_interactive_rects()
+            if callable(self.on_state_changed):
+                self.on_state_changed(full_state)
+        elif m != self._mode:
+            self._mode = m
+            self._mode_t = now
+
+        if orientation == "horizontal":
+            if m == "activity" and self.activity is not None:
+                self._last_horiz_snap = {"mode": "activity", "activity": dict(self.activity)}
+            elif m == "subtitle":
+                self._last_horiz_snap = {"mode": "subtitle", "sub_jp": self.sub_jp, "sub_zh": self.sub_zh}
+        elif orientation == "vertical" and m == "activity" and act_type == "volume" and self.activity is not None:
+            self._last_vert_vol_snap = dict(self.activity)
+        return orientation, m
+
+    def mode(self) -> str:
+        return self.layout_state()[1]
 
     def busy(self) -> bool:
         """是否需要持续 60FPS 动画帧。"""
-        m = self.mode()
+        orientation, m = self.layout_state()
+        if orientation == "vertical":
+            if m == "media":
+                return (
+                    bool(self.media.get("playing"))
+                    or max(self._bars) > 0.20
+                    or (time.monotonic() - self._mode_t) < 0.4
+                )
+            return m == "activity" or (time.monotonic() - self._mode_t) < 0.4
         if m == "media":
             return (
                 bool(self.media.get("playing"))
@@ -461,14 +585,41 @@ class CompactView:
         return m in ("activity", "pet", "subtitle") or time.monotonic() - self._view_t < 1.4
 
     # --- 尺寸 ---
-    def size_hint(self) -> tuple[float, float]:
-        m = self.mode()
+    def vertical_rest_height(self) -> float:
+        """返回左右侧边稳定收起态竖条的目标高度（音乐态与时间+天气竖条统一为 136px，含未读点 +12px）。"""
         nb = sum(1 for v in self.badges.values() if v)
+        extra_h = H_VERT_BADGE_EXTRA if nb > 0 else 0
+        if self.edge in ("left", "right") and self.view == "music":
+            return float(H_VERT_WEATHER + extra_h)
+        base_h = H_VERT_WEATHER if (self.weather and self.show_weather) else H_VERT_IDLE
+        return float(base_h + extra_h)
+
+    def pin_banner_anchor_height(self, h: float):
+        """在拖拽横幅松手时更新横幅锁定的竖条沿边锚定高度。"""
+        self._banner_pinned_rest_h = float(h)
+
+    def banner_anchor_height(self) -> float:
+        """返回横幅显示期间锁定的竖条沿边锚定高度（防止通知显示中首次收到天气导致横幅跳位）。"""
+        if self._banner_pinned_rest_h is not None:
+            return float(self._banner_pinned_rest_h)
+        return self.vertical_rest_height()
+
+    def size_hint(self, avail_max_w: float | None = None) -> tuple[float, float]:
+        orientation, m = self.layout_state()
+        nb = sum(1 for v in self.badges.values() if v)
+        if orientation == "vertical":
+            return float(W_VERT_IDLE), self.vertical_rest_height()
+
+        def _cap_w(raw_w: float) -> float:
+            if avail_max_w is None:
+                return float(raw_w)
+            return float(clamp(float(raw_w), float(W_VERT_IDLE), max(float(W_VERT_IDLE), float(avail_max_w))))
+
         if m == "activity":
             a = self.activity
             t = a.get("type")
             if t == "volume":
-                return 280, H_ACT
+                return _cap_w(280.0), float(H_ACT)
             if t == "life-reminder":
                 fm_t = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
                 fm_s = QtGui.QFontMetrics(ui_font(12))
@@ -477,7 +628,7 @@ class CompactView:
                 sw = (8.0 + float(math.ceil(fm_s.horizontalAdvance(sub)) + 2)) if sub else 0.0
                 # 左边距9 + 图标24 + 间距9 + 标题 + 副标题 + 间距8 + 关闭按钮24 + 右边距6
                 w = 9 + 24 + 9 + tw + sw + 8 + 24 + 6
-                return clamp(w, 220.0, 440.0), H_NOTIFY
+                return _cap_w(clamp(w, 220.0, 440.0)), float(H_NOTIFY)
             if t == "notify":
                 fm_app = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
                 fm_sub = QtGui.QFontMetrics(ui_font(12))
@@ -487,28 +638,28 @@ class CompactView:
                 sub_w = float(fm_sub.horizontalAdvance(sub))
                 # 左边距 + 图标24 + 间距9 + 应用名 + 分隔 + 摘要 + 间距8 + 关闭按钮24 + 右边距6
                 w = _NOTIFY_LEFT_INSET + 24 + 9 + app_w + sep_w + sub_w + 8 + 24 + 6
-                return clamp(w, 190.0, 360.0), H_NOTIFY
+                return _cap_w(clamp(w, 190.0, 360.0)), float(H_NOTIFY)
             fm = QtGui.QFontMetrics(ui_font(13, W.DemiBold))
             tw = float(math.ceil(fm.horizontalAdvance(a.get("title", ""))) + 2)
             sub_txt = a.get("sub", "")
             sw = (8.0 + float(math.ceil(QtGui.QFontMetrics(ui_font(12)).horizontalAdvance(sub_txt)) + 2)) if sub_txt else 0.0
             content_w = 22.0 + 6.0 + tw + sw
-            return clamp(content_w + 36.0, 132.0, 460.0), H_ACT
+            return _cap_w(clamp(content_w + 36.0, 132.0, 460.0)), float(H_ACT)
         if m == "subtitle":
-            return W_TEXT + nb * 12, H_SUB                        # 固定宽度：说话时不会一直伸缩
+            return _cap_w(W_TEXT + nb * 12), float(H_SUB)           # 固定宽度：说话时不会一直伸缩
         if m == "media":
             if not self.playing() and not self.media.get("title"):
-                return 190 + nb * 12, H_MEDIA
+                return _cap_w(190 + nb * 12), float(H_MEDIA)
             if self.lyrics and self.lyrics.lines:
-                return 334 + nb * 12, H_MEDIA
+                return _cap_w(334 + nb * 12), float(H_MEDIA)
             title = self.media.get("title", "")
             artist = self.media.get("artist", "")
             text = f"{title}  ·  {artist}" if artist else title
             tw = QtGui.QFontMetrics(ui_font(13, W.Medium)).horizontalAdvance(text) if text else 0
             w = clamp(math.ceil(tw) + 128, 190, 334)
-            return w + nb * 12, H_MEDIA
+            return _cap_w(w + nb * 12), float(H_MEDIA)
         if m == "pet":
-            return 134 + nb * 13, H_IDLE
+            return _cap_w(134 + nb * 13), float(H_IDLE)
         clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
         if self.weather and self.show_weather:
             temp_w = max(
@@ -522,7 +673,7 @@ class CompactView:
             base_w = max(96, int(math.ceil(clock_w + 36)))
         # 对称扩展胶囊宽度：时间天气始终以整个胶囊中心居中，同时右侧预留色点空间
         extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
-        return base_w + extra_w, H_IDLE
+        return _cap_w(base_w + extra_w), float(H_IDLE)
 
     def _karaoke_glow_strength(self, idx: int, pos_now: float, cur_frac: float) -> float:
         """计算当前歌词交界微光强度；暂停态下返回 0，避免亮边定格在原地。"""
@@ -553,17 +704,95 @@ class CompactView:
         return 0.0
 
     # --- 绘制 ---
-    def paint(self, p: QtGui.QPainter, r: QtCore.QRectF, alpha: float, peak: float):
-        if alpha <= 0.01 or r.width() < 40:
+    def _paint_outgoing_horizontal(self, p: QtGui.QPainter, r: QtCore.QRectF, out_a: float, snap: dict):
+        """在横幅向竖时钟回收的过渡初期绘制旧横幅残影淡出，不生成任何点击热区。"""
+        if out_a <= 0.015 or r.width() < 44.0:
             return
-        m = self.mode()
-        fade = ease_out((time.monotonic() - self._mode_t) / 0.28)
+        p.save()
+        p.setClipRect(r.adjusted(6.0, 0.0, -6.0, 0.0), Qt.ClipOperation.IntersectClip)
+        sm = snap.get("mode")
+        if sm == "activity" and snap.get("activity"):
+            saved_act = self.activity
+            saved_dr = self._notify_dismiss_rect
+            saved_seq = self._dismiss_rect_seq
+            try:
+                self.activity = snap["activity"]
+                self._paint_activity(p, r, out_a)
+            finally:
+                self.activity = saved_act
+                self._notify_dismiss_rect = saved_dr
+                self._dismiss_rect_seq = saved_seq
+        elif sm == "subtitle":
+            saved_jp, saved_zh = self.sub_jp, self.sub_zh
+            try:
+                self.sub_jp = str(snap.get("sub_jp") or "")
+                self.sub_zh = str(snap.get("sub_zh") or "")
+                self._paint_subtitle(p, r, out_a)
+            finally:
+                self.sub_jp, self.sub_zh = saved_jp, saved_zh
+        p.restore()
+
+    def paint(self, p: QtGui.QPainter, r: QtCore.QRectF, alpha: float, peak: float):
+        if alpha <= 0.01 or r.width() < 18.0 or r.height() < 18.0:
+            return
+        orientation, m = self.layout_state()
+        now = time.monotonic()
+        # 切换首帧保留 0.28 的可见底值，杜绝状态切换当帧(dt=0)出现内容全透明的空白帧
+        fade = 0.28 + 0.72 * ease_out((now - self._mode_t) / 0.26)
         a = alpha * fade
         self._peak = self._peak * 0.6 + peak * 0.4
         p.save()
+        if orientation == "vertical":
+            if m != "media":
+                self.play_rect = None
+            self._notify_dismiss_rect = None
+            self._dismiss_rect_seq = -1
+            if m == "activity" and (self.activity or {}).get("type") == "volume":
+                p.setClipRect(r.adjusted(3.0, 6.0, -3.0, -6.0), Qt.ClipOperation.IntersectClip)
+                dt_in = now - self._mode_t
+                if dt_in < 0.16:
+                    prev_out_a = alpha * (1.0 - ease_out(dt_in / 0.16))
+                    if prev_out_a > 0.015:
+                        if self.view == "music":
+                            self._paint_media_vertical(p, r, prev_out_a, update_hit=False)
+                        else:
+                            self._paint_idle_vertical(p, r, prev_out_a)
+                self._paint_volume_vertical(p, r, a, self.activity)
+                p.restore()
+                return
+            if self._outgoing_horiz_snap is not None:
+                dt_out = now - self._outgoing_t0
+                w_out = clamp((float(r.width()) - 46.0) / 72.0, 0.0, 1.0)
+                t_out = 1.0 - ease_out(dt_out / 0.16)
+                out_a = alpha * t_out * w_out
+                if out_a > 0.015 and dt_out < 0.16:
+                    self._paint_outgoing_horizontal(p, r, out_a, self._outgoing_horiz_snap)
+                    self._notify_dismiss_rect = None
+                    self._dismiss_rect_seq = -1
+                elif float(r.width()) <= 36.2 or dt_out >= 0.45:
+                    self._outgoing_horiz_snap = None
+            p.setClipRect(r.adjusted(3.0, 6.0, -3.0, -6.0), Qt.ClipOperation.IntersectClip)
+            if self._outgoing_vert_vol_snap is not None:
+                dt_v = now - self._outgoing_vert_vol_t0
+                if dt_v < 0.18:
+                    v_out_a = alpha * (1.0 - ease_out(dt_v / 0.18))
+                    if v_out_a > 0.015:
+                        self._paint_volume_vertical(p, r, v_out_a, self._outgoing_vert_vol_snap)
+                else:
+                    self._outgoing_vert_vol_snap = None
+            if m == "media":
+                self._paint_media_vertical(p, r, a, update_hit=True)
+            else:
+                self._paint_idle_vertical(p, r, a)
+            p.restore()
+            return
+
         p.setClipRect(r.adjusted(6, 0, -6, 0), Qt.ClipOperation.IntersectClip)
         if m != "media":
             self.play_rect = None
+        if m != "activity":
+            self._notify_dismiss_rect = None
+            self._dismiss_rect_seq = -1
         if m == "activity":
             self._paint_activity(p, r, a)
         elif m == "subtitle":
@@ -751,6 +980,399 @@ class CompactView:
 
         # 未读色点固定在胶囊最右侧（约 12px 右边距）
         self._badges(p, r.right() - 12.0, cy, a)
+
+    def _vertical_idle_layout_metrics(self, r: QtCore.QRectF) -> dict:
+        """计算 36px 侧边竖时钟（含碰撞挤压等比缩放、连续空间分配、天气、负温度与底部独立未读区）的几何参数。"""
+        txt = getattr(self, "_clock_override", None) or time.strftime("%H:%M", time.localtime())
+        parts = str(txt).split(":")
+        hh = (parts[0] if parts else "00").strip().zfill(2)[:2]
+        mm = (parts[1] if len(parts) > 1 else "00").strip().zfill(2)[:2]
+
+        clip_rect = r.adjusted(3.0, 6.0, -3.0, -6.0)
+        actual_clip_w = max(6.0, float(clip_rect.width()))
+        actual_clip_h = max(12.0, float(clip_rect.height()))
+        # 稳定态 36px 对应 30px 裁剪区与 26px 核心区；挤压至 <36px 或横幅矮高度回收初期按实际可用裁剪宽高平滑等比缩放
+        w_squeeze_ratio = clamp(actual_clip_w / 30.0, 0.25, 1.0)
+        h_squeeze_ratio = clamp(actual_clip_h / 44.0, 0.45, 1.0)
+        squeeze_ratio = min(w_squeeze_ratio, h_squeeze_ratio)
+        eff_core_w = min(26.0 * squeeze_ratio, max(6.0, actual_clip_w - 4.0))
+        eff_clip_w = min(30.0 * squeeze_ratio, actual_clip_w)
+
+        has_weather = bool(self.weather and self.show_weather)
+        active_badges = [k for k in ("qq", "wechat", "mail") if self.badges.get(k)]
+        nb = len(active_badges)
+
+        # 1) 视觉显示透明度（空间不足以清晰容纳天气和未读点时，优先保留时钟，宽度与高度恢复后平滑显现）
+        w_extra_vis = smooth((float(r.width()) - 29.5) / 4.5)
+        h_weather_vis = smooth((float(r.height()) - 108.0) / 18.0) if has_weather else 0.0
+        min_badge_h = 130.0 if has_weather else 86.0
+        h_badge_vis = smooth((float(r.height()) - min_badge_h) / 12.0) if nb > 0 else 0.0
+
+        weather_alpha = float(w_extra_vis * h_weather_vis) if has_weather else 0.0
+        badge_alpha = float(w_extra_vis * h_badge_vis) if nb > 0 else 0.0
+
+        # 2) 连续布局空间让位（随可用宽高线性连续变化，消除中段斜率放大与阈值阶跃）
+        w_space_k = clamp((float(r.width()) - 22.32) / (36.0 - 22.32), 0.0, 1.0)
+        h_badge_space_k = clamp((float(r.height()) - (40.0 if has_weather else 36.0)) / (108.0 if has_weather else 68.0), 0.0, 1.0) if nb > 0 else 0.0
+        badge_space_k = float(w_space_k * h_badge_space_k) if nb > 0 else 0.0
+        badge_band_h = float(H_VERT_BADGE_EXTRA) * badge_space_k
+        content_r = QtCore.QRectF(r.x(), r.y(), r.width(), max(20.0, float(r.height()) - badge_band_h))
+
+        # 当处于横幅回收期时 _wea_h0 = 36px，当纯竖条首次收到天气时 _wea_h0 = 92px，确保插值全程单调且无过期切换跳变
+        if not has_weather:
+            self._wea_h0 = float(H_VERT_IDLE)
+        wea_h0 = 36.0 if float(r.height()) < 90.0 else float(self._wea_h0)
+        h_weather_space_k = clamp((float(content_r.height()) - wea_h0) / max(1.0, float(H_VERT_WEATHER) - wea_h0), 0.0, 1.0) if has_weather else 0.0
+        weather_space_k = float(w_space_k * h_weather_space_k) if has_weather else 0.0
+
+        row_h = 20.0 * squeeze_ratio
+        row_gap = 3.0 * squeeze_ratio
+        cy_centered = content_r.center().y()
+        hh_cy_centered = cy_centered - (row_h + row_gap) * 0.5
+        mm_cy_centered = cy_centered + (row_h + row_gap) * 0.5
+
+        y0 = content_r.top()
+        h_scale = content_r.height() / 136.0
+        hh_cy_wea = y0 + 26.0 * h_scale
+        mm_cy_wea = y0 + 49.0 * h_scale
+
+        hh_cy = hh_cy_centered + (hh_cy_wea - hh_cy_centered) * weather_space_k
+        mm_cy = mm_cy_centered + (mm_cy_wea - mm_cy_centered) * weather_space_k
+        hh_rect = QtCore.QRectF(r.x(), hh_cy - row_h * 0.5, r.width(), row_h)
+        mm_rect = QtCore.QRectF(r.x(), mm_cy - row_h * 0.5, r.width(), row_h)
+
+        if has_weather:
+            div_y = y0 + 68.5 * h_scale
+            div_w = min(eff_core_w, 14.0 * squeeze_ratio)
+            div_rect = QtCore.QRectF(r.center().x() - div_w * 0.5, div_y - 0.5, div_w, 1.0)
+            icon_s = 15.0 * squeeze_ratio
+            icon_cy = y0 + 84.0 * h_scale
+            icon_rect = QtCore.QRectF(r.center().x() - icon_s * 0.5, icon_cy - icon_s * 0.5, icon_s, icon_s)
+            temp_h = 18.0 * squeeze_ratio
+            temp_cy = y0 + 106.0 * h_scale
+            temp_rect = QtCore.QRectF(r.x(), temp_cy - temp_h * 0.5, r.width(), temp_h)
+            glyph = self.weather[0]
+            temp = self.weather[1]
+            icon_code = self.weather[3] if len(self.weather) > 3 else ""
+            temp_metrics = measure_vertical_temperature(
+                self.clock_style,
+                temp,
+                max_core_w=eff_core_w,
+                rect=temp_rect,
+            )
+        else:
+            div_rect = QtCore.QRectF()
+            icon_rect = QtCore.QRectF()
+            temp_rect = QtCore.QRectF()
+            glyph = ""
+            temp = ""
+            icon_code = ""
+            temp_metrics = None
+
+        hh_metrics = measure_vertical_clock_pair(
+            self.clock_style,
+            text=hh,
+            max_core_w=eff_core_w,
+            max_clip_w=eff_clip_w,
+            rect=hh_rect,
+        )
+        mm_metrics = measure_vertical_clock_pair(
+            self.clock_style,
+            text=mm,
+            max_core_w=eff_core_w,
+            max_clip_w=eff_clip_w,
+            rect=mm_rect,
+        )
+
+        dot_d = 3.8 * squeeze_ratio
+        dot_gap = 5.5 * squeeze_ratio
+        if nb > 0:
+            total_bw = nb * dot_d + max(0, nb - 1) * dot_gap
+            cy_badges = r.bottom() - 10.0
+            bx0 = r.center().x() - total_bw * 0.5
+            badges_rect = QtCore.QRectF(bx0, cy_badges - dot_d * 0.5, total_bw, dot_d)
+        else:
+            cy_badges = r.bottom() - 10.0
+            badges_rect = QtCore.QRectF()
+
+        return {
+            "txt": txt,
+            "hh": hh,
+            "mm": mm,
+            "clip_rect": clip_rect,
+            "actual_clip_w": actual_clip_w,
+            "actual_clip_h": actual_clip_h,
+            "squeeze_ratio": float(squeeze_ratio),
+            "eff_core_w": float(eff_core_w),
+            "eff_clip_w": float(eff_clip_w),
+            "badge_space_k": float(badge_space_k),
+            "weather_space_k": float(weather_space_k),
+            "content_rect": content_r,
+            "hh_rect": hh_rect,
+            "mm_rect": mm_rect,
+            "hh_metrics": hh_metrics,
+            "mm_metrics": mm_metrics,
+            "has_weather": has_weather,
+            "weather_alpha": weather_alpha,
+            "div_rect": div_rect,
+            "icon_rect": icon_rect,
+            "temp_rect": temp_rect,
+            "temp_metrics": temp_metrics,
+            "glyph": glyph,
+            "icon_code": icon_code,
+            "temp": temp,
+            "active_badges": active_badges,
+            "badge_alpha": badge_alpha,
+            "badges_rect": badges_rect,
+            "dot_d": float(dot_d),
+            "dot_gap": float(dot_gap),
+            "cy_badges": float(cy_badges),
+        }
+
+    def _badges_vertical(self, p: QtGui.QPainter, m: dict, a: float):
+        """在竖条底部独立空间水平居中绘制未读色点（1. QQ  2. 微信  3. 邮件）。"""
+        active = m["active_badges"]
+        ba = a * m["badge_alpha"]
+        if not active or ba <= 0.01:
+            return
+        br: QtCore.QRectF = m["badges_rect"]
+        dot_d = m["dot_d"]
+        gap = m["dot_gap"]
+        cy = m["cy_badges"]
+        x = br.left()
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        for kind in active:
+            c = QtGui.QColor(KIND_COLORS.get(kind, KIND_COLORS["other"]))
+            c.setAlphaF(ba)
+            p.setBrush(c)
+            p.drawEllipse(QtCore.QPointF(x + dot_d * 0.5, cy), dot_d * 0.5, dot_d * 0.5)
+            x += dot_d + gap
+        p.restore()
+
+    def _paint_idle_vertical(self, p: QtGui.QPainter, r: QtCore.QRectF, a: float):
+        m = self._vertical_idle_layout_metrics(r)
+        palette = resolve_clock_palette(
+            self.clock_color,
+            theme,
+            custom_hex=self.clock_custom_color,
+            gradient_stops=self.clock_gradient,
+            cover_color=self.cover_color,
+        )
+        paint_vertical_clock_pair(
+            p,
+            m["hh_rect"],
+            m["hh"],
+            self.clock_style,
+            palette,
+            dark=theme.dark,
+            alpha=a,
+            max_core_w=m["eff_core_w"],
+            max_clip_w=m["eff_clip_w"],
+        )
+        paint_vertical_clock_pair(
+            p,
+            m["mm_rect"],
+            m["mm"],
+            self.clock_style,
+            palette,
+            dark=theme.dark,
+            alpha=a,
+            max_core_w=m["eff_core_w"],
+            max_clip_w=m["eff_clip_w"],
+        )
+
+        wa = a * m["weather_alpha"]
+        if m["has_weather"] and wa > 0.01:
+            dot_col, icon_col, temp_col = resolve_weather_colors(self.clock_color, theme, palette, alpha=wa)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dot_col)
+            p.drawRoundedRect(m["div_rect"], 0.5, 0.5)
+            p.restore()
+
+            kind = infer_weather_kind(m.get("icon_code", ""), m.get("glyph", ""))
+            paint_weather_icon(p, m["icon_rect"], kind, icon_col)
+            paint_vertical_temperature(
+                p,
+                m["temp_rect"],
+                m["temp"],
+                self.clock_style,
+                temp_col,
+                max_core_w=m["eff_core_w"],
+            )
+
+        self._badges_vertical(p, m, a)
+
+    def _paint_volume_vertical(self, p: QtGui.QPainter, r: QtCore.QRectF, a: float, act: dict | None = None):
+        """左右侧边纵向音量条：沿用侧边竖条宽度与当时高度，顶部显示扬声器/静音图标，中间音量从下往上填充。"""
+        act = act or self.activity or {}
+        muted = bool(act.get("muted"))
+        val = 0.0 if muted else clamp(float(act.get("value", 0.0) or 0.0), 0.0, 1.0)
+        enter = ease_out((time.monotonic() - float(act.get("start", 0.0) or 0.0)) / 0.25)
+
+        clip_w = max(6.0, float(r.width()) - 6.0)
+        squeeze_ratio = clamp(clip_w / 30.0, 0.4, 1.0)
+        cx = r.center().x()
+
+        icon_s = 18.0 * squeeze_ratio
+        icon_top = r.top() + 12.0
+        icon_rect = QtCore.QRectF(cx - icon_s * 0.5, icon_top, icon_s, icon_s)
+        glyph = act.get("glyph") or (G.MUTE if muted else G.VOLUME)
+        p.save()
+        p.setFont(icon_font(max(9, round(14.5 * squeeze_ratio))))
+        p.setPen(theme.text(a))
+        p.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, glyph)
+
+        track_w = 6.0 * squeeze_ratio
+        track_top = icon_rect.bottom() + 8.0
+        track_bot = max(track_top + 16.0, r.bottom() - 14.0)
+        track_h = track_bot - track_top
+        track_rect = QtCore.QRectF(cx - track_w * 0.5, track_top, track_w, track_h)
+        rad = track_w * 0.5
+
+        p.setPen(Qt.PenStyle.NoPen)
+        tr_col = QtGui.QColor(theme.track())
+        tr_col.setAlphaF(tr_col.alphaF() * a)
+        p.setBrush(tr_col)
+        p.drawRoundedRect(track_rect, rad, rad)
+
+        if val > 0.005:
+            fill_h = clamp(track_h * val * enter, track_w, track_h)
+            fill_rect = QtCore.QRectF(track_rect.left(), track_bot - fill_h, track_w, fill_h)
+            p.setBrush(theme.text(a))
+            p.drawRoundedRect(fill_rect, rad, rad)
+        p.restore()
+
+    def _paint_vertical_play_pause_icon(
+        self, p: QtGui.QPainter, pr: QtCore.QRectF, s: float, is_playing: bool, a: float
+    ):
+        """绘制左右侧竖版音乐的播放/暂停矢量图标：略微加粗笔画并平衡两种状态的视觉重量，严格居中于按钮热区。"""
+        cx = pr.center().x()
+        cy = pr.center().y()
+        fg = theme.text(a)
+        p.save()
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        if is_playing:
+            # 暂停双竖线：1.9px 宽、11.0px 高，中间 4.0px 清晰净空隙，严格镜像对称于 cx
+            bw = 1.9 * s
+            bh = 11.0 * s
+            gap = 4.0 * s
+            r_cap = bw * 0.45
+            y0 = cy - bh * 0.5
+            x_l = cx - gap * 0.5 - bw
+            x_r = cx + gap * 0.5
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(fg)
+            p.drawRoundedRect(QtCore.QRectF(x_l, y0, bw, bh), r_cap, r_cap)
+            p.drawRoundedRect(QtCore.QRectF(x_r, y0, bw, bh), r_cap, r_cap)
+        else:
+            # 播放空心三角：1.5px 轮廓描边 + 圆角转折，略向右补偿重心以与按钮视觉居中，与暂停双线视觉重量均衡
+            sw = 1.50 * s
+            half_h = 4.9 * s
+            x_left = cx - 3.4 * s
+            x_right = cx + 4.7 * s
+            path = QtGui.QPainterPath()
+            path.moveTo(x_left, cy - half_h)
+            path.lineTo(x_right, cy)
+            path.lineTo(x_left, cy + half_h)
+            path.closeSubpath()
+            pen = QtGui.QPen(fg, sw, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        p.restore()
+
+    def _paint_media_vertical(self, p: QtGui.QPainter, r: QtCore.QRectF, a: float, update_hit: bool = True):
+        """左右侧边 36×136 竖版音乐视图：自上而下舒展排列 26px 圆角封面、四条律动波形、24px 播放/暂停键（常态透明无灰底，悬停浮现圆形反馈）。"""
+        active_badges = [k for k in ("qq", "wechat", "mail") if self.badges.get(k)]
+        nb = len(active_badges)
+        badge_band = float(H_VERT_BADGE_EXTRA) if nb > 0 else 0.0
+        content_r = QtCore.QRectF(r.x(), r.y(), r.width(), max(44.0, float(r.height()) - badge_band))
+
+        clip_w = max(6.0, float(r.width()) - 6.0)
+        w_ratio = clamp(clip_w / 30.0, 0.35, 1.0)
+        h_ratio = clamp(float(content_r.height()) / float(H_VERT_WEATHER), 0.55, 1.0)
+        s = min(w_ratio, h_ratio)
+        cx = content_r.center().x()
+
+        top_pad = 15.0 * s
+        bot_pad = 15.0 * s
+        cover_s = 26.0 * s
+        bars_h = 16.0 * s
+        btn_d = 24.0 * s
+
+        # 1) 顶部 26px 圆角封面
+        cr = QtCore.QRectF(cx - cover_s * 0.5, content_r.top() + top_pad, cover_s, cover_s)
+        p.save()
+        if self.cover is not None:
+            p.setOpacity(a)
+            p.drawPixmap(cr.toRect(), self.cover)
+            p.setOpacity(1.0)
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.card(1.4))
+            p.drawRoundedRect(cr, 7.5 * s, 7.5 * s)
+            p.setFont(icon_font(max(8, round(12.5 * s))))
+            p.setPen(theme.text(0.85 * a))
+            p.drawText(cr, Qt.AlignmentFlag.AlignCenter, G.MUSIC)
+
+        # 3) 底部 24px 播放/暂停键（先定位底部，再把四条波形严格居中在封面与按钮之间）
+        pr = QtCore.QRectF(cx - btn_d * 0.5, content_r.bottom() - bot_pad - btn_d, btn_d, btn_d)
+        if update_hit:
+            self.play_rect = pr.intersected(r) if r.width() >= 24.0 else None
+
+        # 2) 中间四条律动波形
+        mid_top = cr.bottom()
+        mid_bot = pr.top()
+        bars_cy = (mid_top + mid_bot) * 0.5
+        bars_bot = bars_cy + bars_h * 0.5
+        bar_w = 2.5 * s
+        bar_gap = 2.5 * s
+        total_bw = 4.0 * bar_w + 3.0 * bar_gap
+        bx0 = cx - total_bw * 0.5
+        t_now = time.monotonic()
+        is_playing = bool(self.media.get("playing"))
+        pk = clamp(self._peak * 1.6, 0.0, 1.0) if is_playing else 0.0
+        for i in range(4):
+            if is_playing:
+                target = 0.28 + max(pk, 0.35) * (0.45 + 0.55 * math.sin(t_now * (7.3 + i * 2.1) + i * 1.7) ** 2)
+            else:
+                target = 0.22
+            self._bars[i] += (target - self._bars[i]) * 0.35
+            bh = clamp(bars_h * self._bars[i], 3.0 * s, bars_h)
+            br = QtCore.QRectF(bx0 + i * (bar_w + bar_gap), bars_bot - bh, bar_w, bh)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.text(0.85 * a))
+            p.drawRoundedRect(br, bar_w * 0.5, bar_w * 0.5)
+
+        # 绘制播放/暂停按钮：常态透明无灰底，鼠标悬停时显示圆形反馈
+        hov = self.play_hover
+        if hov > 0.01:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.hover() if hasattr(theme, "hover") else theme.card(1.2))
+            p.setOpacity(a * hov)
+            p.drawEllipse(pr.adjusted(1, 1, -1, -1))
+            p.setOpacity(1.0)
+        self._paint_vertical_play_pause_icon(p, pr, s, is_playing, a)
+        p.restore()
+
+        # 底部独立未读色点（若有）
+        if nb > 0:
+            dot_d = 3.8 * s
+            dot_gap = 5.5 * s
+            total_w = nb * dot_d + max(0, nb - 1) * dot_gap
+            cy_b = r.bottom() - 10.0
+            x = r.center().x() - total_w * 0.5
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            for kind in active_badges:
+                c = QtGui.QColor(KIND_COLORS.get(kind, KIND_COLORS["other"]))
+                c.setAlphaF(a)
+                p.setBrush(c)
+                p.drawEllipse(QtCore.QPointF(x + dot_d * 0.5, cy_b), dot_d * 0.5, dot_d * 0.5)
+                x += dot_d + dot_gap
+            p.restore()
 
     def _paint_media(self, p, r, a):
         cy = r.center().y()
@@ -966,12 +1588,15 @@ class CompactView:
             tw_raw = float(math.ceil(fm_t.horizontalAdvance(title)) + 2)
             sw_raw = float(math.ceil(fm_s.horizontalAdvance(sub)) + 2) if sub else 0.0
             sub_gap = 8.0 if sub else 0.0
-            max_content = max(40.0, r.width() - 28.0)
+            max_content = max(24.0, r.width() - 28.0)
             content_w = min(max_content, d + gap + tw_raw + sub_gap + sw_raw)
             start_x = r.center().x() - content_w / 2.0
             cr = QtCore.QRectF(start_x, cy - d / 2, d, d)
+        elif r.width() < _MIN_DISMISS_BANNER_W:
+            # 超窄宽度（< 68px，如刚从 36px 竖条向外展开的前几帧或超窄屏）：不画关闭键，仅居中显示图标
+            cr = QtCore.QRectF(r.center().x() - d / 2, cy - d / 2, d, d)
         else:
-            left_inset = _NOTIFY_LEFT_INSET if is_notify else 9.0
+            left_inset = 9.0 if (not is_notify or r.width() < 110.0) else _NOTIFY_LEFT_INSET
             cr = QtCore.QRectF(r.x() + left_inset, cy - d / 2, d, d)
         icon_rect = cr.adjusted(1.0, 1.0, -1.0, -1.0)
         if is_life:
@@ -999,8 +1624,12 @@ class CompactView:
                 p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
         x = cr.right() + gap
         if t == "volume":
+            self._notify_dismiss_rect = None
+            self._dismiss_rect_seq = -1
+            if r.width() < 100.0:
+                return
             v = clamp(act.get("value", 0.0), 0, 1)
-            bw = r.right() - 52 - x
+            bw = max(12.0, r.right() - 52 - x)
             track = QtCore.QRectF(x, cy - 3, bw, 6)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(theme.track())
@@ -1015,46 +1644,16 @@ class CompactView:
             return
         title = act.get("title", "")
         sub = act.get("sub", "")
-        if is_life:
+        act_seq = int(act.get("seq") or 0)
+        if is_life or is_notify:
+            # 关闭键绘制与命中热区严格使用同一门槛 _MIN_DISMISS_BANNER_W = 68.0
+            if r.width() < _MIN_DISMISS_BANNER_W:
+                self._notify_dismiss_rect = None
+                self._dismiss_rect_seq = -1
+                return
             dr = QtCore.QRectF(r.right() - 30, cy - 12, 24, 24)
-            self._notify_dismiss_rect = dr
-            if self.notify_dismiss_hover > 0.01:
-                hbg = QtGui.QColor(255, 255, 255) if theme.dark else QtGui.QColor(0, 0, 0)
-                hbg.setAlphaF(0.14 * self.notify_dismiss_hover * a)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(hbg)
-                p.drawEllipse(dr.adjusted(2, 2, -2, -2))
-            p.setFont(icon_font(8.5))
-            p.setPen(theme.text((0.65 + 0.32 * self.notify_dismiss_hover) * a))
-            p.drawText(dr, Qt.AlignmentFlag.AlignCenter, G.CLOSE)
-
-            avail = max(20.0, dr.left() - 8 - x)
-            f_title = ui_font(12.5, W.DemiBold)
-            fm_t = QtGui.QFontMetrics(f_title)
-            tw = min(float(math.ceil(fm_t.horizontalAdvance(title)) + 2), avail)
-            p.setFont(f_title)
-            p.setPen(theme.text(a))
-            p.drawText(
-                QtCore.QRectF(x, r.y(), tw + 1, r.height()),
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                fm_t.elidedText(title, Qt.TextElideMode.ElideRight, int(tw)),
-            )
-            if sub and tw + 8 < avail:
-                sub_x = x + tw + 8
-                sub_w = max(10.0, avail - tw - 8)
-                f_sub = ui_font(12)
-                fm_s = QtGui.QFontMetrics(f_sub)
-                p.setFont(f_sub)
-                p.setPen(theme.text2(a))
-                p.drawText(
-                    QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
-                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                    fm_s.elidedText(sub, Qt.TextElideMode.ElideRight, int(sub_w)),
-                )
-            return
-        if is_notify:
-            dr = QtCore.QRectF(r.right() - 30, cy - 12, 24, 24)
-            self._notify_dismiss_rect = dr
+            self._notify_dismiss_rect = dr.intersected(r)
+            self._dismiss_rect_seq = act_seq
             if self.notify_dismiss_hover > 0.01:
                 hbg = QtGui.QColor(255, 255, 255) if theme.dark else QtGui.QColor(0, 0, 0)
                 hbg.setAlphaF(0.14 * self.notify_dismiss_hover * a)
@@ -1066,10 +1665,51 @@ class CompactView:
             p.setPen(theme.text(close_alpha))
             p.drawText(dr, Qt.AlignmentFlag.AlignCenter, G.CLOSE)
 
+            avail = dr.left() - 6 - x
+            if avail < 14.0 or r.width() < 110.0:
+                if avail >= 14.0 and title:
+                    f_t = ui_font(12.5, W.DemiBold)
+                    fm_t = QtGui.QFontMetrics(f_t)
+                    p.setFont(f_t)
+                    p.setPen(theme.text(a))
+                    p.drawText(
+                        QtCore.QRectF(x, r.y(), avail, r.height()),
+                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                        fm_t.elidedText(title, Qt.TextElideMode.ElideRight, int(avail)),
+                    )
+                return
+
             avail = dr.left() - 8 - x
+            if is_life:
+                f_title = ui_font(12.5, W.DemiBold)
+                fm_t = QtGui.QFontMetrics(f_title)
+                tw = min(float(math.ceil(fm_t.horizontalAdvance(title)) + 2), avail)
+                p.setFont(f_title)
+                p.setPen(theme.text(a))
+                p.drawText(
+                    QtCore.QRectF(x, r.y(), tw + 1, r.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_t.elidedText(title, Qt.TextElideMode.ElideRight, int(tw)),
+                )
+                if r.width() >= 190.0 and sub and tw + 8 < avail:
+                    sub_x = x + tw + 8
+                    sub_w = max(10.0, avail - tw - 8)
+                    f_sub = ui_font(12)
+                    fm_s = QtGui.QFontMetrics(f_sub)
+                    p.setFont(f_sub)
+                    p.setPen(theme.text2(a))
+                    p.drawText(
+                        QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
+                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                        fm_s.elidedText(sub, Qt.TextElideMode.ElideRight, int(sub_w)),
+                    )
+                return
+
+            # is_notify (r.width() >= 110.0)
             f_app = ui_font(12.5, W.DemiBold)
             fm_app = QtGui.QFontMetrics(f_app)
-            app_w = min(108.0, float(math.ceil(fm_app.horizontalAdvance(title)) + 2), max(20.0, avail))
+            max_app = 108.0 if r.width() >= 190.0 else avail
+            app_w = min(max_app, float(math.ceil(fm_app.horizontalAdvance(title)) + 2), max(14.0, avail))
             p.setFont(f_app)
             p.setPen(theme.text(a))
             p.drawText(
@@ -1078,28 +1718,30 @@ class CompactView:
                 fm_app.elidedText(title, Qt.TextElideMode.ElideRight, int(app_w)),
             )
 
-            sub_txt = sub or "有新消息"
-            f_sub = ui_font(12)
-            fm_sep = QtGui.QFontMetrics(f_sub)
-            sep_str = " · "
-            sep_w = float(fm_sep.horizontalAdvance(sep_str))
-            sx = x + app_w
-            if sx + sep_w + 12 <= dr.left() - 8:
-                p.setFont(f_sub)
-                p.setPen(theme.text3(0.75 * a))
-                p.drawText(QtCore.QRectF(sx, r.y(), sep_w + 1, r.height()),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, sep_str)
-                sub_x = sx + sep_w
-                sub_w = max(10.0, dr.left() - 8 - sub_x)
-                p.setPen(theme.text2(a))
-                p.drawText(
-                    QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
-                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                    fm_sep.elidedText(sub_txt, Qt.TextElideMode.ElideRight, int(sub_w)),
-                )
+            if r.width() >= 190.0:
+                sub_txt = sub or "有新消息"
+                f_sub = ui_font(12)
+                fm_sep = QtGui.QFontMetrics(f_sub)
+                sep_str = " · "
+                sep_w = float(fm_sep.horizontalAdvance(sep_str))
+                sx = x + app_w
+                if sx + sep_w + 12 <= dr.left() - 8:
+                    p.setFont(f_sub)
+                    p.setPen(theme.text3(0.75 * a))
+                    p.drawText(QtCore.QRectF(sx, r.y(), sep_w + 1, r.height()),
+                               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, sep_str)
+                    sub_x = sx + sep_w
+                    sub_w = max(10.0, dr.left() - 8 - sub_x)
+                    p.setPen(theme.text2(a))
+                    p.drawText(
+                        QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
+                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                        fm_sep.elidedText(sub_txt, Qt.TextElideMode.ElideRight, int(sub_w)),
+                    )
             return
 
         self._notify_dismiss_rect = None
+        self._dismiss_rect_seq = -1
         avail = max(20.0, (cr.left() + max_content if is_generic else r.right() - 14) - x)
         p.setFont(ui_font(13, W.DemiBold))
         fm = QtGui.QFontMetrics(p.font())
