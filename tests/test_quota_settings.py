@@ -658,11 +658,11 @@ def test_10_settings_save_atomicity_and_disk_write_rollback(qt_app, tmp_path, mo
         assert win.save_settings() is False
         assert sub_called["n"] == 0
 
-        # 3) finalize_commit 失败时，已提交的配置应回滚
+        # 3) commit_credential_mutations 失败时，配置不得被修改
         win.draft.set("weather.interval_min", 30)
         quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
         monkeypatch.setattr(quota_pg, "commit_credentials", lambda: (True, ""))
-        monkeypatch.setattr(quota_pg, "finalize_commit", lambda: (False, "cred write failed"))
+        monkeypatch.setattr(quota_pg, "commit_credential_mutations", lambda: (False, "cred write failed"))
         assert win.save_settings() is False
         assert cm.get("weather.interval_min") == orig_interval
     finally:
@@ -863,6 +863,129 @@ def test_12_quota_rollback_failure_and_delete_secret_failure(qt_app, tmp_path, m
         assert len(cm.get("quota.accounts")) == 1
         assert changed_events == []
         assert "保存失败" in win.status_lbl.text()
+    finally:
+        win.close()
+        mgr.stop()
+
+
+def test_13_multi_delete_rollback_and_single_signal_commit(qt_app, tmp_path, monkeypatch):
+    """验证多账号删除失败回滚（2邮箱/2配额/跨模块混删）、恢复失败提示及全成功时单次广播。"""
+    from dataclasses import asdict
+    from wisland.services.mail.credentials import InMemoryCredentialStore, make_credential_key
+    from wisland.services.mail.manager import MailAccountManager
+    from wisland.services.mail.models import MailAccount
+    from wisland.services.quota.models import QuotaSnapshot
+    from wisland.ui.settings.mail_accounts import MailAccountsSettingsPage
+
+    cm, creds, cache, mgr, _ = _make_quota_env(tmp_path)
+    mail_creds = InMemoryCredentialStore()
+
+    m1 = MailAccount(id="m1", email="m1@example.com", provider="qq", host="imap.qq.com", port=993, security="ssl", username="m1@example.com", credential_key=make_credential_key("m1"))
+    m2 = MailAccount(id="m2", email="m2@example.com", provider="qq", host="imap.qq.com", port=993, security="ssl", username="m2@example.com", credential_key=make_credential_key("m2"))
+    mail_creds.save_secret(m1.credential_key, m1.username, "mail-sec-1")
+    mail_creds.save_secret(m2.credential_key, m2.username, "mail-sec-2")
+
+    q1 = QuotaAccount(id="q1", provider=Provider.DEEPSEEK.value, alias="Q1", identity="q1-id", credential_key="Wisland/quota/q1")
+    q2 = QuotaAccount(id="q2", provider=Provider.DEEPSEEK.value, alias="Q2", identity="q2-id", credential_key="Wisland/quota/q2")
+    creds.save_secret(q1.credential_key, q1.identity, "quota-sec-1")
+    creds.save_secret(q2.credential_key, q2.identity, "quota-sec-2")
+    cache.put(QuotaSnapshot(account_id="q1", fetched_at=100.0, status="ok"), flush=True)
+    cache.put(QuotaSnapshot(account_id="q2", fetched_at=100.0, status="ok"), flush=True)
+
+    cm.set("mail.accounts", [m1.to_config_dict(), m2.to_config_dict()], save=True)
+    cm.set("quota.accounts", [asdict(q1), asdict(q2)], save=True)
+    mgr.load_from_config()
+    mail_mgr = MailAccountManager(config_obj=cm, cred_store=mail_creds)
+
+    cfg_signals: list[tuple] = []
+    mail_signals: list[list[str]] = []
+    quota_signals: list[list[str]] = []
+    cm.changed.connect(lambda: cfg_signals.append((len(cm.get("mail.accounts")), len(cm.get("quota.accounts")))))
+    mail_mgr.accounts_changed.connect(lambda: mail_signals.append([a.id for a in mail_mgr.list_accounts()]))
+    mgr.accounts_changed.connect(lambda: quota_signals.append([a.id for a in mgr.list_accounts()]))
+
+    ctx = type("Ctx", (), {"quota": mgr, "mail": mail_mgr})()
+    win = SettingsWindow(ctx=ctx, config_obj=cm)
+    try:
+        mail_pg = next(pg for pg in win.leaf_pages if isinstance(pg, MailAccountsSettingsPage))
+        quota_pg = next(pg for pg in win.leaf_pages if isinstance(pg, QuotaSettingsPage))
+        monkeypatch.setattr(win, "collect_to_draft", lambda: win.draft)
+
+        orig_mail_del = mail_creds.delete_secret
+        orig_mail_save = mail_creds.save_secret
+        orig_quota_del = creds.delete_secret
+        orig_quota_save = creds.save_secret
+
+        # 1) 删除两个邮箱账号：m1 删成功，m2 删失败 -> 配置、m1/m2 凭据全部恢复，无广播
+        mail_pg._draft_accounts = []
+        mail_pg._deleted_accounts = [m1, m2]
+        win.draft.set("mail.accounts", [])
+        monkeypatch.setattr(mail_creds, "delete_secret", lambda t: False if t == m2.credential_key else orig_mail_del(t))
+
+        assert win.save_settings() is False
+        assert len(cm.get("mail.accounts")) == 2
+        assert mail_creds.read_secret(m1.credential_key) == "mail-sec-1"
+        assert mail_creds.read_secret(m2.credential_key) == "mail-sec-2"
+        assert [a.id for a in mail_mgr.list_accounts()] == ["m1", "m2"]
+        assert cfg_signals == [] and mail_signals == [] and quota_signals == []
+
+        # 2) 删除两个配额账号：q1 删成功，q2 删失败 -> 配置、q1/q2 凭据、缓存与运行时列表全部保留，无广播
+        monkeypatch.setattr(mail_creds, "delete_secret", orig_mail_del)
+        mail_pg._draft_accounts = [m1, m2]
+        mail_pg._deleted_accounts = []
+        win.draft.set("mail.accounts", [m1.to_config_dict(), m2.to_config_dict()])
+
+        quota_pg._draft_accounts = []
+        quota_pg._deleted_accounts = [q1, q2]
+        win.draft.set("quota.accounts", [])
+        monkeypatch.setattr(creds, "delete_secret", lambda t: False if t == q2.credential_key else orig_quota_del(t))
+
+        assert win.save_settings() is False
+        assert len(cm.get("quota.accounts")) == 2
+        assert creds.read_secret(q1.credential_key) == "quota-sec-1"
+        assert creds.read_secret(q2.credential_key) == "quota-sec-2"
+        assert cache.get("q1") is not None and cache.get("q2") is not None
+        assert [a.id for a in mgr.list_accounts()] == ["q1", "q2"]
+        assert cfg_signals == [] and mail_signals == [] and quota_signals == []
+
+        # 3) 同一次保存删除 q1 和 m1：q1 凭据删成功，m1 删失败 -> q1 凭据/缓存/运行时恢复，无任何变更广播
+        monkeypatch.setattr(creds, "delete_secret", orig_quota_del)
+        quota_pg._draft_accounts = [q2]
+        quota_pg._deleted_accounts = [q1]
+        win.draft.set("quota.accounts", [asdict(q2)])
+        mail_pg._draft_accounts = [m2]
+        mail_pg._deleted_accounts = [m1]
+        win.draft.set("mail.accounts", [m2.to_config_dict()])
+        monkeypatch.setattr(mail_creds, "delete_secret", lambda t: False if t == m1.credential_key else orig_mail_del(t))
+
+        assert win.save_settings() is False
+        assert len(cm.get("quota.accounts")) == 2 and len(cm.get("mail.accounts")) == 2
+        assert creds.read_secret(q1.credential_key) == "quota-sec-1"
+        assert mail_creds.read_secret(m1.credential_key) == "mail-sec-1"
+        assert cache.get("q1") is not None
+        assert [a.id for a in mgr.list_accounts()] == ["q1", "q2"]
+        assert [a.id for a in mail_mgr.list_accounts()] == ["m1", "m2"]
+        assert cfg_signals == [] and mail_signals == [] and quota_signals == []
+
+        # 4) 恢复已删除凭据本身也失败时，界面明确提示回滚失败且不含凭据明文
+        monkeypatch.setattr(creds, "save_secret", lambda t, u, s: False if t == q1.credential_key else orig_quota_save(t, u, s))
+        assert win.save_settings() is False
+        st_txt = win.status_lbl.text()
+        assert "回滚失败" in st_txt
+        assert "quota-sec-1" not in st_txt and "mail-sec-1" not in st_txt
+
+        # 5) 同批操作全部成功 -> 账号、凭据与缓存全部清除，配置与管理器各只广播一次最终状态
+        monkeypatch.setattr(creds, "save_secret", orig_quota_save)
+        monkeypatch.setattr(mail_creds, "delete_secret", orig_mail_del)
+        assert win.save_settings() is True
+        assert [a.id for a in mgr.list_accounts()] == ["q2"]
+        assert [a.id for a in mail_mgr.list_accounts()] == ["m2"]
+        assert creds.read_secret(q1.credential_key) is None
+        assert mail_creds.read_secret(m1.credential_key) is None
+        assert cache.get("q1") is None
+        assert cfg_signals == [(1, 1)]
+        assert quota_signals == [["q2"]]
+        assert mail_signals == [["m2"]]
     finally:
         win.close()
         mgr.stop()

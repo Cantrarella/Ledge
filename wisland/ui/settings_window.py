@@ -753,6 +753,7 @@ class SettingsWindow(QtWidgets.QWidget):
                     self.switch_category("mail_accounts")
                     return False
                 mail_written = True
+            quota_mutated = False
             if quota_pg is not None:
                 q_ok, q_err = quota_pg.commit_credentials()
                 if not q_ok:
@@ -764,8 +765,36 @@ class SettingsWindow(QtWidgets.QWidget):
                     self.status_lbl.setText(msg)
                     self.switch_category("quota")
                     return False
+                qm_ok, qm_err = quota_pg.commit_credential_mutations()
+                if not qm_ok:
+                    rb_ok = _rollback_creds(mail_pg if mail_written else None, sub_pg if sub_written else None)
+                    self.status_lbl.set_color(settings_theme.up())
+                    msg = f"保存失败：{qm_err}"
+                    if not rb_ok and "回滚失败" not in qm_err:
+                        msg += "（且部分凭据回滚失败，请检查系统凭据管理器）"
+                    self.status_lbl.setText(msg)
+                    self.switch_category("quota")
+                    return False
+                quota_mutated = True
 
-            prev_snapshot = copy.deepcopy(getattr(self.cfg_obj, "data", {}))
+            mail_deleted = False
+            if mail_pg is not None:
+                md_ok, md_err = mail_pg.commit_credential_deletes()
+                if not md_ok:
+                    rb_ok = _rollback_creds(
+                        quota_pg if quota_mutated else None,
+                        mail_pg if mail_written else None,
+                        sub_pg if sub_written else None,
+                    )
+                    self.status_lbl.set_color(settings_theme.up())
+                    msg = f"保存失败：{md_err}"
+                    if not rb_ok and "回滚失败" not in md_err:
+                        msg += "（且部分凭据回滚失败，请检查系统凭据管理器）"
+                    self.status_lbl.setText(msg)
+                    self.switch_category("mail_accounts")
+                    return False
+                mail_deleted = True
+
             quota_mgr = getattr(quota_pg, "_mgr", None) if quota_pg is not None else None
             if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                 quota_mgr.set_commit_sync_suppressed(True)
@@ -776,7 +805,11 @@ class SettingsWindow(QtWidgets.QWidget):
                     ok, errors = False, [f"写入配置文件失败：{type(exc).__name__}"]
                 if not ok:
                     err_msg = errors[0] if errors else "配置校验未通过"
-                    rb_ok = _rollback_creds(mail_pg if mail_written else None, sub_pg if sub_written else None)
+                    rb_ok = _rollback_creds(
+                        mail_pg if (mail_written or mail_deleted) else None,
+                        quota_pg if quota_mutated else None,
+                        sub_pg if sub_written else None,
+                    )
                     self._route_field_errors(errors)
                     self.status_lbl.set_color(settings_theme.up())
                     msg = f"保存失败：{err_msg}"
@@ -786,53 +819,13 @@ class SettingsWindow(QtWidgets.QWidget):
                     return False
 
                 if quota_pg is not None:
-                    fin_ok, fin_err = quota_pg.finalize_commit()
-                    if not fin_ok:
-                        cfg_rb_ok = True
-                        if isinstance(prev_snapshot, dict) and prev_snapshot:
-                            try:
-                                cfg_rb_ok, _ = self.cfg_obj.commit_draft(prev_snapshot, strict=False, emit_changed=False)
-                            except Exception:  # noqa: BLE001
-                                cfg_rb_ok = False
-                        cred_rb_ok = _rollback_creds(mail_pg if mail_written else None, sub_pg if sub_written else None)
-                        self.status_lbl.set_color(settings_theme.up())
-                        msg = f"保存失败：{fin_err or '会话凭据保存失败，未写入系统凭据管理器'}"
-                        if not (cfg_rb_ok and cred_rb_ok):
-                            msg += "（且部分凭据或配置回滚失败，请检查系统凭据管理器）"
-                        self.status_lbl.setText(msg)
-                        self.switch_category("quota")
-                        return False
-
+                    quota_pg.apply_runtime_commit()
                 if mail_pg is not None:
-                    mail_res = mail_pg.finalize_commit()
-                    if isinstance(mail_res, tuple):
-                        mail_del_ok, mail_del_err = bool(mail_res[0]), str(mail_res[1] or "")
-                    else:
-                        mail_del_ok, mail_del_err = True, ""
-                    if not mail_del_ok:
-                        cfg_rb_ok = True
-                        if isinstance(prev_snapshot, dict) and prev_snapshot:
-                            try:
-                                cfg_rb_ok, _ = self.cfg_obj.commit_draft(prev_snapshot, strict=False, emit_changed=False)
-                            except Exception:  # noqa: BLE001
-                                cfg_rb_ok = False
-                        cred_rb_ok = _rollback_creds(
-                            quota_pg if quota_pg is not None else None,
-                            mail_pg if mail_written else None,
-                            sub_pg if sub_written else None,
-                        )
-                        self.status_lbl.set_color(settings_theme.up())
-                        msg = f"保存失败：{mail_del_err or '清理已删除邮箱凭据失败'}"
-                        if not (cfg_rb_ok and cred_rb_ok):
-                            msg += "（且部分凭据或配置回滚失败，请检查系统凭据管理器）"
-                        self.status_lbl.setText(msg)
-                        self.switch_category("mail_accounts")
-                        return False
+                    mail_pg.apply_runtime_commit()
+                self.cfg_obj.changed.emit()
             finally:
                 if quota_mgr is not None and hasattr(quota_mgr, "set_commit_sync_suppressed"):
                     quota_mgr.set_commit_sync_suppressed(False)
-
-            self.cfg_obj.changed.emit()
             if getattr(self.ctx, "battery", None) is not None:
                 self.ctx.battery.apply_config()
 

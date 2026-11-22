@@ -292,6 +292,17 @@ class QuotaManager(QtCore.QObject):
         self.accounts_changed.emit()
         return True
 
+    def purge_removed_accounts_runtime(self, account_ids: list[str]) -> None:
+        """在配置与凭据均已提交成功后，批量清理已删除账号的缓存与运行时状态（不重复发信号）。"""
+        id_set = {str(x or "").strip() for x in account_ids if str(x or "").strip()}
+        if not id_set:
+            return
+        for acc_id in id_set:
+            self._cache.remove(acc_id, flush=True)
+            self._snapshots.pop(acc_id, None)
+            self._rate_limit_until.pop(acc_id, None)
+        self._accounts = [a for a in self._accounts if a.id not in id_set]
+
     def cancel_test(self, req_id: str):
         """取消正在进行的连接测试并标记丢弃晚到结果。"""
         ev = self._cancel_events.pop(str(req_id or ""), None)

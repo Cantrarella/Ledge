@@ -956,9 +956,15 @@ class QuotaSettingsPage(SettingsPage):
         return True, ""
 
     def rollback_credentials(self) -> bool:
-        """在后续提交步骤失败时回滚本次 finalize_commit 已写入的凭据。"""
-        rb = list(getattr(self, "_last_commit_rollback", []) or [])
+        """在后续提交步骤失败时回滚本次已删除或已写入的配额凭据。"""
         all_ok = True
+        del_rb = list(getattr(self, "_last_delete_rollback", []) or [])
+        for tgt, usr, old_val in reversed(del_rb):
+            if old_val is not None and not self._mgr._creds.save_secret(tgt, usr, old_val):
+                all_ok = False
+        self._last_delete_rollback = []
+
+        rb = list(getattr(self, "_last_commit_rollback", []) or [])
         for tgt, usr, old_val in reversed(rb):
             if old_val is None:
                 if not self._mgr._creds.delete_secret(tgt):
@@ -968,8 +974,8 @@ class QuotaSettingsPage(SettingsPage):
         self._last_commit_rollback = []
         return all_ok
 
-    def finalize_commit(self) -> tuple[bool, str]:
-        """在 config.json 原子保存成功后，正式写入新增/重连凭据并清理已删除账号的凭据与缓存。"""
+    def commit_credential_mutations(self) -> tuple[bool, str]:
+        """执行新增/重连凭据写入与待删除凭据清理（带逆序回滚），暂不修改缓存或运行时状态。"""
         written_rollback: list[tuple[str, str, str | None]] = []
         for acc_id, sec in list(self._pending_secrets.items()):
             acc = next((a for a in self._draft_accounts if a.id == acc_id), None)
@@ -992,14 +998,27 @@ class QuotaSettingsPage(SettingsPage):
             written_rollback.append((acc.credential_key, acc.identity or acc.id, prev))
 
         remaining_ids = {a.id for a in self._draft_accounts}
+        del_rollback: list[tuple[str, str, str | None]] = []
         for del_acc in list(self._deleted_accounts):
-            if del_acc.id not in remaining_ids:
-                if not self._mgr.remove_account_after_commit(del_acc.id, del_acc.credential_key):
-                    self._last_commit_rollback = written_rollback
-                    rb_ok = self.rollback_credentials()
-                    rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
-                    return False, f"清理已删除账号凭据失败{rb_note}"
+            if del_acc.id in remaining_ids:
+                continue
+            cred_key = str(del_acc.credential_key or "").strip() or make_quota_credential_key(del_acc.id)
+            prev = self._mgr._creds.read_secret(cred_key)
+            if not self._mgr._creds.delete_secret(cred_key):
+                self._last_delete_rollback = del_rollback
+                self._last_commit_rollback = written_rollback
+                rb_ok = self.rollback_credentials()
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"清理已删除账号凭据失败{rb_note}"
+            del_rollback.append((cred_key, del_acc.identity or del_acc.id, prev))
 
+        self._last_commit_rollback = written_rollback
+        self._last_delete_rollback = del_rollback
+        return True, ""
+
+    def apply_runtime_commit(self) -> None:
+        """全部配置与凭据提交成功后，更新缓存、清理已删账号运行时状态并单次发出 accounts_changed。"""
+        remaining_ids = {a.id for a in self._draft_accounts}
         for acc_id in list(self._pending_secrets.keys()):
             acc = next((a for a in self._draft_accounts if a.id == acc_id), None)
             if acc is not None:
@@ -1007,7 +1026,12 @@ class QuotaSettingsPage(SettingsPage):
                 if snap is not None:
                     self._mgr._cache.put(snap, flush=True)
 
-        self._last_commit_rollback = written_rollback
+        removed_ids = [del_acc.id for del_acc in self._deleted_accounts if del_acc.id not in remaining_ids]
+        if removed_ids:
+            self._mgr.purge_removed_accounts_runtime(removed_ids)
+
+        self._last_commit_rollback = []
+        self._last_delete_rollback = []
         self._pending_secrets.clear()
         self._deleted_accounts.clear()
         self._mgr.load_from_config()
@@ -1017,6 +1041,13 @@ class QuotaSettingsPage(SettingsPage):
         self._mgr._sync_auto_timer()
         self._mgr.accounts_changed.emit()
         self._rebuild_account_cards()
+
+    def finalize_commit(self) -> tuple[bool, str]:
+        """兼容入口：执行凭据提交与运行时刷新。"""
+        ok, err = self.commit_credential_mutations()
+        if not ok:
+            return False, err
+        self.apply_runtime_commit()
         return True, ""
 
     def discard_pending(self):

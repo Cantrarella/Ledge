@@ -764,9 +764,15 @@ class MailAccountsSettingsPage(SettingsPage):
         return True, ""
 
     def rollback_credentials(self) -> bool:
-        """在后续提交步骤失败时回滚本次已写入的邮箱凭据。"""
-        rb = list(getattr(self, "_last_commit_rollback", []) or [])
+        """在后续提交步骤失败时回滚本次已删除或已写入的邮箱凭据。"""
         all_ok = True
+        del_rb = list(getattr(self, "_last_delete_rollback", []) or [])
+        for tgt, usr, old_val in reversed(del_rb):
+            if old_val is not None and not self._mgr._creds.save_secret(tgt, usr, old_val):
+                all_ok = False
+        self._last_delete_rollback = []
+
+        rb = list(getattr(self, "_last_commit_rollback", []) or [])
         for tgt, usr, old_val in reversed(rb):
             if old_val is None:
                 if not self._mgr._creds.delete_secret(tgt):
@@ -776,17 +782,41 @@ class MailAccountsSettingsPage(SettingsPage):
         self._last_commit_rollback = []
         return all_ok
 
-    def finalize_commit(self) -> tuple[bool, str]:
-        """配置原子写入成功后清理待删除凭据并刷新管理器内存状态；删除凭据失败时返回错误。"""
+    def commit_credential_deletes(self) -> tuple[bool, str]:
+        """删除待移除邮箱账号的凭据（带逆序回滚），不修改管理器运行时状态。"""
+        del_rollback: list[tuple[str, str, str | None]] = []
         for acc in list(self._deleted_accounts):
-            if acc.credential_key and not self._mgr._creds.delete_secret(acc.credential_key):
-                return False, f"清理 {acc.email} 授权码失败"
+            if not acc.credential_key:
+                continue
+            prev = self._mgr._creds.read_secret(acc.credential_key)
+            if not self._mgr._creds.delete_secret(acc.credential_key):
+                rb_ok = True
+                for tgt, usr, old_val in reversed(del_rollback):
+                    if old_val is not None and not self._mgr._creds.save_secret(tgt, usr, old_val):
+                        rb_ok = False
+                rb_note = "（且部分凭据回滚失败，请检查系统凭据管理器）" if not rb_ok else ""
+                return False, f"清理 {acc.email} 授权码失败{rb_note}"
+            del_rollback.append((acc.credential_key, acc.username or acc.email, prev))
+        self._last_delete_rollback = del_rollback
+        return True, ""
+
+    def apply_runtime_commit(self) -> None:
+        """全部配置与凭据提交成功后，清理草稿状态并刷新管理器运行时与通知。"""
+        self._last_commit_rollback = []
+        self._last_delete_rollback = []
         self._pending_secrets.clear()
         self._pending_ids.clear()
         self._deleted_accounts.clear()
         self._mgr.load_from_config()
         self._mgr.accounts_changed.emit()
         self._rebuild_account_list()
+
+    def finalize_commit(self) -> tuple[bool, str]:
+        """兼容入口：删除待清理凭据后刷新管理器内存状态。"""
+        ok, err = self.commit_credential_deletes()
+        if not ok:
+            return False, err
+        self.apply_runtime_commit()
         return True, ""
 
     def discard_pending(self):
