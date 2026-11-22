@@ -215,7 +215,16 @@ def test_lyrics_backoff_auto_retries_current_track_and_cancels_on_switch(monkeyp
     svc._on_retry_timeout()
     assert len(bg_calls) == 2
 
-    # 3) 切歌到 track_b 时取消旧定时器；旧歌曲不再自动补查
+    # 3) 切歌到 track_b 时取消旧定时器；切回仍在退避期的 track_a 时按剩余时间重新安排补查
     assert svc.get(track_b) is None
     assert len(bg_calls) == 3
     assert svc._active_key == svc.key(track_b)
+
+    # 模拟 track_a 仍在退避期，切回 track_a
+    _fn3, _args3, _on_done3, on_err3 = bg_calls[1]
+    on_err3(httpx.ConnectError("still offline"))  # 触发第 2 次退避
+    scheduled.clear()
+    assert svc.get(track_b) is None  # 切走
+    now[0] += 1.0
+    assert svc.get(track_a) is None  # 仍在退避期，切回 track_a
+    assert len(scheduled) == 1 and scheduled[0] > 0

@@ -253,12 +253,15 @@ class LyricsService(QtCore.QObject):
                 # SMTC 切歌初期 duration 常暂时为 0，等待下次轮询拿到有效时长后再查，避免把 None 写死进缓存
                 return None
         k = self.key(m)
-        if k != self._active_key:
+        switched = k != self._active_key
+        if switched:
             self._retry_timer.stop()
             self._active_key = k
         self._active_track = dict(m)
         dur_bucket = int(round(dur / 5.0) * 5)
         now = time.monotonic()
+        rem_retry_ms = 0
+        in_backoff = False
         with self._lock:
             if k in self._cache:
                 return self._cache[k]
@@ -270,10 +273,17 @@ class LyricsService(QtCore.QObject):
                 self._miss_until.pop(k, None)
             err_ent = self._err_backoff.get(k)
             if err_ent is not None and now < err_ent[1]:
+                in_backoff = True
+                if switched or not self._retry_timer.isActive():
+                    rem_retry_ms = max(50, int((err_ent[1] - now) * 1000) + 50)
+            elif k in self._pending:
                 return None
-            if k in self._pending:
-                return None
-            self._pending.add(k)
+            else:
+                self._pending.add(k)
+        if in_backoff:
+            if rem_retry_ms > 0:
+                self._retry_timer.start(rem_retry_ms)
+            return None
         cache_none = (dur != 60.0)
         run_bg(
             self._fetch,
