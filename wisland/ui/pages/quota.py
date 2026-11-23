@@ -118,10 +118,13 @@ class _SpinRefreshButton(IconButton):
         p.translate(c)
         p.rotate(self._angle)
         p.translate(-c)
+        from ..icons import draw_ui_glyph
         from ..theme import icon_font
-        p.setFont(icon_font(self.icon_px))
-        p.setPen(theme.on_color())
-        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.glyph)
+        fg = theme.on_color()
+        if not draw_ui_glyph(p, QtCore.QRectF(self.rect()), self.glyph, self.icon_px, fg):
+            p.setFont(icon_font(self.icon_px))
+            p.setPen(fg)
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.glyph)
 
 
 class _AccountChip(Hoverable):

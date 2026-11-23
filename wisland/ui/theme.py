@@ -75,6 +75,12 @@ def icon_font(px: float) -> QtGui.QFont:
     f = QtGui.QFont()
     f.setFamilies(ICON_FAMILIES)
     f.setPixelSize(max(1, round(px)))
+    # 在透明分层玻璃窗口上禁用 ClearType 次像素彩边，仅使用干净的灰度抗锯齿
+    f.setStyleStrategy(
+        QtGui.QFont.StyleStrategy.PreferAntialias
+        | QtGui.QFont.StyleStrategy.NoSubpixelAntialias
+    )
+    f.setHintingPreference(QtGui.QFont.HintingPreference.PreferNoHinting)
     return f
 
 

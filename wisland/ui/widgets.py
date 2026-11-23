@@ -215,15 +215,17 @@ class IconButton(Hoverable):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawEllipse(r)
-        p.setFont(icon_font(self.icon_px))
         if not enabled:
             fg = t.text3(0.35)
         else:
             fg = QtGui.QColor(20, 20, 24) if self.active else (self.color or t.text(0.9))
             if self.active and self.color is not None:
                 fg = QtGui.QColor("white")
-        p.setPen(fg)
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.glyph)
+        from .icons import draw_ui_glyph
+        if not draw_ui_glyph(p, r, self.glyph, self.icon_px, fg):
+            p.setFont(icon_font(self.icon_px))
+            p.setPen(fg)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.glyph)
 
 
 class PillButton(Hoverable):

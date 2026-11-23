@@ -60,10 +60,13 @@ class _SpinRefreshButton(IconButton):
             p.translate(c.x(), c.y())
             p.rotate(self._angle)
             p.translate(-c.x(), -c.y())
+            from ..icons import draw_ui_glyph
             from ..theme import icon_font
-            p.setFont(icon_font(self.icon_px))
-            p.setPen(theme.text(0.85))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.glyph)
+            fg = theme.text(0.85)
+            if not draw_ui_glyph(p, QtCore.QRectF(self.rect()), self.glyph, self.icon_px, fg):
+                p.setFont(icon_font(self.icon_px))
+                p.setPen(fg)
+                p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.glyph)
 
 
 def _ring_color(dev: BatteryDevice, low_thresh: int) -> QtGui.QColor:

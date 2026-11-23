@@ -2,6 +2,7 @@
 """专用矢量图标绘制：基于 QPainterPath，统一线宽 1.5–2 px，跟随主题配色。"""
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -426,3 +427,86 @@ def draw_device_icon(p: QtGui.QPainter, kind: str, cx: float, cy: float, size: f
         bt.lineTo(-2.5, 3.2)
         p.drawPath(bt)
     p.restore()
+
+
+def draw_ui_glyph(
+    p: QtGui.QPainter,
+    rect: QtCore.QRectF,
+    glyph: str,
+    px: float,
+    color: QtGui.QColor,
+) -> bool:
+    """对页头高频小尺寸按钮图标（设置齿轮、垃圾桶、加号、刷新）采用像素对齐的原生矢量绘制，
+    彻底消除小字号字体图标在透明玻璃上的模糊与 ClearType 彩边。未命中返回 False 由字体兜底。"""
+    if glyph not in ("\uE713", "\uE74D", "\uE710", "+", "\uE72C"):
+        return False
+
+    cx = rect.center().x()
+    cy = rect.center().y()
+    # 小字号槽位（10~11px）在矢量模式下适度放宽至 ~13px 视觉尺寸，同时不超过容器边界
+    max_fit = max(8.0, min(rect.width(), rect.height()) - 5.0)
+    s = min(max_fit, max(12.5, float(px) + 2.0))
+
+    p.save()
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    if glyph in ("\uE710", "+"):
+        # 加号：半像素对齐，100% DPI 下横竖线零虚边
+        ax = round(cx) + 0.5
+        ay = round(cy) + 0.5
+        r = max(3.5, round(s * 0.35))
+        p.setPen(_pen(color, 1.35))
+        p.drawLine(QtCore.QPointF(ax - r, ay), QtCore.QPointF(ax + r, ay))
+        p.drawLine(QtCore.QPointF(ax, ay - r), QtCore.QPointF(ax, ay + r))
+    elif glyph == "\uE74D":
+        # 垃圾桶：清晰顶盖 + 提手 + 桶身 + 双竖纹
+        u = s / 14.0
+        x0 = cx - 7.0 * u
+        y0 = cy - 7.0 * u
+        p.setPen(_pen(color, max(1.15, 1.2 * (s / 13.5))))
+        lid_y = round(y0 + 3.6 * u) + 0.5
+        p.drawLine(QtCore.QPointF(x0 + 2.2 * u, lid_y), QtCore.QPointF(x0 + 11.8 * u, lid_y))
+        p.drawRoundedRect(QtCore.QRectF(x0 + 5.0 * u, lid_y - 2.0 * u, 4.0 * u, 2.0 * u), 0.8 * u, 0.8 * u)
+        body = QtGui.QPainterPath()
+        body.moveTo(x0 + 3.4 * u, lid_y + 0.3 * u)
+        body.lineTo(x0 + 4.1 * u, y0 + 11.5 * u)
+        body.quadTo(x0 + 4.2 * u, y0 + 12.3 * u, x0 + 5.1 * u, y0 + 12.3 * u)
+        body.lineTo(x0 + 8.9 * u, y0 + 12.3 * u)
+        body.quadTo(x0 + 9.8 * u, y0 + 12.3 * u, x0 + 9.9 * u, y0 + 11.5 * u)
+        body.lineTo(x0 + 10.6 * u, lid_y + 0.3 * u)
+        p.drawPath(body)
+    elif glyph == "\uE713":
+        # 设置齿轮：6 齿几何外轮廓 + 清晰中心环（12~14px 下齿形分明不挤糊）
+        p.setPen(_pen(color, max(1.15, 1.2 * (s / 13.5))))
+        r_inner = s * 0.17
+        r_ring = s * 0.34
+        r_tip = s * 0.45
+        p.drawEllipse(QtCore.QPointF(cx, cy), r_inner, r_inner)
+        teeth = 6
+        steps = teeth * 4
+        path = QtGui.QPainterPath()
+        for i in range(steps):
+            # 偏移 -0.5 步，使顶部与底部齿的中线严格垂直于 -90° / +90°，左右完全对称
+            ang = -math.pi / 2.0 + (i - 0.5) * (2.0 * math.pi / steps)
+            rr = r_tip if (i % 4) in (0, 1) else r_ring
+            pt = QtCore.QPointF(cx + rr * math.cos(ang), cy + rr * math.sin(ang))
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif glyph == "\uE72C":
+        # 刷新：290° 圆弧 + 右上箭头
+        p.setPen(_pen(color, max(1.2, 1.25 * (s / 13.5))))
+        r = s * 0.36
+        arc_rect = QtCore.QRectF(cx - r, cy - r, r * 2.0, r * 2.0)
+        p.drawArc(arc_rect, 35 * 16, 290 * 16)
+        ax = cx + r * math.cos(math.radians(-35.0))
+        ay = cy + r * math.sin(math.radians(-35.0))
+        p.drawLine(QtCore.QPointF(ax, ay), QtCore.QPointF(ax - s * 0.19, ay - s * 0.02))
+        p.drawLine(QtCore.QPointF(ax, ay), QtCore.QPointF(ax - s * 0.01, ay - s * 0.19))
+
+    p.restore()
+    return True
