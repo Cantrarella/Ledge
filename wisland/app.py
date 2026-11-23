@@ -181,7 +181,6 @@ def main():
     from .services.audio import AudioService
     from .services.clipboard_history import ClipboardHistoryService
     from .services.health_reminders import HealthReminderService
-    from .services.mailcheck import MailCheckService
     from .services.media import MediaService
     from .services.notify import NotifyService
     from .services.shelf import ShelfService
@@ -193,7 +192,6 @@ def main():
     from .services.weather import WeatherService, weather_glyph
     from .ui.island import Island
     from .ui.page_registry import PageRegistry
-    from .ui.settings_window import SettingsWindow
     from .ui.theme import KIND_COLORS, G, island_theme, settings_theme
     from .ui.widgets import glyph_pixmap
 
@@ -206,7 +204,7 @@ def main():
     ctx.notify = NotifyService()
     ctx.weather = WeatherService()
     ctx.lyrics = LyricsService()
-    ctx.mailcheck = MailCheckService()
+    ctx.mailcheck = None
     ctx.mail = MailAccountManager()
     from .services.mail.monitor import MailMonitorService
     ctx.mail_monitor = MailMonitorService(ctx.mail, controller=ctx.notify.controller)
@@ -494,6 +492,7 @@ def main():
 
     # ---------------- 菜单 / 托盘 / 设置窗口 ----------------
     def open_settings(category: str | None = None, account_id: str | None = None):
+        from .ui.settings_window import SettingsWindow
         SettingsWindow.open_instance(ctx, category=category, account_id=account_id)
     ctx.open_settings = open_settings
 
@@ -563,13 +562,20 @@ def main():
 
     def show_menu(pos):
         import ctypes
+        from ctypes import wintypes
         m = QtWidgets.QMenu()
         build_menu(m)
         island.locks.add("menu")
         m.aboutToHide.connect(lambda: island.locks.discard("menu"))
         m.aboutToHide.connect(m.deleteLater)
         m.popup(pos)
-        ctypes.windll.user32.SetForegroundWindow(int(m.winId()))
+        try:
+            u32 = ctypes.WinDLL("user32", use_last_error=True)
+            u32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            u32.SetForegroundWindow.restype = wintypes.BOOL
+            u32.SetForegroundWindow(int(m.winId()))
+        except Exception:  # noqa: BLE001
+            pass
         m.activateWindow()
         m.setFocus(QtCore.Qt.FocusReason.PopupFocusReason)
     island.menu_requested.connect(show_menu)
@@ -647,12 +653,15 @@ def main():
         ctx.quota.stop()
         ctx.battery.stop()
         for s in (ctx.media, ctx.audio, ctx.notify,
-                  ctx.weather, ctx.mailcheck, ctx.clipboard, ctx.health):
+                  ctx.weather, ctx.clipboard, ctx.health):
             try:
                 s.stop()
             except Exception:  # noqa: BLE001
                 pass
-        cfg.save()
+        try:
+            cfg.save()
+        except Exception:  # noqa: BLE001
+            pass
         bg.shutdown(wait=False)
         lock.unlock()
     app.aboutToQuit.connect(shutdown)

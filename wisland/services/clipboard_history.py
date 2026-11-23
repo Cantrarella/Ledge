@@ -28,6 +28,8 @@ MAX_CHARS = 20_000
 CF_UNICODETEXT = 13
 CF_HDROP = 15
 GMEM_MOVEABLE = 0x0002
+WM_DESTROY = 0x0002
+WM_CLOSE = 0x0010
 WM_CLIPBOARDUPDATE = 0x031D
 WM_QUIT = 0x0012
 HWND_MESSAGE = wintypes.HWND(-3)
@@ -61,8 +63,14 @@ user32.RemoveClipboardFormatListener.argtypes = [wintypes.HWND]
 user32.RemoveClipboardFormatListener.restype = wintypes.BOOL
 user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.PostThreadMessageW.restype = wintypes.BOOL
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
+user32.PostQuitMessage.argtypes = [ctypes.c_int]
+user32.PostQuitMessage.restype = None
 user32.RegisterClassW.argtypes = [ctypes.c_void_p]
 user32.RegisterClassW.restype = wintypes.ATOM
+user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+user32.UnregisterClassW.restype = wintypes.BOOL
 user32.CreateWindowExW.argtypes = [
     wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -73,12 +81,18 @@ user32.DestroyWindow.argtypes = [wintypes.HWND]
 user32.DestroyWindow.restype = wintypes.BOOL
 user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
 user32.GetMessageW.restype = wintypes.BOOL
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.TranslateMessage.restype = wintypes.BOOL
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.restype = ctypes.c_ssize_t
 
 kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
 kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
 kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalFree.restype = wintypes.HGLOBAL
 kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
 kernel32.GlobalLock.restype = ctypes.c_void_p
 kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
@@ -211,10 +225,12 @@ def _win32_write_history_text(text: str) -> bool:
             return False
         p_text = kernel32.GlobalLock(h_text)
         if not p_text:
+            kernel32.GlobalFree(h_text)
             return False
         ctypes.memmove(p_text, raw_bytes, len(raw_bytes))
         kernel32.GlobalUnlock(h_text)
         if not user32.SetClipboardData(CF_UNICODETEXT, h_text):
+            kernel32.GlobalFree(h_text)
             return False
 
         if fmt_self:
@@ -224,7 +240,10 @@ def _win32_write_history_text(text: str) -> bool:
                 if p_flag:
                     ctypes.memset(p_flag, 1, 4)
                     kernel32.GlobalUnlock(h_flag)
-                    user32.SetClipboardData(fmt_self, h_flag)
+                    if not user32.SetClipboardData(fmt_self, h_flag):
+                        kernel32.GlobalFree(h_flag)
+                else:
+                    kernel32.GlobalFree(h_flag)
         return True
     finally:
         user32.CloseClipboard()
@@ -242,6 +261,8 @@ class ClipboardHistoryService(QtCore.QObject):
         self.version: int = 0
         self._watcher_thread: threading.Thread | None = None
         self._watcher_tid: int = 0
+        self._watcher_hwnd: int = 0
+        self._cls_seq: int = 0
         self._stop_flag = threading.Event()
         self.load()
         if start_watcher and self.is_enabled():
@@ -435,7 +456,13 @@ class ClipboardHistoryService(QtCore.QObject):
 
     def stop(self):
         self._stop_flag.set()
+        hwnd = self._watcher_hwnd
         tid = self._watcher_tid
+        if hwnd:
+            try:
+                user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+            except Exception:  # noqa: BLE001
+                pass
         if tid:
             try:
                 user32.PostThreadMessageW(tid, WM_QUIT, 0, 0)
@@ -445,6 +472,7 @@ class ClipboardHistoryService(QtCore.QObject):
             self._watcher_thread.join(timeout=0.5)
         self._watcher_thread = None
         self._watcher_tid = 0
+        self._watcher_hwnd = 0
 
     def _watch_loop(self):
         """后台消息循环：使用 HWND_MESSAGE + AddClipboardFormatListener 零轮询监听剪贴板变化。"""
@@ -468,33 +496,50 @@ class ClipboardHistoryService(QtCore.QObject):
         user32.DefWindowProcW.restype = ctypes.c_ssize_t
 
         def wnd_proc(hwnd, msg, wparam, lparam):
-            if msg == WM_CLIPBOARDUPDATE:
-                if not self._stop_flag.is_set() and self.is_enabled():
-                    res = _win32_read_clipboard_text(hwnd)
-                    if res is not None:
-                        text, from_hist = res
-                        self.push(text, from_history=from_hist)
+            try:
+                if msg == WM_CLIPBOARDUPDATE:
+                    if not self._stop_flag.is_set() and self.is_enabled():
+                        res = _win32_read_clipboard_text(hwnd)
+                        if res is not None:
+                            text, from_hist = res
+                            self.push(text, from_history=from_hist)
+                    return 0
+                if msg == WM_CLOSE:
+                    user32.DestroyWindow(hwnd)
+                    return 0
+                if msg == WM_DESTROY:
+                    user32.PostQuitMessage(0)
+                    return 0
+            except Exception:  # noqa: BLE001
                 return 0
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
         proc_cb = WNDPROC(wnd_proc)
         hinst = kernel32.GetModuleHandleW(None)
-        cls_name = f"WislandClipboardWatcher_{id(self)}"
+        self._cls_seq += 1
+        cls_name = f"WislandClipboardWatcher_{id(self)}_{self._cls_seq}"
         wc = WNDCLASSW()
         wc.lpfnWndProc = proc_cb
         wc.hInstance = hinst
         wc.lpszClassName = cls_name
-        user32.RegisterClassW(ctypes.byref(wc))
+        atom = user32.RegisterClassW(ctypes.byref(wc))
+        if not atom:
+            return
 
         hwnd = user32.CreateWindowExW(
             0, cls_name, "", 0, 0, 0, 0, 0, HWND_MESSAGE, None, hinst, None
         )
         if not hwnd:
+            user32.UnregisterClassW(cls_name, hinst)
             return
 
+        self._watcher_hwnd = int(hwnd)
         self._watcher_tid = int(kernel32.GetCurrentThreadId())
         if self._stop_flag.is_set():
             user32.DestroyWindow(hwnd)
+            user32.UnregisterClassW(cls_name, hinst)
+            self._watcher_hwnd = 0
+            self._watcher_tid = 0
             return
 
         user32.AddClipboardFormatListener(hwnd)
@@ -509,4 +554,6 @@ class ClipboardHistoryService(QtCore.QObject):
         finally:
             user32.RemoveClipboardFormatListener(hwnd)
             user32.DestroyWindow(hwnd)
+            user32.UnregisterClassW(cls_name, hinst)
+            self._watcher_hwnd = 0
             self._watcher_tid = 0

@@ -657,6 +657,7 @@ class QuotaManager(QtCore.QObject):
     @QtCore.Slot(str, bool, str, object)
     def _on_test_done_main(self, req_id: str, ok: bool, err: str, payload: object):
         self._active_futures.pop(req_id, None)
+        self._cancel_events.pop(req_id, None)
         commit_now = self._active_futures.pop(f"commit:{req_id}", None) is not None
         if ok and isinstance(payload, dict):
             acc: QuotaAccount = payload["account"]
@@ -735,102 +736,110 @@ class QuotaManager(QtCore.QObject):
         wb_slot = acc.identity[3:] if acc.identity.startswith("wb:") else ""
 
         def _worker():
-            raw_secret = self._creds.read_secret(cred_key)
-            read_win_err = int(getattr(self._creds, "last_error", 0) or 0)
-            if read_win_err != 0:
+            try:
+                raw_secret = self._creds.read_secret(cred_key)
+                read_win_err = int(getattr(self._creds, "last_error", 0) or 0)
+                if read_win_err != 0:
+                    snap = QuotaSnapshot(
+                        account_id=acc_id,
+                        fetched_at=time.time(),
+                        status=AccountStatus.NETWORK_ERROR.value,
+                        last_error=f"读取系统凭据管理器失败 (WinError {read_win_err})，请检查 Windows 凭据服务",
+                    )
+                    if not self._stopping:
+                        self._internal_refresh_done.emit(acc_id, snap)
+                    return
+
+                if prov in (Provider.GEMINI.value, Provider.WORKBUDDY.value, Provider.GROK_BOT.value):
+                    if raw_secret is None:
+                        snap = QuotaSnapshot(
+                            account_id=acc_id,
+                            fetched_at=time.time(),
+                            status=AccountStatus.AUTH_ERROR.value,
+                            last_error="未找到已保存的会话凭据，请重新保存",
+                        )
+                        if not self._stopping:
+                            self._internal_refresh_done.emit(acc_id, snap)
+                        return
+                    if not raw_secret.strip():
+                        snap = QuotaSnapshot(
+                            account_id=acc_id,
+                            fetched_at=time.time(),
+                            status=AccountStatus.AUTH_ERROR.value,
+                            last_error="保存的会话凭据损坏，请重新连接",
+                        )
+                        if not self._stopping:
+                            self._internal_refresh_done.emit(acc_id, snap)
+                        return
+                    try:
+                        parsed_sess = json.loads(raw_secret)
+                    except Exception:
+                        parsed_sess = None
+                    if not isinstance(parsed_sess, dict):
+                        snap = QuotaSnapshot(
+                            account_id=acc_id,
+                            fetched_at=time.time(),
+                            status=AccountStatus.AUTH_ERROR.value,
+                            last_error="保存的会话凭据损坏，请重新连接",
+                        )
+                        if not self._stopping:
+                            self._internal_refresh_done.emit(acc_id, snap)
+                        return
+
+                secret = raw_secret or ""
+                if prov == Provider.GROK_BOT.value:
+                    snap, updated_sess = fetch_grok_usage(
+                        account_id=acc_id,
+                        secret_json=secret,
+                        http_opener=self._http_opener,
+                    )
+                    if updated_sess is not None:
+                        self._pending_updated_secrets[acc_id] = json.dumps(updated_sess, ensure_ascii=False)
+                elif prov == Provider.GEMINI.value:
+                    snap = fetch_gemini_usage(
+                        account_id=acc_id,
+                        secret_json=secret,
+                        http_opener=self._http_opener,
+                    )
+                elif prov == Provider.CODEX.value:
+                    snap, updated_auth = fetch_codex_usage(
+                        account_id=acc_id,
+                        secret_json=secret,
+                        source_path=acc.source,
+                        http_opener=self._http_opener,
+                    )
+                    if updated_auth is not None:
+                        self._pending_updated_secrets[acc_id] = json.dumps(updated_auth, ensure_ascii=False)
+                elif prov == Provider.WORKBUDDY.value:
+                    snap, updated_sess = fetch_workbuddy_quota(
+                        account_id=acc_id,
+                        secret_json=secret,
+                        expected_slot=wb_slot,
+                        http_opener=self._http_opener,
+                    )
+                    if updated_sess is not None:
+                        self._pending_updated_secrets[acc_id] = json.dumps(updated_sess, ensure_ascii=False)
+                elif not secret.strip():
+                    snap = QuotaSnapshot(
+                        account_id=acc_id,
+                        fetched_at=time.time(),
+                        status=AccountStatus.AUTH_ERROR.value,
+                        last_error="未找到 API Key 或凭据已失效，请重新连接",
+                    )
+                else:
+                    snap = fetch_deepseek_balance(
+                        api_key=secret,
+                        account_id=acc_id,
+                        url=src_url,
+                        timeout_s=DEFAULT_TIMEOUT_S,
+                        http_opener=self._http_opener,
+                    )
+            except Exception as exc:  # noqa: BLE001
                 snap = QuotaSnapshot(
                     account_id=acc_id,
                     fetched_at=time.time(),
                     status=AccountStatus.NETWORK_ERROR.value,
-                    last_error=f"读取系统凭据管理器失败 (WinError {read_win_err})，请检查 Windows 凭据服务",
-                )
-                if not self._stopping:
-                    self._internal_refresh_done.emit(acc_id, snap)
-                return
-
-            if prov in (Provider.GEMINI.value, Provider.WORKBUDDY.value, Provider.GROK_BOT.value):
-                if raw_secret is None:
-                    snap = QuotaSnapshot(
-                        account_id=acc_id,
-                        fetched_at=time.time(),
-                        status=AccountStatus.AUTH_ERROR.value,
-                        last_error="未找到已保存的会话凭据，请重新保存",
-                    )
-                    if not self._stopping:
-                        self._internal_refresh_done.emit(acc_id, snap)
-                    return
-                if not raw_secret.strip():
-                    snap = QuotaSnapshot(
-                        account_id=acc_id,
-                        fetched_at=time.time(),
-                        status=AccountStatus.AUTH_ERROR.value,
-                        last_error="保存的会话凭据损坏，请重新连接",
-                    )
-                    if not self._stopping:
-                        self._internal_refresh_done.emit(acc_id, snap)
-                    return
-                try:
-                    parsed_sess = json.loads(raw_secret)
-                except Exception:
-                    parsed_sess = None
-                if not isinstance(parsed_sess, dict):
-                    snap = QuotaSnapshot(
-                        account_id=acc_id,
-                        fetched_at=time.time(),
-                        status=AccountStatus.AUTH_ERROR.value,
-                        last_error="保存的会话凭据损坏，请重新连接",
-                    )
-                    if not self._stopping:
-                        self._internal_refresh_done.emit(acc_id, snap)
-                    return
-
-            secret = raw_secret or ""
-            if prov == Provider.GROK_BOT.value:
-                snap, updated_sess = fetch_grok_usage(
-                    account_id=acc_id,
-                    secret_json=secret,
-                    http_opener=self._http_opener,
-                )
-                if updated_sess is not None:
-                    self._pending_updated_secrets[acc_id] = json.dumps(updated_sess, ensure_ascii=False)
-            elif prov == Provider.GEMINI.value:
-                snap = fetch_gemini_usage(
-                    account_id=acc_id,
-                    secret_json=secret,
-                    http_opener=self._http_opener,
-                )
-            elif prov == Provider.CODEX.value:
-                snap, updated_auth = fetch_codex_usage(
-                    account_id=acc_id,
-                    secret_json=secret,
-                    source_path=acc.source,
-                    http_opener=self._http_opener,
-                )
-                if updated_auth is not None:
-                    self._pending_updated_secrets[acc_id] = json.dumps(updated_auth, ensure_ascii=False)
-            elif prov == Provider.WORKBUDDY.value:
-                snap, updated_sess = fetch_workbuddy_quota(
-                    account_id=acc_id,
-                    secret_json=secret,
-                    expected_slot=wb_slot,
-                    http_opener=self._http_opener,
-                )
-                if updated_sess is not None:
-                    self._pending_updated_secrets[acc_id] = json.dumps(updated_sess, ensure_ascii=False)
-            elif not secret.strip():
-                snap = QuotaSnapshot(
-                    account_id=acc_id,
-                    fetched_at=time.time(),
-                    status=AccountStatus.AUTH_ERROR.value,
-                    last_error="未找到 API Key 或凭据已失效，请重新连接",
-                )
-            else:
-                snap = fetch_deepseek_balance(
-                    api_key=secret,
-                    account_id=acc_id,
-                    url=src_url,
-                    timeout_s=DEFAULT_TIMEOUT_S,
-                    http_opener=self._http_opener,
+                    last_error=f"刷新异常：{exc}",
                 )
             if not self._stopping:
                 self._internal_refresh_done.emit(acc_id, snap)
@@ -962,6 +971,12 @@ class QuotaManager(QtCore.QObject):
         self._started = False
         if self._auto_timer.isActive():
             self._auto_timer.stop()
+        for ev in list(self._cancel_events.values()):
+            try:
+                ev.set()
+            except Exception:
+                pass
+        self._cancel_events.clear()
         for fut in list(self._active_futures.values()):
             try:
                 fut.cancel()
@@ -970,7 +985,7 @@ class QuotaManager(QtCore.QObject):
         self._active_futures.clear()
         self._refreshing_ids.clear()
         try:
-            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
         self._cache.flush()

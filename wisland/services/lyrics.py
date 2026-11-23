@@ -303,18 +303,22 @@ class LyricsService(QtCore.QObject):
                 self._miss_until.pop(k, None)
                 self._err_backoff.pop(k, None)
                 self._cache[k] = res
-                if len(self._cache) > 200:
+                if len(self._cache) > 32:
                     self._cache.pop(next(iter(self._cache)))
             elif is_error:
                 prev_cnt = self._err_backoff.get(k, (0, 0.0))[0] + 1
                 wait_s = min(300.0, 5.0 * (2 ** min(prev_cnt - 1, 5)))
                 self._err_backoff[k] = (prev_cnt, now + wait_s)
+                if len(self._err_backoff) > 200:
+                    self._err_backoff.pop(next(iter(self._err_backoff)))
                 if k == self._active_key and self._active_track is not None:
                     retry_ms = int(wait_s * 1000) + 50
             else:
                 # 确认无匹配使用有限期缓存（试听 60s 为 30s，常规为 300s），不写死永久空缓存
                 ttl = 300.0 if cache_none else 30.0
                 self._miss_until[k] = (dur_bucket, now + ttl)
+                if len(self._miss_until) > 200:
+                    self._miss_until.pop(next(iter(self._miss_until)))
         if retry_ms > 0:
             self._retry_timer.start(retry_ms)
         self.ready.emit(k)

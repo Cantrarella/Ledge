@@ -65,7 +65,7 @@ class Progress(QtWidgets.QWidget, Themed):
         )
 
     def mouseReleaseEvent(self, e):
-        if self.dur > 0:
+        if e.button() == Qt.MouseButton.LeftButton and self.dur > 0:
             _, _, _, bar_r, _ = self._layout_metrics()
             ratio = clamp((e.position().x() - bar_r.left()) / max(1.0, bar_r.width()), 0.0, 1.0)
             self.seek.emit(ratio * self.dur)
@@ -300,10 +300,22 @@ class MediaCard(Card):
         self.prog.set_state(m)
         self.prog.setVisible(True)
         self.prog.setEnabled(has and (m.get("duration") or 0) > 0)
-        if m.get("playing"):
+        self._is_playing = bool(m.get("playing"))
+        if self._is_playing and self.isVisible():
             self._tick.start()
         else:
             self._tick.stop()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if getattr(self, "_is_playing", False) and not self._tick.isActive():
+            self._tick.start()
+            self.prog.update()
+
+    def hideEvent(self, e):
+        if self._tick.isActive():
+            self._tick.stop()
+        super().hideEvent(e)
 
 
 # ======================================================================== 小形象

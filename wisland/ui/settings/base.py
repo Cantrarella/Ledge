@@ -6,7 +6,7 @@ from PySide6 import QtCore, QtWidgets
 
 from ...core.config import ConfigDraft
 from ..theme import W, bind_theme_context, settings_theme, ui_font
-from ..widgets import ComboBox, DoubleSpinBox, LineEdit, PasswordEdit, ScrollArea, SettingRow, SpinBox, Switch, vbox
+from ..widgets import ComboBox, DoubleSpinBox, LineEdit, PasswordEdit, ScrollArea, SettingRow, SpinBox, Switch, _bind_theme_slot, vbox
 
 
 class SettingsPage(ScrollArea):
@@ -26,7 +26,7 @@ class SettingsPage(ScrollArea):
         self._built: bool = not lazy
         self._building: bool = False
         self._pending_draft: ConfigDraft | None = None
-        settings_theme.changed.connect(self._style_sections)
+        _bind_theme_slot(self, self._style_sections)
 
     def _build_ui(self):
         """子类重写此方法以在首次需要时构建页面控件（启用 lazy=True 时调用）。"""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 from ctypes import wintypes
 
 CRED_TYPE_GENERIC = 1
@@ -49,8 +50,23 @@ class Win32CredentialBase:
     _comment: str = "Wisland Credential"
 
     def __init__(self):
-        self.last_error: int = 0
-        self.last_error_message: str = ""
+        self._tls = threading.local()
+
+    @property
+    def last_error(self) -> int:
+        return int(getattr(self._tls, "last_error", 0) or 0)
+
+    @last_error.setter
+    def last_error(self, value: int) -> None:
+        self._tls.last_error = int(value or 0)
+
+    @property
+    def last_error_message(self) -> str:
+        return str(getattr(self._tls, "last_error_message", "") or "")
+
+    @last_error_message.setter
+    def last_error_message(self, value: str) -> None:
+        self._tls.last_error_message = str(value or "")
 
     def _clear_error(self):
         self.last_error = 0

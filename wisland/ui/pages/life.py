@@ -915,7 +915,14 @@ class _TodoView(QtWidgets.QWidget):
             return
         _, item = res
         p = self.window()
-        isl = getattr(self.parentWidget(), "island", None)
+        isl = None
+        cur = self.parentWidget()
+        while cur is not None:
+            cand = getattr(cur, "island", None)
+            if cand is not None:
+                isl = cand
+                break
+            cur = cur.parentWidget()
         if isl:
             isl.locks.add("dialog")
         try:

@@ -317,6 +317,19 @@ class MailMonitorService(QtCore.QObject):
         for w in workers:
             w.stop()
 
+    def apply_config(self):
+        """休眠唤醒或配置变化时，重建已有账号监听连接并同步账号列表。"""
+        if not self._running:
+            return
+        workers = list(self._workers.values())
+        self._workers.clear()
+        for w in workers:
+            try:
+                w.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self.sync_accounts()
+
     @QtCore.Slot()
     def sync_accounts(self):
         if not self._running:

@@ -188,6 +188,8 @@ class MediaService(QtCore.QObject):
         self._smtc_fallback_tried = False
         self._last_emit = None
         self._netease = NeteaseLog()
+        self._poll_lock: asyncio.Lock | None = None
+        self._poll_lock_loop: asyncio.AbstractEventLoop | None = None
 
     def _emit_cover(self, img: QtGui.QImage | None):
         self.cover_image = img
@@ -271,6 +273,14 @@ class MediaService(QtCore.QObject):
         return cands[0][2]
 
     async def _poll(self):
+        loop = asyncio.get_running_loop()
+        if self._poll_lock is None or self._poll_lock_loop is not loop:
+            self._poll_lock = asyncio.Lock()
+            self._poll_lock_loop = loop
+        async with self._poll_lock:
+            await self._poll_locked()
+
+    async def _poll_locked(self):
         sessions = list(self._mgr.get_sessions() or [])
         s = self._choose(sessions)
         # 网易云默认不接入系统媒体控件（即使接入也没有进度），优先用它的本地日志
@@ -398,7 +408,7 @@ class MediaService(QtCore.QObject):
                 self._echo_cover_url = echo_cover
                 loop = asyncio.get_running_loop()
                 fb_img = await loop.run_in_executor(None, _download_cover, echo_cover)
-                if fb_img is not None:
+                if fb_img is not None and self._track_key == key:
                     self._stale_cover_img = None
                     self._smtc_fallback_tried = True
                     self._emit_cover(fb_img)
@@ -416,7 +426,7 @@ class MediaService(QtCore.QObject):
                     self._echo_cover_url = echo_cover
                     loop = asyncio.get_running_loop()
                     fb_img = await loop.run_in_executor(None, _download_cover, echo_cover)
-                    if fb_img is not None:
+                    if fb_img is not None and self._track_key == key:
                         self._stale_cover_img = None
                         self._smtc_fallback_tried = True
                         self._emit_cover(fb_img)
@@ -430,9 +440,9 @@ class MediaService(QtCore.QObject):
                     self._smtc_fallback_tried = True
                     loop = asyncio.get_running_loop()
                     pic_url = echo_cover or await loop.run_in_executor(None, _search_cover_url, title, artist, dur)
-                    if pic_url:
+                    if pic_url and self._track_key == key:
                         fb_img = await loop.run_in_executor(None, _download_cover, pic_url)
-                        if fb_img is not None:
+                        if fb_img is not None and self._track_key == key:
                             self._stale_cover_img = None
                             self._emit_cover(fb_img)
         self._publish(st)
@@ -461,11 +471,12 @@ class MediaService(QtCore.QObject):
         if need_fetch:
             self._netease_cover_url = cover_url
             img = await asyncio.get_running_loop().run_in_executor(None, _download_cover, cover_url)
-            if img is not None:
-                self._cover_tries = 0
-                self._emit_cover(img)
-            else:
-                self._cover_tries = max(1, self._cover_tries + 1)
+            if self._track_key == key:
+                if img is not None:
+                    self._cover_tries = 0
+                    self._emit_cover(img)
+                else:
+                    self._cover_tries = max(1, self._cover_tries + 1)
         self._publish(st)
 
     def _publish(self, st: dict, force: bool = False):

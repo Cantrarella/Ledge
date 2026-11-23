@@ -347,9 +347,17 @@ class QuotaPage(Page):
             mgr.account_state_changed.connect(self._on_mgr_account_state)
             mgr.refreshing_changed.connect(self._on_mgr_refreshing)
             mgr.all_refreshing_changed.connect(self._on_mgr_all_refreshing)
+        self._theme_dirty = False
         cfg.changed.connect(self.refresh)
-        theme.changed.connect(self.refresh)
+        theme.changed.connect(self._on_theme_changed)
         self.refresh()
+
+    def _on_theme_changed(self):
+        if self.isVisible():
+            self._theme_dirty = False
+            self.refresh()
+        else:
+            self._theme_dirty = True
 
     def _manager(self):
         return getattr(self.ctx, "quota", None) if self.ctx is not None else None

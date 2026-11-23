@@ -900,7 +900,21 @@ class MailPage(Page):
             empty_act.setEnabled(False)
 
         pos = self.btn_account_filter.mapToGlobal(QtCore.QPoint(0, self.btn_account_filter.height() + 3))
+        if self.island is not None:
+            self.island.locks.add("menu")
+            m.aboutToHide.connect(lambda: self.island.locks.discard("menu"))
+        m.aboutToHide.connect(m.deleteLater)
         m.popup(pos)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u32 = ctypes.WinDLL("user32", use_last_error=True)
+            u32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            u32.SetForegroundWindow.restype = wintypes.BOOL
+            u32.SetForegroundWindow(int(m.winId()))
+        except Exception:  # noqa: BLE001
+            pass
+        m.activateWindow()
 
     @QtCore.Slot()
     def _on_accounts_changed(self):

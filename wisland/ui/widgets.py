@@ -381,7 +381,8 @@ class Label(QtWidgets.QWidget, Themed):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        self.clicked.emit()
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
 
     def paintEvent(self, e):
         t = resolve_theme(self)

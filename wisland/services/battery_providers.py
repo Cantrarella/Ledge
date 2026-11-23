@@ -271,7 +271,8 @@ class LogitechProvider:
         0xC548: "Logi Bolt",
         0xC52B: "Unifying",
     }
-    _idx_cache: dict[str, int] = {}
+    def __init__(self):
+        self._idx_cache: dict[str, int] = {}
 
     def discover(self, catalog: list[HidDeviceInfo]) -> list[DeviceCandidate]:
         best: dict[tuple[int, int], HidDeviceInfo] = {}
@@ -310,6 +311,7 @@ class LogitechProvider:
 
                 feat, responded = self._get_feature(s, dev, 0x1000)
                 if feat == 0 and not responded:
+                    self._idx_cache.pop(d.hid_path, None)
                     r.sleeping = True
                     r.error = "设备休眠"
                     return r
@@ -318,6 +320,7 @@ class LogitechProvider:
                     feat, responded = self._get_feature(s, dev, 0x1004)
                     bat_func = 0x01
                     if feat == 0 and not responded:
+                        self._idx_cache.pop(d.hid_path, None)
                         r.sleeping = True
                         r.error = "设备休眠"
                         return r
@@ -328,10 +331,11 @@ class LogitechProvider:
 
                 bat = self._call(s, dev, feat, bat_func)
                 if bat is None:
+                    self._idx_cache.pop(d.hid_path, None)
                     r.sleeping = True
                     r.error = "设备休眠"
                     return r
-                if bat[3] == 0xFF:
+                if bat[2] == 0xFF:
                     r.error = f"HID++ 错误 0x{bat[5]:02X}"
                     return r
                 lvl = int(bat[4])
@@ -371,15 +375,18 @@ class LogitechProvider:
         end = time.monotonic() + 0.16
         while time.monotonic() < end:
             resp = s.read(80)
-            if resp and len(resp) >= 7 and resp[1] == dev and (resp[3] & 0x0F) == self._SW_ID:
-                return resp[3] != 0xFF
+            if resp and len(resp) >= 7 and resp[1] == dev:
+                if resp[2] == 0xFF:
+                    return False
+                if (resp[3] & 0x0F) == self._SW_ID:
+                    return True
         return False
 
     def _get_feature(self, s: HidSession, dev: int, feat_id: int) -> tuple[int, bool]:
         resp = self._call(s, dev, 0x00, 0x00, bytes([(feat_id >> 8) & 0xFF, feat_id & 0xFF]))
         if resp is None:
             return 0, False
-        return (0, True) if resp[3] == 0xFF else (int(resp[4]), True)
+        return (0, True) if resp[2] == 0xFF else (int(resp[4]), True)
 
     def _call(self, s: HidSession, dev: int, feat_idx: int, func_id: int, args: bytes = b"") -> bytes | None:
         pkt = bytearray(20)

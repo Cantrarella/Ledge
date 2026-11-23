@@ -243,7 +243,8 @@ def test_live_service_preload_skips_missing_model_and_sets_openblas_env(monkeypa
     assert os.environ.get("OMP_NUM_THREADS") == "1"
 
 
-def test_subtitle_page_on_show_triggers_live_preload(monkeypatch):
+def test_subtitle_page_on_show_does_not_eagerly_preload(monkeypatch):
+    """仅路过字幕页时不自动触发重型依赖（numpy/soundcard/soxr）预加载，避免常驻内存上涨。"""
     from types import SimpleNamespace
     from PySide6 import QtWidgets
     from wisland.live.service import LiveService
@@ -258,7 +259,6 @@ def test_subtitle_page_on_show_triggers_live_preload(monkeypatch):
     ctx = SimpleNamespace(live=svc, open_settings=lambda *a, **kw: None)
     pg = SubtitlePage(ctx)
 
-    # 无模型时切入字幕页：不报错、不预加载、不触发下载
     dl_calls = []
     monkeypatch.setattr(svc, "available", lambda: (False, "缺少识别模型"))
     monkeypatch.setattr(svc, "_download", lambda: dl_calls.append(True))
@@ -266,11 +266,9 @@ def test_subtitle_page_on_show_triggers_live_preload(monkeypatch):
     assert bg_calls == []
     assert dl_calls == []
 
-    # 有模型时首次切入触发一次预加载，反复切入不重复调度
     monkeypatch.setattr(svc, "available", lambda: (True, ""))
     pg.on_show()
-    pg.on_show()
-    assert len(bg_calls) == 1
+    assert bg_calls == []
     pg.close()
 
 

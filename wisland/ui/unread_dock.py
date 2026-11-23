@@ -419,7 +419,7 @@ class UnreadDock(QtWidgets.QWidget):
                 win_pos = QtCore.QPointF(self.pos()) + QtCore.QPointF(shift, 0.0)
                 p.save()
                 p.translate(-win_pos)
-                parent_island._paint_glass(p, cap_path.translated(win_pos), crossfade=True)
+                parent_island._paint_glass(p, cap_path.translated(win_pos), crossfade=False)
                 p.restore()
             else:
                 p.fillPath(cap_path, theme.tint_brush(cap_r))

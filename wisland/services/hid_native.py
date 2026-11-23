@@ -269,6 +269,10 @@ class HidSession:
             raise OSError(f"CreateFileW failed: {ctypes.get_last_error()}")
         self._evt_r = _kernel32.CreateEventW(None, True, False, None)
         self._evt_w = _kernel32.CreateEventW(None, True, False, None)
+        if not self._evt_r or not self._evt_w:
+            err = ctypes.get_last_error()
+            self.close()
+            raise OSError(f"CreateEventW failed: {err}")
 
     def __enter__(self) -> HidSession:
         return self
@@ -299,7 +303,9 @@ class HidSession:
             return False
         if _kernel32.WaitForSingleObject(self._evt_w, timeout_ms) == _WAIT_OBJECT_0:
             return bool(_kernel32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(written), False))
-        _kernel32.CancelIoEx(self._handle, ctypes.byref(ov))
+        # CancelIoEx 是异步取消，必须等待内核彻底结束该 OVERLAPPED 后再释放局部变量 ov/buf
+        if _kernel32.CancelIoEx(self._handle, ctypes.byref(ov)):
+            _kernel32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(written), True)
         return False
 
     def read(self, timeout_ms: int = 300) -> bytes | None:
@@ -313,7 +319,8 @@ class HidSession:
             if ctypes.get_last_error() != _ERROR_IO_PENDING:
                 return None
             if _kernel32.WaitForSingleObject(self._evt_r, timeout_ms) != _WAIT_OBJECT_0:
-                _kernel32.CancelIoEx(self._handle, ctypes.byref(ov))
+                if _kernel32.CancelIoEx(self._handle, ctypes.byref(ov)):
+                    _kernel32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(nread), True)
                 return None
             if not _kernel32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(nread), False):
                 return None
@@ -345,61 +352,62 @@ def read_bluetooth_batteries() -> list[dict]:
     """读取 Windows 蓝牙/PnP 设备电池百分比（DEVPKEY_Device_BatteryPlus，只读系统已连接设备）。"""
     out: list[dict] = []
     seen: set[str] = set()
-    h_dev = _setupapi.SetupDiGetClassDevsW(None, None, None, _DIGCF_PRESENT | _DIGCF_ALLCLASSES)
-    if not h_dev or h_dev == _INVALID_HANDLE_VALUE:
-        return out
-    try:
-        dev_data = _SP_DEVINFO_DATA()
-        dev_data.cbSize = ctypes.sizeof(_SP_DEVINFO_DATA)
-        idx = 0
-        id_buf = ctypes.create_unicode_buffer(512)
-        name_buf = ctypes.create_unicode_buffer(256)
-        while _setupapi.SetupDiEnumDeviceInfo(h_dev, idx, ctypes.byref(dev_data)):
-            idx += 1
-            req = wintypes.DWORD(0)
-            if not _setupapi.SetupDiGetDeviceInstanceIdW(h_dev, ctypes.byref(dev_data), id_buf, len(id_buf), ctypes.byref(req)):
-                continue
-            inst_id = id_buf.value
-            up_id = inst_id.upper()
-            if not (up_id.startswith("BTHENUM\\") or up_id.startswith("BTHLE\\") or up_id.startswith("BTHLEDEVICE\\")):
-                continue
-
-            # 读取电池百分比（BYTE）
-            ptype = wintypes.ULONG(0)
-            bat = ctypes.c_ubyte(0)
-            rsize = wintypes.DWORD(0)
-            if not _setupapi.SetupDiGetDevicePropertyW(
-                h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_BATTERY),
-                ctypes.byref(ptype), ctypes.byref(bat), ctypes.sizeof(bat), ctypes.byref(rsize), 0
-            ):
-                continue
-            pct = int(bat.value)
-            if not (0 <= pct <= 100):
-                continue
-
-            # 若系统报告了连接状态且明确未连接，则跳过
-            conn = ctypes.c_ubyte(1)
-            if _setupapi.SetupDiGetDevicePropertyW(
-                h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_CONNECTED),
-                ctypes.byref(ptype), ctypes.byref(conn), ctypes.sizeof(conn), ctypes.byref(rsize), 0
-            ):
-                if conn.value == 0:
+    id_buf = ctypes.create_unicode_buffer(512)
+    name_buf = ctypes.create_unicode_buffer(256)
+    for enum_name in ("BTHENUM", "BTHLE", "BTHLEDEVICE"):
+        h_dev = _setupapi.SetupDiGetClassDevsW(None, enum_name, None, _DIGCF_PRESENT | _DIGCF_ALLCLASSES)
+        if not h_dev or h_dev == _INVALID_HANDLE_VALUE:
+            continue
+        try:
+            dev_data = _SP_DEVINFO_DATA()
+            dev_data.cbSize = ctypes.sizeof(_SP_DEVINFO_DATA)
+            idx = 0
+            while _setupapi.SetupDiEnumDeviceInfo(h_dev, idx, ctypes.byref(dev_data)):
+                idx += 1
+                req = wintypes.DWORD(0)
+                if not _setupapi.SetupDiGetDeviceInstanceIdW(h_dev, ctypes.byref(dev_data), id_buf, len(id_buf), ctypes.byref(req)):
+                    continue
+                inst_id = id_buf.value
+                up_id = inst_id.upper()
+                if not (up_id.startswith("BTHENUM\\") or up_id.startswith("BTHLE\\") or up_id.startswith("BTHLEDEVICE\\")):
                     continue
 
-            name = ""
-            if _setupapi.SetupDiGetDevicePropertyW(
-                h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_NAME),
-                ctypes.byref(ptype), name_buf, ctypes.sizeof(name_buf), ctypes.byref(rsize), 0
-            ):
-                name = name_buf.value.strip()
-            if not name:
-                name = inst_id.split("\\")[-1]
-            # 去掉同一物理设备多个服务节点（如 HFP/AVRCP）的重复条目，按名称归一
-            norm = name.lower()
-            if norm in seen:
-                continue
-            seen.add(norm)
-            out.append({"id": f"bt:{inst_id}", "name": name, "percent": pct})
-    finally:
-        _setupapi.SetupDiDestroyDeviceInfoList(h_dev)
+                # 读取电池百分比（BYTE）
+                ptype = wintypes.ULONG(0)
+                bat = ctypes.c_ubyte(0)
+                rsize = wintypes.DWORD(0)
+                if not _setupapi.SetupDiGetDevicePropertyW(
+                    h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_BATTERY),
+                    ctypes.byref(ptype), ctypes.byref(bat), ctypes.sizeof(bat), ctypes.byref(rsize), 0
+                ):
+                    continue
+                pct = int(bat.value)
+                if not (0 <= pct <= 100):
+                    continue
+
+                # 若系统报告了连接状态且明确未连接，则跳过
+                conn = ctypes.c_ubyte(1)
+                if _setupapi.SetupDiGetDevicePropertyW(
+                    h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_CONNECTED),
+                    ctypes.byref(ptype), ctypes.byref(conn), ctypes.sizeof(conn), ctypes.byref(rsize), 0
+                ):
+                    if conn.value == 0:
+                        continue
+
+                name = ""
+                if _setupapi.SetupDiGetDevicePropertyW(
+                    h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_NAME),
+                    ctypes.byref(ptype), name_buf, ctypes.sizeof(name_buf), ctypes.byref(rsize), 0
+                ):
+                    name = name_buf.value.strip()
+                if not name:
+                    name = inst_id.split("\\")[-1]
+                # 去掉同一物理设备多个服务节点（如 HFP/AVRCP）的重复条目，按名称归一
+                norm = name.lower()
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                out.append({"id": f"bt:{inst_id}", "name": name, "percent": pct})
+        finally:
+            _setupapi.SetupDiDestroyDeviceInfoList(h_dev)
     return out

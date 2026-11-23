@@ -294,7 +294,23 @@ class WeatherPage(Page):
         # ---- 中部两行详情网格 + 下部单行分时滚动区 ----
         self.facts = Facts()
         self.hourly = Hourly()
-        self.hourly_scroll = QtWidgets.QScrollArea()
+
+        class _HorizontalWheelScrollArea(QtWidgets.QScrollArea):
+            def wheelEvent(self, e):
+                bar = self.horizontalScrollBar()
+                delta = e.angleDelta().x() or e.angleDelta().y()
+                if bar is None or bar.maximum() <= 0 or not delta:
+                    e.ignore()
+                    return
+                step = -delta // 2
+                cur = bar.value()
+                if (step < 0 and cur <= bar.minimum()) or (step > 0 and cur >= bar.maximum()):
+                    e.ignore()
+                    return
+                bar.setValue(max(bar.minimum(), min(bar.maximum(), cur + step)))
+                e.accept()
+
+        self.hourly_scroll = _HorizontalWheelScrollArea()
         self.hourly_scroll.setWidgetResizable(True)
         self.hourly_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.hourly_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -352,14 +368,34 @@ class WeatherPage(Page):
 
     def set_cities(self, data: list):
         self.data = data
-        self.sel = min(self.sel, max(0, len(data) - 1))
+        if getattr(self, "_pending_select_new", False) and data:
+            want_name = str(getattr(self, "_pending_add_city", "") or "").strip().lower()
+            if want_name:
+                matched_idx = None
+                for i in range(len(data) - 1, -1, -1):
+                    if str(data[i].get("name") or "").strip().lower() == want_name:
+                        matched_idx = i
+                        break
+                if matched_idx is not None:
+                    self.sel = matched_idx
+                    self._pending_select_new = False
+                    self._pending_add_city = ""
+                else:
+                    # 旧刷新结果尚未包含新城市：保留待选状态与当前选中项，不误跳到旧列表末尾
+                    self.sel = min(self.sel, max(0, len(data) - 1))
+            else:
+                self.sel = len(data) - 1
+                self._pending_select_new = False
+        else:
+            self.sel = min(self.sel, max(0, len(data) - 1))
         self.select(self.sel)
 
     def select(self, i: int):
-        self.sel = i
         if not self.data:
+            self.sel = 0
             return
-        self._show(self.data[i])
+        self.sel = max(0, min(int(i), len(self.data) - 1))
+        self._show(self.data[self.sel])
 
     def _show(self, d: dict):
         from ...services.weather import weather_glyph
@@ -436,17 +472,39 @@ class WeatherPage(Page):
     def _do_add(self):
         q = self.add_edit.text().strip()
         if q:
+            self._pending_add_city = q
+            self._pending_select_new = False
             self.msg.setText(f"正在查找 {q}…")
             self.msg.show()
             self.ctx.weather.add_city(q)
         self._end_add()
 
     def _added(self, ok: bool, text: str):
+        self._msg_seq = getattr(self, "_msg_seq", 0) + 1
+        seq = self._msg_seq
         self.msg.setText(text)
         self.msg.setVisible(bool(text))
         if ok:
-            self.sel = len(self.data)
-        QtCore.QTimer.singleShot(3500, lambda: (self.msg.setText(""), self.msg.hide()))
+            want_name = str(getattr(self, "_pending_add_city", "") or "").strip().lower()
+            matched_idx = None
+            if want_name and self.data:
+                for i in range(len(self.data) - 1, -1, -1):
+                    if str(self.data[i].get("name") or "").strip().lower() == want_name:
+                        matched_idx = i
+                        break
+            if matched_idx is not None:
+                self.select(matched_idx)
+                self._pending_select_new = False
+                self._pending_add_city = ""
+            else:
+                self._pending_select_new = True
+        else:
+            self._pending_select_new = False
+            self._pending_add_city = ""
+        QtCore.QTimer.singleShot(
+            3500,
+            lambda s=seq: (self.msg.setText(""), self.msg.hide()) if getattr(self, "_msg_seq", 0) == s else None,
+        )
 
     def eventFilter(self, obj, ev):
         add_edit = getattr(self, "add_edit", None)

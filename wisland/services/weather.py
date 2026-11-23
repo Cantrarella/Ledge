@@ -50,6 +50,10 @@ def _wmo(code, day=True) -> tuple[str, str]:
     return desc, base + ("d" if day else "n")
 
 
+def _at(seq, idx: int, default=None):
+    return seq[idx] if isinstance(seq, (list, tuple)) and 0 <= idx < len(seq) else default
+
+
 def parse_open_meteo(j: dict) -> dict:
     """Open-Meteo /v1/forecast（timeformat=unixtime）-> 与 parse() 相同结构。"""
     cur = j.get("current") or {}
@@ -57,7 +61,7 @@ def parse_open_meteo(j: dict) -> dict:
     hourly = j.get("hourly") or {}
     tz_off = int(j.get("utc_offset_seconds") or 0)
     desc, icon = _wmo(cur.get("weather_code"), bool(cur.get("is_day", 1)))
-    d0 = lambda k: (daily.get(k) or [None])[0]  # noqa: E731
+    d0 = lambda k: _at(daily.get(k), 0, None)  # noqa: E731
     out = {
         "ok": True, "error": "", "city": "",
         "temp": cur.get("temperature_2m"), "feels_like": cur.get("apparent_temperature"),
@@ -71,18 +75,25 @@ def parse_open_meteo(j: dict) -> dict:
     }
     now = time.time()
     times = hourly.get("time") or []
+    h_codes = hourly.get("weather_code")
+    h_is_day = hourly.get("is_day")
+    h_pop = hourly.get("precipitation_probability")
+    h_temp = hourly.get("temperature_2m")
     start = next((i for i, t in enumerate(times) if t >= now - 1800), 0)
     for i in range(start + 1, min(len(times), start + 1 + 24), 3):        # 从下一个整点起，3 小时一格
-        hd, hicon = _wmo((hourly.get("weather_code") or [0])[i], bool((hourly.get("is_day") or [1] * len(times))[i]))
-        pop = (hourly.get("precipitation_probability") or [0] * len(times))[i] or 0
-        out["hourly"].append({"time": times[i], "temp": (hourly.get("temperature_2m") or [None])[i],
+        hd, hicon = _wmo(_at(h_codes, i, 0), bool(_at(h_is_day, i, 1)))
+        pop = _at(h_pop, i, 0) or 0
+        out["hourly"].append({"time": times[i], "temp": _at(h_temp, i, None),
                               "icon": hicon, "pop": float(pop) / 100.0})
     tz = timezone(timedelta(seconds=tz_off))
+    d_codes = daily.get("weather_code")
+    d_min = daily.get("temperature_2m_min")
+    d_max = daily.get("temperature_2m_max")
     for i, t in enumerate((daily.get("time") or [])[:5]):
-        _, dicon = _wmo((daily.get("weather_code") or [0])[i], True)
+        _, dicon = _wmo(_at(d_codes, i, 0), True)
         out["daily"].append({"date": datetime.fromtimestamp(int(t), tz).strftime("%Y-%m-%d"),
-                             "min": (daily.get("temperature_2m_min") or [None])[i],
-                             "max": (daily.get("temperature_2m_max") or [None])[i], "icon": dicon})
+                             "min": _at(d_min, i, None),
+                             "max": _at(d_max, i, None), "icon": dicon})
     return out
 NO_KEY_MSG = "未设置 OpenWeather API Key（config.json → weather.api_key）"
 

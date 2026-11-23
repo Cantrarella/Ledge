@@ -24,7 +24,7 @@ from .settings import (
     WeatherSettingsPage,
 )
 from .theme import G, W, bind_theme_context, icon_font, settings_theme, ui_font
-from .widgets import ConfirmDialog, Hoverable, Label, PillButton, hbox, painter, rounded_pixmap, vbox
+from .widgets import ConfirmDialog, Hoverable, Label, PillButton, _bind_theme_slot, hbox, painter, rounded_pixmap, vbox
 
 Qt = QtCore.Qt
 
@@ -235,7 +235,8 @@ class SettingsGroupPage(QtWidgets.QWidget):
             self.sub_stack.addWidget(pg)
 
         self.setLayout(vbox(self.tab_bar, (self.sub_stack, 1), spacing=0, margins=(0, 0, 0, 0)))
-        settings_theme.changed.connect(self.tab_bar.update)
+        self.tab_bar._theme_context = settings_theme
+        _bind_theme_slot(self.tab_bar, self.tab_bar.update)
         if self._leaf_keys:
             self.show_leaf(self._leaf_keys[0])
 
@@ -476,7 +477,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self.setLayout(hbox(self.sidebar, (right_lay, 1), spacing=0, margins=(0, 0, 0, 0)))
 
         bind_theme_context(self, settings_theme)
-        settings_theme.changed.connect(self._apply_window_style)
+        _bind_theme_slot(self, self._apply_window_style)
         self._apply_window_style()
         self.switch_category(initial_category or "general")
         self._load_all_from_draft()
@@ -676,23 +677,23 @@ class SettingsWindow(QtWidgets.QWidget):
         tl_pg: ToolsLifeSettingsPage = pg_map["tools_life"]  # type: ignore[assignment]
         for err in errors:
             if "热键" in err:
-                gen_pg.row_hotkey.set_error(err)
                 self.switch_category("general")
+                gen_pg.row_hotkey.set_error(err)
             elif "可见页面" in err:
-                nav_pg._show_tip(err)
                 self.switch_category("pages_nav")
+                nav_pg._show_tip(err)
             elif "提醒结束时间" in err or "提醒开始小时" in err or "提醒结束小时" in err:
+                self.switch_category("tools_life")
                 tl_pg.row_window.set_error(err)
-                self.switch_category("tools_life")
             elif "午休时间" in err:
-                tl_pg.row_lunch_time.set_error(err)
                 self.switch_category("tools_life")
+                tl_pg.row_lunch_time.set_error(err)
             elif "城市" in err:
+                self.switch_category("weather")
                 wth_pg.row_city.set_error(err)
-                self.switch_category("weather")
             elif "天气刷新间隔" in err:
-                wth_pg.row_interval.set_error(err)
                 self.switch_category("weather")
+                wth_pg.row_interval.set_error(err)
             elif "AI 额度" in err:
                 self.switch_category("quota")
 
@@ -703,11 +704,13 @@ class SettingsWindow(QtWidgets.QWidget):
         self._saving = True
         self.btn_save.set_text("正在保存…")
         self.btn_save.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
         QtWidgets.QApplication.processEvents()
 
         try:
             import copy
-            # 先同步最新运行期岛体停靠位置（防止设置窗口已打开时用户拖拽了岛体，点保存时把旧位置写回）
+            self.collect_to_draft()
+            # 在 collect_to_draft 之后同步最新运行期岛体停靠位置（若用户未在设置页修改停靠控件，保留运行期拖拽后的新位置）
             isl_pg = next((pg for pg in self.leaf_pages if isinstance(pg, IslandPetSettingsPage)), None)
             if isl_pg is not None and getattr(isl_pg, "_built", False):
                 if (isl_pg.cb_edge.current_value() or "top") == getattr(isl_pg, "_loaded_edge", None):
@@ -725,7 +728,6 @@ class SettingsWindow(QtWidgets.QWidget):
                 self.draft.set("island.pos", 0.5 if raw_cur_pos is None else raw_cur_pos)
                 raw_cur_scr = self.cfg_obj.get("island.screen", 0)
                 self.draft.set("island.screen", 0 if raw_cur_scr is None else raw_cur_scr)
-            self.collect_to_draft()
             pre_ok, pre_errors, _ = self.cfg_obj.validate(self.draft, strict=True)
             if not pre_ok:
                 err_msg = pre_errors[0] if pre_errors else "配置校验未通过"
@@ -873,10 +875,13 @@ class SettingsWindow(QtWidgets.QWidget):
             return True
         finally:
             self._saving = False
+            self.btn_cancel.setEnabled(True)
             self._update_dirty_state()
 
     def cancel_and_close(self, prompt_if_dirty: bool = False) -> bool:
         """取消修改：有未保存修改且交互点击时弹出“放弃未保存修改？”确认；确认后丢弃草稿并关闭。"""
+        if self._saving:
+            return False
         if prompt_if_dirty and self.is_dirty():
             if not ConfirmDialog.ask(
                 self,
@@ -891,6 +896,9 @@ class SettingsWindow(QtWidgets.QWidget):
         quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
         if quota_pg is not None:
             quota_pg.discard_pending()
+        sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
+        if sub_pg is not None and hasattr(sub_pg, "discard_pending"):
+            sub_pg.discard_pending()
         self.draft = self.cfg_obj.create_draft()
         self._baseline_dict = self.draft.to_dict()
         self.status_lbl.setText("")
@@ -899,6 +907,9 @@ class SettingsWindow(QtWidgets.QWidget):
         return True
 
     def closeEvent(self, e):
+        if self._saving:
+            e.ignore()
+            return
         self._restore_tooltip_style()
         mail_pg = next((pg for pg in self.leaf_pages if isinstance(pg, MailAccountsSettingsPage)), None)
         if mail_pg is not None:
@@ -906,4 +917,7 @@ class SettingsWindow(QtWidgets.QWidget):
         quota_pg = next((pg for pg in self.leaf_pages if isinstance(pg, QuotaSettingsPage)), None)
         if quota_pg is not None:
             quota_pg.discard_pending()
+        sub_pg = next((pg for pg in self.leaf_pages if isinstance(pg, SubtitlesSettingsPage)), None)
+        if sub_pg is not None and hasattr(sub_pg, "discard_pending"):
+            sub_pg.discard_pending()
         super().closeEvent(e)

@@ -61,9 +61,9 @@ class _SpinRefreshButton(IconButton):
             p.rotate(self._angle)
             p.translate(-c.x(), -c.y())
             from ..theme import icon_font
-            p.setFont(icon_font(self._icon_px))
+            p.setFont(icon_font(self.icon_px))
             p.setPen(theme.text(0.85))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._glyph)
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.glyph)
 
 
 def _ring_color(dev: BatteryDevice, low_thresh: int) -> QtGui.QColor:
@@ -241,14 +241,25 @@ class BatteryPage(Page):
         main_lay.addLayout(self.stack, 1)
         self.setLayout(main_lay)
 
+        self._dirty = False
         if self.svc is not None:
-            self.svc.changed.connect(self._rebuild)
+            self.svc.changed.connect(self._on_svc_changed)
             self.svc.busy_changed.connect(self.btn_refresh.set_spinning)
         self._rebuild()
+
+    def _on_svc_changed(self):
+        if self.isVisible():
+            self._dirty = False
+            self._rebuild()
+        else:
+            self._dirty = True
 
     def on_show(self):
         super().on_show()
         self.header.refresh_clock()
+        if self._dirty:
+            self._dirty = False
+            self._rebuild()
         if self.svc is not None:
             try:
                 self.svc.refresh(force_discover=True)

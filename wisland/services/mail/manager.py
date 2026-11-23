@@ -69,7 +69,7 @@ class MailAccountManager(QtCore.QObject):
         self._prefetch_req_by_acc: dict[str, str] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         self._internal_done.connect(self._on_task_done)
         self._internal_prefetch_item.connect(self._on_prefetch_item)
@@ -166,14 +166,15 @@ class MailAccountManager(QtCore.QObject):
         if acc is None:
             return False
         self._cancel_account_prefetch(account_id)
-        self._accounts = [a for a in self._accounts if a.id != account_id]
-        self._headers.pop(account_id, None)
-        self._uid_validities.pop(account_id, None)
-        self._local_read_uids.pop(account_id, None)
-        for key in [k for k in self._bodies if k[0] == account_id]:
-            self._bodies.pop(key, None)
-        for key in [k for k in self._otp_cache if k[0] == account_id]:
-            self._otp_cache.pop(key, None)
+        with self._lock:
+            self._accounts = [a for a in self._accounts if a.id != account_id]
+            self._headers.pop(account_id, None)
+            self._uid_validities.pop(account_id, None)
+            self._local_read_uids.pop(account_id, None)
+            for key in [k for k in self._bodies if k[0] == account_id]:
+                self._bodies.pop(key, None)
+            for key in [k for k in self._otp_cache if k[0] == account_id]:
+                self._otp_cache.pop(key, None)
         self._body_cache.remove_account(account_id)
         if acc.credential_key:
             self._creds.delete_secret(acc.credential_key)
@@ -185,32 +186,46 @@ class MailAccountManager(QtCore.QObject):
         uv = str(uid_validity or self._uid_validities.get(account_id, "") or "")
         return (account_id, uv, str(uid))
 
+    def _is_body_valid_for_cache(self, account_id: str, body: MailBody) -> bool:
+        """校验异步正文结果是否仍属于现存账号且与当前 UIDVALIDITY 一致。"""
+        with self._lock:
+            if not account_id or body.account_id != account_id:
+                return False
+            if not any(a.id == account_id for a in self._accounts):
+                return False
+            cur_uv = str(self._uid_validities.get(account_id, "") or "")
+            body_uv = str(body.uid_validity or "")
+            if cur_uv and body_uv and cur_uv != body_uv:
+                return False
+            return True
+
     def _store_body_and_otp(self, body: MailBody, persist: bool = True) -> VerificationCodeInfo | None:
         """将正文及提取出的验证码一起存入内存缓存与本机磁盘缓存，并执行每账号上限淘汰。"""
-        uv = str(body.uid_validity or self._uid_validities.get(body.account_id, "") or "")
-        if uv and not body.uid_validity:
-            body.uid_validity = uv
-        key = (body.account_id, uv, str(body.uid))
-        self._bodies[key] = body
+        with self._lock:
+            uv = str(body.uid_validity or self._uid_validities.get(body.account_id, "") or "")
+            if uv and not body.uid_validity:
+                body.uid_validity = uv
+            key = (body.account_id, uv, str(body.uid))
+            self._bodies[key] = body
 
-        otp_info: VerificationCodeInfo | None = None
-        if bool(self._cfg.get("mail.otp_enabled", True)):
-            subj = ""
-            for h in self._headers.get(body.account_id, []):
-                if str(h.uid) == str(body.uid):
-                    subj = h.subject
-                    break
-            otp_info = extract_verification_code(subject=subj, body_text=body.text)
-            if otp_info is not None:
-                self._otp_cache[key] = otp_info
+            otp_info: VerificationCodeInfo | None = None
+            if bool(self._cfg.get("mail.otp_enabled", True)):
+                subj = ""
+                for h in list(self._headers.get(body.account_id, [])):
+                    if str(h.uid) == str(body.uid):
+                        subj = h.subject
+                        break
+                otp_info = extract_verification_code(subject=subj, body_text=body.text)
+                if otp_info is not None:
+                    self._otp_cache[key] = otp_info
 
-        # 控制内存缓存每账号上限
-        acc_keys = [k for k in self._bodies if k[0] == body.account_id]
-        if len(acc_keys) > MAX_BODIES_PER_ACCOUNT:
-            acc_keys.sort(key=lambda k: self._bodies[k].fetched_at, reverse=True)
-            for stale_k in acc_keys[MAX_BODIES_PER_ACCOUNT:]:
-                self._bodies.pop(stale_k, None)
-                self._otp_cache.pop(stale_k, None)
+            # 控制内存缓存每账号上限
+            acc_keys = [k for k in self._bodies if k[0] == body.account_id]
+            if len(acc_keys) > MAX_BODIES_PER_ACCOUNT:
+                acc_keys.sort(key=lambda k: self._bodies[k].fetched_at, reverse=True)
+                for stale_k in acc_keys[MAX_BODIES_PER_ACCOUNT:]:
+                    self._bodies.pop(stale_k, None)
+                    self._otp_cache.pop(stale_k, None)
 
         if persist:
             self._body_cache.put(body, otp_info)
@@ -219,30 +234,39 @@ class MailAccountManager(QtCore.QObject):
     def get_cached_body(self, account_id: str, uid: str, uid_validity: str = "") -> MailBody | None:
         """按顺序检查内存缓存 -> 本机正文缓存；命中则同步载入内存与验证码。"""
         u = str(uid)
-        key = self._cache_key(account_id, u, uid_validity)
-        body = self._bodies.get(key)
-        if body is not None:
-            return body
-        if not uid_validity:
-            for k, b in self._bodies.items():
-                if k[0] == account_id and k[2] == u:
-                    return b
-        # 本机磁盘缓存
+        with self._lock:
+            key = self._cache_key(account_id, u, uid_validity)
+            body = self._bodies.get(key)
+            if body is not None:
+                return body
+            if not uid_validity:
+                for k, b in self._bodies.items():
+                    if k[0] == account_id and k[2] == u:
+                        return b
+        # 本机磁盘缓存（在锁外读取磁盘 I/O）
         disk_body, disk_otp = self._body_cache.get(account_id, u, uid_validity=key[1])
         if disk_body is not None:
-            dk = (account_id, str(disk_body.uid_validity or key[1]), u)
-            self._bodies[dk] = disk_body
-            if disk_otp is not None:
-                self._otp_cache[dk] = disk_otp
-            elif bool(self._cfg.get("mail.otp_enabled", True)):
-                subj = ""
-                for h in self._headers.get(account_id, []):
-                    if str(h.uid) == u:
-                        subj = h.subject
-                        break
-                info = extract_verification_code(subject=subj, body_text=disk_body.text)
-                if info is not None:
-                    self._otp_cache[dk] = info
+            with self._lock:
+                # 回填前重新校验账号仍存在且 UIDVALIDITY 未变更，避免过期磁盘数据污染内存缓存
+                if not any(a.id == account_id for a in self._accounts):
+                    return None
+                disk_uv = str(disk_body.uid_validity or key[1])
+                cur_uv = str(self._uid_validities.get(account_id, "") or "")
+                if cur_uv and disk_uv and cur_uv != disk_uv:
+                    return None
+                dk = (account_id, disk_uv, u)
+                self._bodies[dk] = disk_body
+                if disk_otp is not None:
+                    self._otp_cache[dk] = disk_otp
+                elif bool(self._cfg.get("mail.otp_enabled", True)):
+                    subj = ""
+                    for h in list(self._headers.get(account_id, [])):
+                        if str(h.uid) == u:
+                            subj = h.subject
+                            break
+                    info = extract_verification_code(subject=subj, body_text=disk_body.text)
+                    if info is not None:
+                        self._otp_cache[dk] = info
             return disk_body
         return None
 
@@ -419,23 +443,24 @@ class MailAccountManager(QtCore.QObject):
             if acc is not None:
                 if ok:
                     uv = str(res.get("uid_validity") or "")
-                    if uv and self._uid_validities.get(acc_id) and self._uid_validities[acc_id] != uv:
-                        # UIDVALIDITY 变更：淘汰旧内存缓存
-                        for k in [k for k in self._bodies if k[0] == acc_id and k[1] != uv]:
-                            self._bodies.pop(k, None)
-                            self._otp_cache.pop(k, None)
-                    if uv:
-                        self._uid_validities[acc_id] = uv
+                    with self._lock:
+                        if uv and self._uid_validities.get(acc_id) and self._uid_validities[acc_id] != uv:
+                            # UIDVALIDITY 变更：淘汰旧内存缓存
+                            for k in [k for k in self._bodies if k[0] == acc_id and k[1] != uv]:
+                                self._bodies.pop(k, None)
+                                self._otp_cache.pop(k, None)
+                        if uv:
+                            self._uid_validities[acc_id] = uv
 
-                    new_hdrs: list[MailHeader] = res.get("headers") or []
-                    read_set = self._local_read_uids.get(acc_id, set())
-                    existing = {h.uid: h for h in self._headers.get(acc_id, [])}
-                    for h in new_hdrs:
-                        if str(h.uid) in read_set:
-                            h.is_read = True
-                        existing[h.uid] = h
-                    merged = sorted(existing.values(), key=lambda x: x.received_at, reverse=True)[:MAX_RUNTIME_HEADERS]
-                    self._headers[acc_id] = merged
+                        new_hdrs: list[MailHeader] = res.get("headers") or []
+                        read_set = self._local_read_uids.get(acc_id, set())
+                        existing = {h.uid: h for h in self._headers.get(acc_id, [])}
+                        for h in new_hdrs:
+                            if str(h.uid) in read_set:
+                                h.is_read = True
+                            existing[h.uid] = h
+                        merged = sorted(existing.values(), key=lambda x: x.received_at, reverse=True)[:MAX_RUNTIME_HEADERS]
+                        self._headers[acc_id] = merged
 
                     # 保存同会话预取的最近 5 封正文并立即提取验证码
                     prefetched: list[MailBody] = res.get("bodies") or []
@@ -474,7 +499,12 @@ class MailAccountManager(QtCore.QObject):
             uid = str(res.get("uid") or "")
             body: MailBody | None = res.get("body")
             if ok and body is not None:
-                self._store_body_and_otp(body, persist=True)
+                if self._is_body_valid_for_cache(acc_id, body):
+                    self._store_body_and_otp(body, persist=True)
+                else:
+                    ok = False
+                    body = None
+                    err = "邮件状态已过期"
             self.body_loaded.emit(acc_id, uid, ok, body if ok else None, err)
             self.task_finished.emit(req_id, ok, err)
             return
@@ -599,6 +629,8 @@ class MailAccountManager(QtCore.QObject):
     @QtCore.Slot(str, object)
     def _on_prefetch_item(self, acc_id: str, body_obj: object):
         if isinstance(body_obj, MailBody):
+            if not self._is_body_valid_for_cache(acc_id, body_obj):
+                return
             self._store_body_and_otp(body_obj, persist=True)
             self.body_prefetched.emit(acc_id, str(body_obj.uid))
 

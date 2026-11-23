@@ -65,11 +65,21 @@ class PageHeader(QtWidgets.QWidget):
 
         self._last_text = ""
         self._timer = QtCore.QTimer(self, interval=30000, timeout=self.refresh_clock)
-        self._timer.start()
         cfg.changed.connect(self.refresh_clock)
         theme.changed.connect(self._style_clock)
         self._style_clock()
         self.refresh_clock()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.refresh_clock()
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def hideEvent(self, e):
+        if self._timer.isActive():
+            self._timer.stop()
+        super().hideEvent(e)
 
     def _open_settings(self):
         if self.ctx is not None and hasattr(self.ctx, "open_settings"):

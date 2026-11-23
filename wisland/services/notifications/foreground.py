@@ -39,7 +39,7 @@ def _build_exe_map() -> dict[str, str]:
     return mapping
 
 if sys.platform == "win32":
-    _user32 = ctypes.windll.user32
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
     _user32.GetForegroundWindow.restype = wintypes.HWND
     _user32.IsWindow.argtypes = [wintypes.HWND]
     _user32.IsWindow.restype = wintypes.BOOL
@@ -112,6 +112,7 @@ class ForegroundClientWatcher(QtCore.QObject):
     """按需监听 QQ/微信前台窗口：仅在存在未读时启用，未读清零后立即停止。"""
 
     foreground_matched = QtCore.Signal(str)  # source_key
+    _hwnd_event = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -142,6 +143,7 @@ class ForegroundClientWatcher(QtCore.QObject):
         self._poll_timer = QtCore.QTimer(self)
         self._poll_timer.setInterval(max(200, int(poll_interval_ms or 500)))
         self._poll_timer.timeout.connect(self.check_foreground_once)
+        self._hwnd_event.connect(self._on_foreground_hwnd, QtCore.Qt.ConnectionType.QueuedConnection)
 
     @property
     def is_watching(self) -> bool:
@@ -166,13 +168,11 @@ class ForegroundClientWatcher(QtCore.QObject):
         if self._use_win_hook and _user32 is not None and _WIN_EVENT_PROC is not None:
             try:
                 def _on_win_event(_hook, _event, hwnd, _id_obj, _id_child, _thread, _time):
-                    if self._running and hwnd:
-                        QtCore.QMetaObject.invokeMethod(
-                            self,
-                            "_on_foreground_hwnd",
-                            QtCore.Qt.ConnectionType.QueuedConnection,
-                            QtCore.Q_ARG(int, int(hwnd)),
-                        )
+                    try:
+                        if self._running and hwnd:
+                            self._hwnd_event.emit(int(hwnd))
+                    except Exception:
+                        pass
 
                 self._hook_cb = _WIN_EVENT_PROC(_on_win_event)
                 self._hook_handle = _user32.SetWinEventHook(
@@ -206,10 +206,10 @@ class ForegroundClientWatcher(QtCore.QObject):
         self._hook_handle = None
         self._hook_cb = None
 
-    @QtCore.Slot(int)
-    def _on_foreground_hwnd(self, hwnd: int):
-        if self._running:
-            self._evaluate_hwnd(hwnd)
+    @QtCore.Slot(object)
+    def _on_foreground_hwnd(self, hwnd: object):
+        if self._running and hwnd:
+            self._evaluate_hwnd(int(hwnd))
 
     @QtCore.Slot()
     def check_foreground_once(self):

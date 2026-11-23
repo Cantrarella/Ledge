@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 
-from PySide6 import QtCore
+from PySide6 import QtCore, QtGui
 
 MOD = {"alt": 0x1, "ctrl": 0x2, "control": 0x2, "shift": 0x4, "win": 0x8}
 MOD_NOREPEAT = 0x4000
@@ -68,28 +68,23 @@ class RightClickHook:
         isl = self.island
 
         def proc(code, wparam, lparam):
-            if code == 0 and wparam == 0x020A:        # WM_MOUSEWHEEL
-                info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                dpr = isl.scr.devicePixelRatio()
-                sg = isl.scr.geometry()
-                lx = sg.x() + (info.pt.x - sg.x()) / dpr
-                ly = sg.y() + (info.pt.y - sg.y()) / dpr
-                if isl.isVisible() and not isl.expanded and isl._inside(QtCore.QPoint(round(lx), round(ly))):
-                    delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
-                    QtCore.QTimer.singleShot(0, lambda d=delta: isl.wheel_compact.emit(1 if d > 0 else -1))
-                    return 1
-            if code == 0 and wparam in (self.WM_RBUTTONDOWN, self.WM_RBUTTONUP):
-                info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                # 钩子坐标是物理像素，换算成 Qt 逻辑坐标
-                dpr = isl.scr.devicePixelRatio()
-                sg = isl.scr.geometry()
-                lx = sg.x() + (info.pt.x - sg.x()) / dpr
-                ly = sg.y() + (info.pt.y - sg.y()) / dpr
-                if isl.isVisible() and isl._inside(QtCore.QPoint(round(lx), round(ly))):
-                    if wparam == self.WM_RBUTTONUP:
-                        pos = QtCore.QPoint(round(lx), round(ly))
-                        QtCore.QTimer.singleShot(0, lambda: isl.menu_requested.emit(pos))
-                    return 1          # 吞掉右键，不传给下面的窗口
+            try:
+                if code == 0 and wparam == 0x020A:        # WM_MOUSEWHEEL
+                    info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                    pos = QtGui.QCursor.pos()
+                    if isl.isVisible() and not isl.expanded and isl._inside(pos):
+                        delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
+                        QtCore.QTimer.singleShot(0, lambda d=delta: isl.wheel_compact.emit(1 if d > 0 else -1))
+                        return 1
+                if code == 0 and wparam in (self.WM_RBUTTONDOWN, self.WM_RBUTTONUP):
+                    pos = QtGui.QCursor.pos()
+                    if isl.isVisible() and isl._inside(pos):
+                        if wparam == self.WM_RBUTTONUP:
+                            p_copy = QtCore.QPoint(pos)
+                            QtCore.QTimer.singleShot(0, lambda p=p_copy: isl.menu_requested.emit(p))
+                        return 1          # 吞掉右键，不传给下面的窗口
+            except Exception:  # noqa: BLE001
+                pass
             return u.CallNextHookEx(self.handle, code, wparam, lparam)
 
         self._proc = HOOKPROC(proc)

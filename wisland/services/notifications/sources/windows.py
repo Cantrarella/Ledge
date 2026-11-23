@@ -345,7 +345,27 @@ class WindowsNotificationSource(QtCore.QObject):
                     records = loop.run_until_complete(self._backend.fetch_toasts())
                     if self._stop_ev.is_set():
                         break
-                    events = [raw_record_to_event(r, self._wpndb_lookup) for r in records]
+                    prev_cache = getattr(self, "_toast_event_cache", {})
+                    next_cache = {}
+                    events = []
+                    for r in records:
+                        if isinstance(r, dict):
+                            sig = (
+                                r.get("notification_id"),
+                                r.get("creation_time"),
+                                r.get("app_identity"),
+                                r.get("title"),
+                                r.get("body"),
+                            )
+                        else:
+                            sig = None
+                        ev = prev_cache.get(sig) if sig is not None else None
+                        if ev is None:
+                            ev = raw_record_to_event(r, self._wpndb_lookup)
+                        if sig is not None:
+                            next_cache[sig] = ev
+                        events.append(ev)
+                    self._toast_event_cache = next_cache
                     if self._stop_ev.is_set():
                         break
                     if not self._baseline_done:

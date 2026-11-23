@@ -257,16 +257,25 @@ def build_clock_font(style_key: str) -> QtGui.QFont:
     return f
 
 
+_CLOCK_MEASURE_CACHE: dict[tuple[str, str], dict] = {}
+_TEMP_MEASURE_CACHE: dict[tuple[str, str], dict] = {}
+_VERT_PAIR_METRICS_CACHE: dict[tuple, dict] = {}
+
+
 def measure_clock(style_key: str, text: str = "12:34") -> dict:
     """按固定数字槽宽测量时钟尺寸，确保任意时刻（00:00~23:59）宽度零抖动。"""
     key = style_key if style_key in CLOCK_STYLE_MAP else "minimal"
+    ck = (key, text)
+    cached = _CLOCK_MEASURE_CACHE.get(ck)
+    if cached is not None:
+        return cached
     if key == "segment":
         digit_w = 8.4
         colon_w = 3.8
         gap = 2.2
         slot_widths = [colon_w if ch == ":" else digit_w for ch in text]
         total_w = sum(slot_widths) + gap * max(0, len(slot_widths) - 1)
-        return {
+        res = {
             "style": key,
             "font": None,
             "digit_w": digit_w,
@@ -276,6 +285,10 @@ def measure_clock(style_key: str, text: str = "12:34") -> dict:
             "total_w": float(math.ceil(total_w)),
             "height": 13.5,
         }
+        if len(_CLOCK_MEASURE_CACHE) >= 64:
+            _CLOCK_MEASURE_CACHE.clear()
+        _CLOCK_MEASURE_CACHE[ck] = res
+        return res
 
     f = build_clock_font(key)
     fm = QtGui.QFontMetricsF(f)
@@ -286,7 +299,7 @@ def measure_clock(style_key: str, text: str = "12:34") -> dict:
     slot_widths = [colon_w if ch == ":" else digit_w for ch in text]
     extra_tail = 1.6 if key == "serif" else 0.0
     total_w = sum(slot_widths) + gap * max(0, len(slot_widths) - 1) + extra_tail
-    return {
+    res = {
         "style": key,
         "font": f,
         "digit_w": float(digit_w),
@@ -296,6 +309,10 @@ def measure_clock(style_key: str, text: str = "12:34") -> dict:
         "total_w": float(math.ceil(total_w)),
         "height": float(fm.height()),
     }
+    if len(_CLOCK_MEASURE_CACHE) >= 64:
+        _CLOCK_MEASURE_CACHE.clear()
+    _CLOCK_MEASURE_CACHE[ck] = res
+    return res
 
 
 # 7 段数码管映射：a(顶), b(右上), c(右下), d(底), e(左下), f(左上), g(中)
@@ -581,8 +598,13 @@ def measure_vertical_clock_pair(
         lit_path.addText((sw0 - w0) * 0.5, baseline_y, font, pair[0])
         lit_path.addText(sw0 + gap + (sw1 - w1) * 0.5, baseline_y, font, pair[1])
 
-    uc = union_ink_br.center()
     rc = rect.center() if rect is not None else QtCore.QPointF(0.0, 0.0)
+    ck = (key, pair, round(float(max_core_w), 2), round(float(max_clip_w), 2), round(rc.x(), 2), round(rc.y(), 2))
+    cached = _VERT_PAIR_METRICS_CACHE.get(ck)
+    if cached is not None:
+        return cached
+
+    uc = union_ink_br.center()
     tr = QtGui.QTransform()
     tr.translate(rc.x(), rc.y())
     tr.scale(scale, scale)
@@ -609,7 +631,7 @@ def measure_vertical_clock_pair(
     slot0_cx = tr.map(QtCore.QPointF(sw0 * 0.5, uc.y())).x()
     slot1_cx = tr.map(QtCore.QPointF(sw0 + gap + sw1 * 0.5, uc.y())).x()
 
-    return {
+    res = {
         "style": key,
         "glow": glow,
         "scale": float(scale),
@@ -628,6 +650,10 @@ def measure_vertical_clock_pair(
         "glow_w": float(union_glow_mapped.width()),
         "height": float(union_ink_mapped.height()),
     }
+    if len(_VERT_PAIR_METRICS_CACHE) >= 64:
+        _VERT_PAIR_METRICS_CACHE.clear()
+    _VERT_PAIR_METRICS_CACHE[ck] = res
+    return res
 
 
 def paint_vertical_clock_pair(
@@ -640,9 +666,10 @@ def paint_vertical_clock_pair(
     alpha: float = 1.0,
     max_core_w: float = 26.0,
     max_clip_w: float = 30.0,
+    metrics: dict | None = None,
 ) -> dict:
     """在竖条单行 rect 内绘制两位数字（'HH' 或 'MM'），与 measure_vertical_clock_pair 共用同一变换与缩放。"""
-    m = measure_vertical_clock_pair(
+    m = metrics if metrics is not None else measure_vertical_clock_pair(
         style_key,
         text=text,
         max_core_w=max_core_w,
@@ -787,6 +814,10 @@ def build_temperature_font(style_key: str) -> QtGui.QFont:
 def measure_temperature(style_key: str, temp_text: str) -> dict:
     """测量同步字体下的温度宽度（独立计算数值部分 + 矢量度数圆环）。"""
     key = style_key if style_key in CLOCK_STYLE_MAP else "minimal"
+    ck = (key, temp_text)
+    cached = _TEMP_MEASURE_CACHE.get(ck)
+    if cached is not None:
+        return cached
     has_deg = "°" in temp_text
     num_text = temp_text.replace("°", "")
     deg_w = 6.6 if has_deg else 0.0
@@ -795,7 +826,7 @@ def measure_temperature(style_key: str, temp_text: str) -> dict:
         dw = 7.6
         gap = 1.9
         w = len(num_text) * dw + max(0, len(num_text) - 1) * gap + deg_w
-        return {
+        res = {
             "style": key,
             "font": None,
             "num_text": num_text,
@@ -807,6 +838,10 @@ def measure_temperature(style_key: str, temp_text: str) -> dict:
             "total_w": float(math.ceil(w + 1.0)),
             "height": 12.4,
         }
+        if len(_TEMP_MEASURE_CACHE) >= 128:
+            _TEMP_MEASURE_CACHE.clear()
+        _TEMP_MEASURE_CACHE[ck] = res
+        return res
 
     f = build_temperature_font(key)
     fm = QtGui.QFontMetricsF(f)
@@ -822,7 +857,7 @@ def measure_temperature(style_key: str, temp_text: str) -> dict:
         else:
             num_w = float(fm.horizontalAdvance(num_text))
     extra = 1.2 if key == "serif" else 0.0
-    return {
+    res = {
         "style": key,
         "font": f,
         "num_text": num_text,
@@ -833,6 +868,10 @@ def measure_temperature(style_key: str, temp_text: str) -> dict:
         "total_w": float(math.ceil(num_w + deg_w + extra + 1.0)),
         "height": float(fm.height()),
     }
+    if len(_TEMP_MEASURE_CACHE) >= 128:
+        _TEMP_MEASURE_CACHE.clear()
+    _TEMP_MEASURE_CACHE[ck] = res
+    return res
 
 
 def paint_temperature(

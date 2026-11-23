@@ -839,5 +839,16 @@ class ToolsPage(Page):
         else:
             clip = getattr(self.ctx, "clipboard", None)
             if clip is not None and clip.list_items():
-                recent_cnt, _ = clip.counts()
-                clip.clear(include_pinned=(recent_cnt == 0))
+                recent_cnt, pinned_cnt = clip.counts()
+                if recent_cnt > 0:
+                    clip.clear(include_pinned=False)
+                elif pinned_cnt > 0:
+                    if self.island is not None:
+                        self.island.locks.add("dialog")
+                    try:
+                        dlg = ClearClipboardDialog(pinned_count=pinned_cnt, parent=self.window())
+                        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted and dlg.include_pinned:
+                            clip.clear(include_pinned=True)
+                    finally:
+                        if self.island is not None:
+                            self.island.locks.discard("dialog")

@@ -518,7 +518,7 @@ class Island(QtWidgets.QWidget):
             self._defer_show(self.pages[idx], self._page_reveal_seq)
 
     def expand(self, page: str | None = None):
-        if self.mode != "anchored" or self._fs_hidden:
+        if self.mode != "anchored" or self._fs_hidden or self.passthrough():
             return
         keys = self.nav.keys()
         want_key = page or self._page_key
@@ -593,8 +593,8 @@ class Island(QtWidgets.QWidget):
         self._collapse_snap_t0 = time.monotonic()
         self._collapse_snap_size = (float(cw), float(ch))
 
-    def collapse(self):
-        if not self.expanded or self.pinned():     # 图钉：保持展开
+    def collapse(self, force: bool = False):
+        if not self.expanded or (self.pinned() and not force):     # 图钉：保持展开（全屏隐藏/强制收起除外）
             return
         shown_idx = self._shown_page_idx
         self._page_reveal_seq += 1
@@ -628,6 +628,8 @@ class Island(QtWidgets.QWidget):
                 self.set_pinned(False)
             self.collapse()
         else:
+            if self.passthrough():
+                self.set_passthrough(False)
             self.expand(page)
             if self.expanded:
                 seq = getattr(self, "_pin_seq", 0) + 1
@@ -748,6 +750,10 @@ class Island(QtWidgets.QWidget):
 
         self._page_key = target_key
         target_idx = new_keys.index(target_key)
+        if self.expanded:
+            self._shown_page_idx = None if cur_key != target_key else target_idx
+        else:
+            self._shown_page_idx = None
         self.stack.setCurrentIndex(target_idx)
         self.nav.set_items([(pg.key, pg.glyph, pg.title) for pg in self.pages], current_key=target_key)
 
@@ -755,13 +761,16 @@ class Island(QtWidgets.QWidget):
             cfg.set("island.last_tab", target_key, save=False)
 
         if self.expanded:
+            w, h = self.target_size()
+            if not self.can_fit_expanded(w, h):
+                self.collapse(force=True)
+                return
             self._page_reveal_seq += 1
             self._pending_page_idx = target_idx
             self._pending_call_on_show = (cur_key != target_key)
             self._anim_w0, self._anim_h0 = float(self.sw.x), float(self.sh.x)
             self._floor_t.clear()
             self._floor_on.clear()
-            w, h = self.target_size()
             self.sw.to(w, 440, 0.62)
             self.sh.to(h, 440, 0.62)
             if self._panel_size_ready(w, h):
@@ -1209,8 +1218,12 @@ class Island(QtWidgets.QWidget):
             self.timer.stop()
             self.timer.setInterval(16)
         elif self.mode == "anchored" and self.sw.rest and self.sh.rest and not self.expanded:
-            # 只有常态动画：表情 / 音乐律动 / 提醒时 60fps，空闲（只有圆角呼吸）时 30fps
-            self.timer.setInterval(16 if self.compact.busy() else 33)
+            # 只有常态动画：表情 / 音乐律动 / 提醒时 60fps；
+            # 空闲静止时，实体纯黑皮肤（无流光）降至 250ms，毛玻璃皮肤维持 33ms (30fps)
+            if self.compact.busy():
+                self.timer.setInterval(16)
+            else:
+                self.timer.setInterval(250 if theme.solid else 33)
         else:
             self.timer.setInterval(16)
 
@@ -1539,6 +1552,11 @@ class Island(QtWidgets.QWidget):
         lay.addWidget(self.nav)
 
     def _request_backdrop(self):
+        # 经典纯黑实体皮肤（非 auto）不需要毛玻璃截图与亮度采样，直接跳过并释放旧帧
+        if theme.solid and theme.mode != "auto":
+            self._bd_prev = None
+            self._bd_shown = None
+            return
         moving = self.mode != "anchored" or not (self.sw.rest and self.sh.rest)
         if self.mode == "anchored":
             tw, th = self.target_size()
@@ -1721,8 +1739,12 @@ class Island(QtWidgets.QWidget):
         if self._fs_hidden or self.mode != "anchored":
             self._hover_since = self._out_since = None
             return
-        inside = self._inside(QtGui.QCursor.pos())
+        cur_pt = QtGui.QCursor.pos()
+        gp = QtCore.QPointF(cur_pt)
+        local_cur = gp - QtCore.QPointF(self._win_origin)
+        inside = self._inside(cur_pt)
         now = time.monotonic()
+        dist_out = 0.0
         if not self.expanded and self.mode == "anchored" and not self._fs_hidden:
             if self.passthrough():
                 if self.poke.target != 0.0:
@@ -1730,11 +1752,9 @@ class Island(QtWidgets.QWidget):
                     self._kick()
             else:
                 # 岛外悬停吸附：鼠标在灵动岛外围附近时，边缘朝鼠标温和凸起；移远后平滑复位
-                gp = QtCore.QPointF(QtGui.QCursor.pos())
-                lp = gp - QtCore.QPointF(self._win_origin)
                 b = self.body
-                dx = max(b.left() - lp.x(), 0.0, lp.x() - b.right())
-                dy = max(b.top() - lp.y(), 0.0, lp.y() - b.bottom())
+                dx = max(b.left() - local_cur.x(), 0.0, local_cur.x() - b.right())
+                dy = max(b.top() - local_cur.y(), 0.0, local_cur.y() - b.bottom())
                 dist_out = math.hypot(dx, dy)
                 hover_range = 42.0
                 if 0.0 < dist_out < hover_range:
@@ -1744,8 +1764,8 @@ class Island(QtWidgets.QWidget):
                         self.poke.to(target, 280, 0.78)
                         self._kick()
                 elif dist_out == 0.0:
-                    nx = (lp.x() - b.center().x()) / max(1.0, b.width() / 2)
-                    ny = (lp.y() - b.center().y()) / max(1.0, b.height() / 2)
+                    nx = (local_cur.x() - b.center().x()) / max(1.0, b.width() / 2)
+                    ny = (local_cur.y() - b.center().y()) / max(1.0, b.height() / 2)
                     edge_w = min(1.0, math.hypot(nx, ny))
                     target = 0.35 + 0.65 * edge_w
                     self._poke_pt = gp
@@ -1755,7 +1775,12 @@ class Island(QtWidgets.QWidget):
                 elif self.poke.target != 0.0:
                     self.poke.to(0.0, 260, 0.72)
                     self._kick()
-        local_cur = QtCore.QPointF(QtGui.QCursor.pos()) - QtCore.QPointF(self._win_origin)
+            # 鼠标远离收起态岛体时自动降频至 100ms，靠近或展开时切回 25ms
+            want_poll = 100 if (not inside and dist_out > 120.0 and self.poke.target == 0.0) else 25
+            if self.poll.interval() != want_poll:
+                self.poll.setInterval(want_poll)
+        elif self.poll.interval() != 25:
+            self.poll.setInterval(25)
         on_btn = inside and self._on_play_button(local_cur)
         hv = 1.0 if on_btn and not self.passthrough() else 0.0
         if abs(self.compact.play_hover - hv) > 0.01:
@@ -1929,13 +1954,19 @@ class Island(QtWidgets.QWidget):
     def _single_click(self):
         if self.mode == "anchored" and not self.expanded and self.expand_mode() != "never":
             self.expand()
-            self.locks.add("pin")
-            QtCore.QTimer.singleShot(600, lambda: self.locks.discard("pin"))
+            if self.expanded:
+                seq = getattr(self, "_pin_seq", 0) + 1
+                self._pin_seq = seq
+                self.locks.add("pin")
+                QtCore.QTimer.singleShot(600, lambda s=seq: self.locks.discard("pin") if getattr(self, "_pin_seq", 0) == s else None)
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self._on_play_button(e.position()):
             self.play_pause_requested.emit()       # 快速连点播放键：当作第二次点击，不切换长关
             return
+        if e.button() == Qt.MouseButton.LeftButton and not self.expanded:
+            if self._on_notify_banner(e.position())[0] or self._on_life_banner(e.position())[0]:
+                return                             # 连续点击通知/生活提醒横幅或关闭键，不误触发长关
         if e.button() == Qt.MouseButton.LeftButton and self._inside(e.globalPosition().toPoint()):
             self._click_timer.stop()
             self._press = None
@@ -1961,8 +1992,8 @@ class Island(QtWidgets.QWidget):
     def set_passthrough(self, on: bool):
         cfg.set("island.passthrough", bool(on))
         self._apply_passthrough()
-        if on and self.expanded and not self.pinned():
-            self.collapse()
+        if on and self.expanded:
+            self.collapse(force=True)
         self.passthrough_changed.emit(bool(on))
 
     def _apply_passthrough(self):
@@ -2196,8 +2227,10 @@ class Island(QtWidgets.QWidget):
             self._place_nav()
             self._update_geometry(force=True)
         self.rebuild_pages()
-        self.set_expand_mode(self.expand_mode())
         self._apply_passthrough()
+        if self.passthrough() and self.expanded:
+            self.collapse(force=True)
+        self.set_expand_mode(self.expand_mode())
         self.passthrough_changed.emit(self.passthrough())
         self.apply_capture_mode()
         self.register_hotkeys()
@@ -2230,10 +2263,12 @@ class Island(QtWidgets.QWidget):
             return
         self._fs_hidden = hidden
         if hidden:
-            self.collapse()
+            self.collapse(force=True)
             self.hide()
         else:
             self.show()
+            if self.pinned() and not self.passthrough():
+                self.expand()
             self._kick()
 
     def closeEvent(self, e):

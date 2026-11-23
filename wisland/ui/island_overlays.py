@@ -63,9 +63,12 @@ class BlankDoubleClick(QtCore.QObject):
         return False
 
     def _in_internal_scroll_or_input(self, w: QtWidgets.QWidget) -> bool:
-        """判断指针是否位于内部滚动区（含 viewport 及子控件）或输入/下拉等自带滚轮控件内。"""
+        """判断指针是否位于内部滚动区（含 viewport 及子控件）、未读快捷区或输入/下拉等自带滚轮控件内。"""
+        dock = getattr(self.island, "unread_dock", None)
         cur = w
         while cur is not None and cur is not self.island:
+            if dock is not None and cur is dock:
+                return True
             if isinstance(
                 cur,
                 (

@@ -1216,6 +1216,7 @@ class CompactView:
             alpha=a,
             max_core_w=m["eff_core_w"],
             max_clip_w=m["eff_clip_w"],
+            metrics=m["hh_metrics"],
         )
         paint_vertical_clock_pair(
             p,
@@ -1227,6 +1228,7 @@ class CompactView:
             alpha=a,
             max_core_w=m["eff_core_w"],
             max_clip_w=m["eff_clip_w"],
+            metrics=m["mm_metrics"],
         )
 
         wa = a * m["weather_alpha"]
