@@ -157,6 +157,14 @@ class Island(QtWidgets.QWidget):
         self._floor_on: dict = {}
         self._side_clamp_h: float = float(ch)
         self._collapsing_from_panel: bool = False
+        self._snap_hit_edge: bool = False
+        self._snap_rebound_count: int = 0
+        self._snap_reb_peak: float = 0.0
+        self._snap_detach: float = 0.0
+        self._neck_detach_sp = Spring(0.0, 220, 1.0, 0.002)
+        self._last_corner_r: float = 0.0
+        self._last_base_r: float = 0.0
+        self._last_neck_w: float = 0.0
         self._bd_shown = None
         self._bd_prev = None
         self._bd_fade_t0 = 0.0
@@ -922,6 +930,11 @@ class Island(QtWidgets.QWidget):
         self.sw.to(cw, 300, 0.55)
         self.sh.to(ch, 300, 0.55)
         self.mode = "drag"
+        self._snap_hit_edge = False
+        self._snap_rebound_count = 0
+        self._snap_reb_peak = 0.0
+        self._snap_detach = 0.0
+        self._neck_detach_sp.snap(0.0)
         self.fx.snap(c.x())
         self.fy.snap(c.y())
         self.drag_off = c - gpos_f
@@ -978,6 +991,14 @@ class Island(QtWidgets.QWidget):
         self.gap.v = -v_toward
         self.gap.to(0, 300, 0.38)
         self.mode = "snap"
+        self._snap_hit_edge = (self.gap.x <= 0.0)
+        self._snap_rebound_count = 0
+        self._snap_reb_peak = 0.0
+        self._snap_detach = 0.0
+        # 衔接松手瞬间的液桥拉伸度，确保首次碰撞前与碰撞后连续过渡
+        init_t = clamp(max(0.0, cur_gap) / BREAK, 0.0, 1.0)
+        self._neck_detach_sp.snap(math.sqrt(init_t) / 0.90 if init_t > 0.0 else 0.0)
+        self._neck_detach_sp.to(0.0, 220, 1.0)
         if self.neck_edge and self.neck_edge != edge:
             self._break_neck()
         self._kick()
@@ -998,7 +1019,10 @@ class Island(QtWidgets.QWidget):
     def _kick(self):
         if not self.timer.isActive():
             self._last = time.perf_counter()
-            self.timer.start()
+            self.timer.start(16)
+        elif self.timer.interval() > 16:
+            # 空闲 33 ms 周期切回 60 fps：立即按 16 ms 重排下一次触发，避免首帧等待旧空闲定时器到期
+            self.timer.start(16)
 
     def _needs_frames(self) -> bool:
         if self.mode != "anchored" or self.drips or self._bd_prev is not None or self._collapse_snap is not None:
@@ -1062,6 +1086,53 @@ class Island(QtWidgets.QWidget):
         for s in (self.sw, self.sh, self.fx, self.fy, self.along, self.gap, self.neck_s,
                   self.content_a, self.compact_a, self.poke):
             s.step(dt)
+        if self.mode == "snap":
+            if self.gap.x <= 0.0:
+                if not self._snap_hit_edge:
+                    self._snap_hit_edge = True
+                elif self._snap_rebound_count == 1:
+                    # 首次离边回弹结束后再次接触边缘
+                    self._snap_rebound_count = 2
+                want_detach = 0.0
+                tau = 0.036
+                self._neck_detach_sp.to(0.0, 380, 1.0)
+            elif self._snap_hit_edge:
+                if self._snap_rebound_count == 0 and self.gap.x > 0.02:
+                    self._snap_rebound_count = 1
+                    self._snap_reb_peak = float(self.gap.x)
+                if self._snap_rebound_count == 1:
+                    self._snap_reb_peak = max(self._snap_reb_peak, float(self.gap.x))
+                    if self.gap.v > 0.0:
+                        # 首次离边上升段：圆角快速恢复，液桥通过二阶弹簧零初速平滑收窄
+                        want_detach = 1.0
+                        tau = 0.034
+                        self._neck_detach_sp.to(0.78, 220, 1.0)
+                    else:
+                        # 首次回弹回落段：提前逐步放宽液桥，在接触前与岛体宽度自然合流
+                        scale_gap = max(0.35, min(2.8, self._snap_reb_peak))
+                        want_detach = smooth(clamp(self.gap.x / scale_gap, 0.0, 1.0))
+                        tau = 0.036
+                        rel_neck = clamp(self.gap.x / max(0.35, self._snap_reb_peak), 0.0, 1.0)
+                        self._neck_detach_sp.to(0.0 if rel_neck < 0.75 else (rel_neck - 0.75) / 0.25 * 0.5, 420, 1.0)
+                else:
+                    # 后续小幅余震仅随距边距离温和跟随，避免落定前突跳
+                    want_detach = smooth(clamp(self.gap.x / 3.0, 0.0, 1.0))
+                    tau = 0.040
+                    self._neck_detach_sp.to(0.0, 380, 1.0)
+            else:
+                want_detach = 0.0
+                tau = 0.036
+                self._neck_detach_sp.to(clamp(math.sqrt(clamp(self.gap.x / BREAK, 0.0, 1.0)) / 0.90, 0.0, 1.0), 260, 1.0)
+            alpha_d = 1.0 - math.exp(-dt / tau)
+            self._snap_detach = clamp(self._snap_detach + (want_detach - self._snap_detach) * alpha_d, 0.0, 1.0)
+            self._neck_detach_sp.step(dt)
+            self._neck_detach_sp.x = clamp(self._neck_detach_sp.x, 0.0, 1.0)
+        else:
+            self._snap_hit_edge = False
+            self._snap_rebound_count = 0
+            self._snap_reb_peak = 0.0
+            self._snap_detach = 0.0
+            self._neck_detach_sp.snap(0.0)
         if abs(self.poke.x) > 0.01 or self.poke.target:
             if self._poke_sm.isNull():
                 self._poke_sm = QtCore.QPointF(self._poke_pt)
@@ -1086,12 +1157,17 @@ class Island(QtWidgets.QWidget):
             d["r"].step(dt)
         self.drips = [d for d in self.drips if not (d["r"].rest or d["r"].x < 0.3 and d["r"].v < 0)]
 
-        if self.mode == "snap" and self.along.rest and self.gap.rest and self.sw.rest and self.sh.rest:
+        if self.mode == "snap" and self.along.rest and self.gap.rest and self.sw.rest and self.sh.rest and self._neck_detach_sp.rest:
             self.sw.snap(self.sw.target)
             self.sh.snap(self.sh.target)
             self.gap.snap(0.0)
             self.along.snap(self.along.target)
             self.mode = "anchored"
+            self._snap_hit_edge = False
+            self._snap_rebound_count = 0
+            self._snap_reb_peak = 0.0
+            self._snap_detach = 0.0
+            self._neck_detach_sp.snap(0.0)
             self._place_nav()
             if self.pinned():
                 QtCore.QTimer.singleShot(80, self.expand)
@@ -1257,17 +1333,33 @@ class Island(QtWidgets.QWidget):
             line = self._line(ne)
             gap_n = max(0.0, self._gap_to(ne, body, line))
             t = clamp(gap_n / BREAK, 0, 1)
-            corner_r = base_r * smooth(t * 1.8)
+            detach_s = smooth(self._snap_detach) if self.mode == "snap" else 0.0
+            corner_r = base_r * max(smooth(t * 1.8), detach_s)
             corner_r = lerp(base_r, corner_r, self.neck_s.x)
             radii = tuple(corner_r if flag else base_r for flag in edge_corners(ne))
             horiz = ne in ("top", "bottom")
             along_c = body.center().x() if horiz else body.center().y()
             length = w if horiz else h
             lline = line + (-wy if horiz else -wx)
-            neck = neck_path(ne, lline, along_c + (-wx if horiz else -wy), length, gap_n, t,
+            # snap 模式下由二阶临界阻尼弹簧统一驱动液桥收窄与放宽，过零帧无斜率折点或骤变
+            if self.mode == "snap":
+                neck_u = clamp(self._neck_detach_sp.x, 0.0, 1.0)
+                t_neck = (neck_u * 0.90) ** 2
+            else:
+                t_neck = t
+            neck = neck_path(ne, lline, along_c + (-wx if horiz else -wy), length, gap_n, t_neck,
                              self.neck_s.x, fillet, corner_r)
+            self._last_corner_r = float(corner_r)
+            # 记录当前帧液桥腰部截面总宽（供逐帧连续性验收）
+            ts_eff = math.sqrt(clamp(t_neck, 0.0, 1.0))
+            wz_eff = lerp(length * 0.5, max(2.5, min(7.0, length * 0.035)), ts_eff)
+            wz_eff = lerp(1.0, wz_eff, self.neck_s.x)
+            self._last_neck_w = float(2.0 * wz_eff) if self.neck_s.x > 0.01 else 0.0
         else:
             radii = (base_r,) * 4
+            self._last_corner_r = float(base_r)
+            self._last_neck_w = 0.0
+        self._last_base_r = float(base_r)
 
         speed = math.hypot(vx, vy)
         playing_wave = (self.mode == "anchored" and not self.expanded and self.compact.mode() == "media"

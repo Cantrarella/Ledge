@@ -2189,3 +2189,501 @@ def test_08_settings_pos_preservation_zero_percent_side_music_and_panel_collapse
         cfg.set("island.screen", orig_scr, save=False)
         cfg.save()
         isl0.close()
+
+
+def test_09_notify_sub_no_flicker_volume_easing_and_top_equal_width(qt_app):
+    """v1.0.9 后三项专项回归：
+    1) P2 顶部与左右侧短微信通知（目标宽 190px）60Hz 弹出/回弹全程摘要出现后不闪动，长摘要省略且关闭热区一致；
+    2) P2 横/纵向音量条共用显示值缓动：连续升降、半途快速反向无回跳、静音/解除静音及超时平稳回原位；
+    3) P3 顶部音量条与同配置时间天气条（有天气 / 无天气 / 带未读点）等长，0%/100%/静音完整可见无重叠，侧边保持纵向。
+    """
+    from wisland.core.config import cfg
+    from wisland.ui.island import Island
+    from wisland.ui.theme import theme as island_theme
+
+    class _DummyPage(QtWidgets.QWidget):
+        key = "home"
+        title = "首页"
+        glyph = "H"
+        island = None
+
+        def preferred_panel_width(self):
+            return 419
+
+        def preferred_panel_height(self):
+            return 176
+
+        def preferred_height(self):
+            return 140
+
+        def on_show(self):
+            pass
+
+        def on_hide(self):
+            pass
+
+    orig_edge = cfg.get("island.edge", "top")
+    orig_pos = cfg.get("island.pos", 0.5)
+    orig_theme = island_theme.mode
+    isl = Island(pages=[_DummyPage()], peak_fn=lambda: 0.0)
+    try:
+        island_theme.set_mode("dark")
+        isl.compact.weather = ("\u2600", "18°", None, "01d")
+        isl.compact.show_weather = True
+        isl.compact.badges = {}
+
+        # ---------------- 1) P2 短微信通知 60Hz 弹出与回弹全程摘要不闪动 ----------------
+        dismiss_hits = {"n": 0}
+        isl.notify_banner_dismissed.connect(lambda: dismiss_hits.__setitem__("n", dismiss_hits["n"] + 1))
+        for edge in ("top", "left", "right"):
+            cfg.set("island.edge", edge, save=False)
+            cfg.set("island.pos", 0.5, save=False)
+            isl.apply_config()
+            cw0, ch0 = isl.target_size()
+            isl.sw.snap(cw0)
+            isl.sh.snap(ch0)
+            isl._update_geometry(force=True)
+
+            isl.activity({"type": "notify", "title": "微信", "sub": "有新消息", "svg_key": "wechat"}, 6.0)
+            tw_n, _ = isl.target_size()
+            assert abs(tw_n - 190.0) < 0.5
+
+            seen_sub = False
+            saw_rebound_below_190 = False
+            saw_above_190 = False
+            for _ in range(90):
+                isl._last = time.perf_counter() - (1.0 / 60.0)
+                isl._tick()
+                bw = float(isl.body.width())
+                bh = float(isl.body.height())
+                if bw >= 190.0:
+                    saw_above_190 = True
+                elif saw_above_190 and bw < 190.0:
+                    saw_rebound_below_190 = True
+
+                # 离屏渲染当帧横幅并检查摘要区域像素可见性
+                im = QtGui.QImage(max(40, int(math.ceil(bw)) + 4), max(40, int(math.ceil(bh)) + 4), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+                im.fill(QtCore.Qt.GlobalColor.transparent)
+                p = QtGui.QPainter(im)
+                isl.compact.paint(p, QtCore.QRectF(0.0, 0.0, bw, bh), 1.0, 0.0)
+                p.end()
+
+                if bw >= 150.0:
+                    # 摘要区位于 x=82..(bw-40)
+                    x0, x1 = 82, max(84, int(bw) - 40)
+                    sub_ink = 0
+                    for yy in range(4, int(bh) - 4):
+                        for xx in range(x0, x1):
+                            if QtGui.qAlpha(im.pixel(xx, yy)) > 60:
+                                sub_ink += 1
+                    if sub_ink > 15:
+                        seen_sub = True
+                    elif seen_sub:
+                        raise AssertionError(f"notify sub flickered off on {edge} at bw={bw:.2f}")
+
+            assert seen_sub, f"notify sub never appeared on {edge}"
+            # 验证长摘要省略与关闭热区共用同一矩形且点击可关闭
+            isl.activity({"type": "notify", "title": "微信", "sub": "这是一条非常长的测试微信消息摘要用于验证省略号与关闭按钮不重叠", "svg_key": "wechat"}, 6.0)
+            for _ in range(50):
+                isl._last = time.perf_counter() - (1.0 / 60.0)
+                isl._tick()
+            im_l = QtGui.QImage(max(40, int(math.ceil(isl.body.right())) + 8), max(40, int(math.ceil(isl.body.bottom())) + 8), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+            im_l.fill(QtCore.Qt.GlobalColor.transparent)
+            pl = QtGui.QPainter(im_l)
+            isl.compact.paint(pl, QtCore.QRectF(isl.body), 1.0, 0.0)
+            pl.end()
+            dr = isl.compact._notify_dismiss_rect
+            assert dr is not None and dr.width() >= 20.0
+            before_d = dismiss_hits["n"]
+            pt_l = dr.center()
+            pt_g = pt_l + QtCore.QPointF(isl._win_origin)
+            isl.mousePressEvent(QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseButtonPress, pt_l, pt_g,
+                QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.KeyboardModifier.NoModifier,
+            ))
+            isl.mouseReleaseEvent(QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseButtonRelease, pt_l, pt_g,
+                QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+            ))
+            assert dismiss_hits["n"] == before_d + 1
+            isl.compact.clear_activity("notify")
+            assert isl.compact.activity is None
+
+        # ---------------- 2) P2 横纵向音量填充缓动：连续升降、快速反向无回跳、静音/解除静音 ----------------
+        for edge in ("top", "left", "right"):
+            cfg.set("island.edge", edge, save=False)
+            cfg.set("island.pos", 0.5, save=False)
+            isl.apply_config()
+            cw0, ch0 = isl.target_size()
+            isl.sw.snap(cw0)
+            isl.sh.snap(ch0)
+            isl._update_geometry(force=True)
+            g_before = isl.body.translated(QtCore.QPointF(isl._win_origin))
+
+            # 首次弹出 0.2 -> 缓动到位
+            isl.activity({"type": "volume", "value": 0.2, "muted": False}, 2.0)
+            t_start = isl.compact._vol_anim_t0
+            vals_inc = [isl.compact._current_volume_display(t_start + k * 0.02) for k in range(8)]
+            assert all(vals_inc[i] <= vals_inc[i + 1] + 1e-6 for i in range(len(vals_inc) - 1))
+            assert abs(vals_inc[-1] - 0.2) < 1e-4
+
+            # 连续升高到 0.9，仅过 50ms（未到位）立即快速反向到 0.3
+            t1 = t_start + 0.16
+            isl.compact._set_volume_target({"type": "volume", "value": 0.9, "muted": False}, continuing=True, now=t1)
+            mid_v = isl.compact._current_volume_display(t1 + 0.05)
+            assert 0.35 < mid_v < 0.85
+
+            t2 = t1 + 0.05
+            isl.compact._set_volume_target({"type": "volume", "value": 0.3, "muted": False}, continuing=True, now=t2)
+            assert abs(isl.compact._vol_from - mid_v) < 1e-4
+            rev_vals = [isl.compact._current_volume_display(t2 + k * 0.02) for k in range(8)]
+            # 反向期间严格单调下降，无回跳到 0.9 或 0.2
+            assert all(rev_vals[i] >= rev_vals[i + 1] - 1e-6 for i in range(len(rev_vals) - 1))
+            assert rev_vals[0] <= mid_v + 1e-6
+            assert abs(rev_vals[-1] - 0.3) < 1e-4
+
+            # 静音 -> 平滑归零；解除静音 -> 平滑回到 0.65
+            t3 = t2 + 0.20
+            isl.compact._set_volume_target({"type": "volume", "value": 0.65, "muted": True}, continuing=True, now=t3)
+            assert abs(isl.compact._current_volume_display(t3 + 0.16) - 0.0) < 1e-4
+            t4 = t3 + 0.20
+            isl.compact._set_volume_target({"type": "volume", "value": 0.65, "muted": False}, continuing=True, now=t4)
+            assert abs(isl.compact._current_volume_display(t4 + 0.16) - 0.65) < 1e-4
+
+            # 超时后平稳回到原位
+            isl.compact.activity["until"] = time.monotonic() - 0.001
+            for _ in range(60):
+                isl._last = time.perf_counter() - (1.0 / 60.0)
+                isl._tick()
+            g_after = isl.body.translated(QtCore.QPointF(isl._win_origin))
+            assert abs(g_after.x() - g_before.x()) < 0.2
+            assert abs(g_after.y() - g_before.y()) < 0.2
+            assert abs(g_after.width() - g_before.width()) < 0.2
+
+        # ---------------- 3) P3 顶部音量条与时间天气条等长（有天气 / 无天气 / 带未读点） ----------------
+        cfg.set("island.edge", "top", save=False)
+        cfg.set("island.pos", 0.5, save=False)
+        for wea, badges in (
+            (("\u2600", "18°", None, "01d"), {}),
+            (None, {}),
+            (("\u2600", "18°", None, "01d"), {"qq": 1, "wechat": 1}),
+            (None, {"mail": 1}),
+        ):
+            isl.compact.clear_activity()
+            isl.compact.weather = wea
+            isl.compact.show_weather = True
+            isl.compact.badges = badges
+            isl.apply_config()
+            idle_w, _ = isl.target_size()
+            isl.sw.snap(idle_w)
+            isl._update_geometry(force=True)
+            idle_body_w = float(isl.body.width())
+
+            for val, muted in ((0.0, False), (1.0, False), (0.5, True)):
+                isl.activity({"type": "volume", "value": val, "muted": muted}, 2.0)
+                vol_w, _ = isl.target_size()
+                assert abs(vol_w - idle_w) < 0.05, f"top volume width {vol_w} != idle width {idle_w}"
+                for _ in range(40):
+                    isl._last = time.perf_counter() - (1.0 / 60.0)
+                    isl._tick()
+                assert abs(float(isl.body.width()) - idle_body_w) < 0.2
+
+                # 离屏渲染验证无天气/有天气下 0%、100%、静音均可完整绘制且轨道可见
+                im_v = QtGui.QImage(int(math.ceil(vol_w)), 40, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+                im_v.fill(QtCore.Qt.GlobalColor.transparent)
+                pv = QtGui.QPainter(im_v)
+                isl.compact.paint(pv, QtCore.QRectF(0.0, 0.0, vol_w, 40.0), 1.0, 0.0)
+                pv.end()
+                ink_left = sum(1 for y in range(6, 34) for x in range(4, 28) if QtGui.qAlpha(im_v.pixel(x, y)) > 40)
+                ink_right = sum(1 for y in range(6, 34) for x in range(int(vol_w) - 38, int(vol_w) - 4) if QtGui.qAlpha(im_v.pixel(x, y)) > 40)
+                assert ink_left > 10 and ink_right > 15
+
+        # 侧边继续使用纵向音量条（宽 36）
+        for s_edge in ("left", "right"):
+            cfg.set("island.edge", s_edge, save=False)
+            isl.apply_config()
+            isl.activity({"type": "volume", "value": 0.5, "muted": False}, 2.0)
+            assert isl.compact.layout_state() == ("vertical", "activity")
+            assert isl.target_size()[0] == 36.0
+    finally:
+        island_theme.set_mode(orig_theme)
+        cfg.set("island.edge", orig_edge, save=False)
+        cfg.set("island.pos", orig_pos, save=False)
+        cfg.save()
+        isl.close()
+
+
+def test_10_first_rebound_corner_radius_and_neck_continuity(qt_app):
+    """顶部、左侧、右侧各测极轻甩(5,100)、普通轻甩(8,200)、快甩(25,930)共 9 组，60fps 逐帧验收：
+    - 首次碰撞挤压保留现有挤压形状；
+    - 首次离边时靠边两角连续恢复，极轻甩（峰值约 0.68px）在峰值附近也恢复到 >= 80% 同帧另一侧圆角；
+    - 液桥截面逐帧连续收窄，再次接触时逐帧连续放宽，相邻帧桥宽变化不超过满桥宽的 42%（无 214->54 / 158->42 骤缩）；
+    - snap 最后一帧与 anchored 第一帧全局岛体矩形一致，无二次跳位。
+    """
+    from wisland.core.config import cfg
+    from wisland.ui.island import Island
+
+    class _DummyPage(QtWidgets.QWidget):
+        key = "home"
+        title = "首页"
+        glyph = "H"
+        island = None
+
+        def preferred_panel_width(self):
+            return 419
+
+        def preferred_panel_height(self):
+            return 176
+
+        def preferred_height(self):
+            return 140
+
+        def on_show(self):
+            pass
+
+        def on_hide(self):
+            pass
+
+    orig_edge = cfg.get("island.edge", "top")
+    orig_pos = cfg.get("island.pos", 0.5)
+    isl = Island(pages=[_DummyPage()], peak_fn=lambda: 0.0)
+    try:
+        isl.compact.weather = ("\u2600", "18°", None, "01d")
+        isl.compact.show_weather = True
+        isl.compact.badges = {}
+        R = isl._avail()
+
+        for edge in ("top", "left", "right"):
+            for tag, start_gap, v_toward in (
+                ("ultra_light", 5.0, 100.0),
+                ("light", 8.0, 200.0),
+                ("fast", 25.0, 930.0),
+            ):
+                cfg.set("island.edge", edge, save=False)
+                cfg.set("island.pos", 0.5, save=False)
+                isl.apply_config()
+                cw, ch = isl.target_size()
+                isl.sw.snap(cw)
+                isl.sh.snap(ch)
+                isl._update_geometry(force=True)
+                full_len = cw if edge == "top" else ch
+
+                if edge == "top":
+                    cx, cy = R.center().x(), R.top() + start_gap + ch / 2.0
+                    vx, vy = 0.0, -v_toward
+                elif edge == "left":
+                    cx, cy = R.left() + start_gap + cw / 2.0, R.center().y()
+                    vx, vy = -v_toward, 0.0
+                else:
+                    cx, cy = R.right() - start_gap - cw / 2.0, R.center().y()
+                    vx, vy = v_toward, 0.0
+
+                isl.begin_drag(QtCore.QPoint(round(cx), round(cy)))
+                isl.fx.snap(cx)
+                isl.fy.snap(cy)
+                isl.fx.v = vx
+                isl.fy.v = vy
+                isl._end_drag(QtCore.QPoint(round(cx), round(cy)))
+                assert isl.mode == "snap" and isl.edge == edge
+
+                def _path_w_at_012(ed: str) -> float:
+                    pth = isl.path
+                    br = pth.boundingRect()
+                    ln = isl._line(ed)
+                    wx0, wy0 = isl._win_origin.x(), isl._win_origin.y()
+                    st = 0.5
+                    if ed == "top":
+                        yy = (ln - wy0) + 0.12
+                        xs = []
+                        xx = br.left() - 2.0
+                        end_x = br.right() + 2.0
+                        while xx <= end_x:
+                            if pth.contains(QtCore.QPointF(xx, yy)):
+                                xs.append(xx)
+                            xx += st
+                        return (xs[-1] - xs[0]) if len(xs) >= 2 else 0.0
+                    xx = (ln - wx0) + (0.12 if ed == "left" else -0.12)
+                    ys = []
+                    yy = br.top() - 2.0
+                    end_y = br.bottom() + 2.0
+                    while yy <= end_y:
+                        if pth.contains(QtCore.QPointF(xx, yy)):
+                            ys.append(yy)
+                        yy += st
+                    return (ys[-1] - ys[0]) if len(ys) >= 2 else 0.0
+
+                recs = []
+                for _ in range(180):
+                    isl._last = time.perf_counter() - (1.0 / 60.0)
+                    isl._tick()
+                    g_rect = isl.body.translated(QtCore.QPointF(isl._win_origin))
+                    pw012 = _path_w_at_012(edge)
+                    recs.append((
+                        isl.mode,
+                        float(isl.gap.x),
+                        float(isl.gap.v),
+                        float(isl._last_corner_r),
+                        float(isl._last_base_r),
+                        float(isl._last_neck_w),
+                        g_rect,
+                        pw012,
+                    ))
+                    if isl.mode == "anchored":
+                        break
+
+                assert recs[-1][0] == "anchored", f"{edge}/{tag} did not settle"
+                assert isl.edge == edge
+
+                # 1) 确认录到首次碰撞挤压与随后离边
+                hit_idx = next((i for i, r in enumerate(recs) if r[1] < -0.5), None)
+                assert hit_idx is not None, f"{edge}/{tag} no initial collision squash"
+                min_gap = min(r[1] for r in recs)
+                if tag == "fast":
+                    assert min_gap < -3.0, f"{edge}/fast squash too weak: {min_gap}"
+
+                reb_start = next((i for i in range(hit_idx + 1, len(recs)) if recs[i][1] > 0.05), None)
+                assert reb_start is not None, f"{edge}/{tag} no rebound after squash"
+                reb_end = next((i for i in range(reb_start + 1, len(recs)) if recs[i][1] <= 0.0), len(recs) - 1)
+                reb_slice = recs[reb_start:reb_end]
+                assert len(reb_slice) >= 3
+
+                # 2) 圆角恢复：极轻甩峰值附近 >= 0.80 * base_r，普通轻甩与快甩 >= 0.90 * base_r
+                peak_ratio = max(r[3] / max(1.0, r[4]) for r in reb_slice)
+                min_want_ratio = 0.80 if tag == "ultra_light" else 0.90
+                assert peak_ratio >= min_want_ratio, f"{edge}/{tag} corner_r peak_ratio={peak_ratio:.2f} < {min_want_ratio}"
+
+                # 3) 实际 QPainterPath 在距屏边 0.12px 处截面宽度连续性：首次离边无骤缩、再次接触无宽差尖峰、无断桥重现
+                dep_drop_pct = abs(recs[reb_start][7] - recs[reb_start - 1][7]) / max(1.0, recs[reb_start - 1][7])
+                assert dep_drop_pct < 0.10, f"{edge}/{tag} 0.12px path drop too sharp on departure: {dep_drop_pct:.1%}"
+                recontact_win = [recs[i][7] - recs[i - 1][7] for i in range(max(reb_start + 1, reb_end - 2), min(len(recs), reb_end + 4))]
+                assert max(recontact_win) < 12.0, f"{edge}/{tag} 0.12px path spike on recontact: {recontact_win}"
+                assert not any(recs[i][7] == 0.0 and recs[i + 1][7] > 0.0 for i in range(hit_idx, len(recs) - 1))
+
+                # 辅助回归：_last_neck_w 相邻帧变化不超过满桥宽的 42%
+                max_d_neck = 0.0
+                for i in range(hit_idx + 1, len(recs)):
+                    if recs[i][5] > 0.0 and recs[i - 1][5] > 0.0:
+                        dn = abs(recs[i][5] - recs[i - 1][5])
+                        if dn > max_d_neck:
+                            max_d_neck = dn
+                assert max_d_neck <= full_len * 0.42, (
+                    f"{edge}/{tag} sudden neck width jump: max_d_neck={max_d_neck:.1f} > 42% of {full_len:.1f}"
+                )
+
+                # 4) 相邻两帧圆角无瞬跳
+                for i in range(1, len(recs)):
+                    dr = abs(recs[i][3] - recs[i - 1][3])
+                    assert dr <= recs[i][4] * 0.55 + 0.5, f"{edge}/{tag} sudden corner jump at f={i}: dr={dr:.2f}"
+
+                # 5) 最终落定：snap 最后一帧与 anchored 第一帧全局岛体矩形无二次跳位
+                g_snap_last = recs[-2][6]
+                g_anch_first = recs[-1][6]
+                assert abs(g_snap_last.x() - g_anch_first.x()) < 0.6
+                assert abs(g_snap_last.y() - g_anch_first.y()) < 0.6
+                assert abs(g_snap_last.width() - g_anch_first.width()) < 0.6
+                assert abs(g_snap_last.height() - g_anch_first.height()) < 0.6
+                assert recs[-1][3] < 0.5
+    finally:
+        cfg.set("island.edge", orig_edge, save=False)
+        cfg.set("island.pos", orig_pos, save=False)
+        cfg.save()
+        isl.close()
+
+
+def test_11_snap_switches_idle_33ms_timer_to_16ms():
+    """松手进入 snap 时，应将运行中的 33 ms 空闲定时器立即切到 16 ms 并重排；未运行时以 16 ms 启动；已在 16 ms 时保持原节奏；落定后恢复 33 ms。"""
+    import time
+    from PySide6 import QtCore, QtWidgets
+    from wisland.core.config import cfg
+    from wisland.ui.island import Island
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    class _DummyPage(QtWidgets.QWidget):
+        key = "home"
+        title = "首页"
+        glyph = "H"
+        island = None
+
+        def preferred_panel_width(self):
+            return 419
+
+        def preferred_panel_height(self):
+            return 176
+
+        def preferred_height(self):
+            return 140
+
+        def on_show(self):
+            pass
+
+        def on_hide(self):
+            pass
+
+    orig_edge = cfg.get("island.edge", "top")
+    orig_pos = cfg.get("island.pos", 0.5)
+    isl = Island(pages=[_DummyPage()], peak_fn=lambda: 0.0)
+    try:
+        cfg.set("island.edge", "top", save=False)
+        cfg.set("island.pos", 0.5, save=False)
+        isl.apply_config()
+        cw, ch = isl.target_size()
+        isl.sw.snap(cw)
+        isl.sh.snap(ch)
+        isl._update_geometry(force=True)
+
+        # 1) 推进到收起空闲态：定时器运行且周期进入 33 ms
+        isl._tick()
+        assert isl.timer.isActive()
+        assert isl.timer.interval() == 33
+
+        # 模拟刚重排 33 ms 周期（remainingTime > 16），松手进入 snap 必须立刻切到 16 ms 并重排
+        isl.timer.start(33)
+        R = isl._avail()
+        cx, cy = R.center().x(), R.top() + 25.0 + ch / 2.0
+        isl.fx.snap(cx)
+        isl.fy.snap(cy)
+        isl.fx.v = 0.0
+        isl.fy.v = -930.0
+        isl.mode = "drag"
+        isl._end_drag(QtCore.QPoint(round(cx), round(cy)))
+        assert isl.mode == "snap"
+        assert isl.timer.isActive()
+        assert isl.timer.interval() == 16
+        rem_after = isl.timer.remainingTime()
+        assert 0 <= rem_after <= 16, f"expected remainingTime <= 16 after 33->16 switch, got {rem_after}"
+
+        # 2) 已在 16 ms 运行时调用 _kick() 保持当前节奏（不重置剩余时间）
+        time.sleep(0.006)
+        rem_before_keep = isl.timer.remainingTime()
+        isl._kick()
+        rem_after_keep = isl.timer.remainingTime()
+        assert isl.timer.interval() == 16
+        assert rem_after_keep <= rem_before_keep + 1, (
+            f"16 ms timer rhythm should not reset upward: before={rem_before_keep}, after={rem_after_keep}"
+        )
+
+        # 3) 定时器未运行时调用 _kick() 直接以 16 ms 启动
+        isl.timer.stop()
+        isl.timer.setInterval(33)
+        isl._kick()
+        assert isl.timer.isActive()
+        assert isl.timer.interval() == 16
+        assert 0 <= isl.timer.remainingTime() <= 16
+
+        # 4) 回弹落定后继续按原有空闲规则回到 33 ms
+        for _ in range(180):
+            isl._last = time.perf_counter() - (1.0 / 60.0)
+            isl._tick()
+            if isl.mode == "anchored" and isl.sw.rest and isl.sh.rest:
+                isl._last = time.perf_counter() - (1.0 / 60.0)
+                isl._tick()
+                break
+        assert isl.mode == "anchored"
+        assert isl.timer.isActive()
+        assert isl.timer.interval() == 33
+    finally:
+        cfg.set("island.edge", orig_edge, save=False)
+        cfg.set("island.pos", orig_pos, save=False)
+        cfg.save()
+        isl.close()

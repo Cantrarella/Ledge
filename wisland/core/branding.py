@@ -5,7 +5,7 @@ from __future__ import annotations
 DISPLAY_NAME = "Ledge"
 LEGACY_DISPLAY_NAME = "Wisland"
 APP_ID = "wisland"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 APP_VERSION_TAG = f"v{APP_VERSION}"
 GITHUB_REPO = "Cantrarella/Ledge"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"

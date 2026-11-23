@@ -321,6 +321,12 @@ class CompactView:
         self._last_vert_vol_snap: dict | None = None
         self._outgoing_vert_vol_snap: dict | None = None
         self._outgoing_vert_vol_t0: float = -100.0
+        # 横向与纵向音量条共用的显示值缓动状态（140ms 平滑过渡，支持连续调节与快速反向）
+        self._vol_disp: float = 0.0
+        self._vol_from: float = 0.0
+        self._vol_target: float = 0.0
+        self._vol_anim_t0: float = 0.0
+        self._vol_anim_dur: float = 0.14
         self._banner_pinned_rest_h: float | None = None
         self._wea_h0: float = 36.0
         self.on_state_changed = None
@@ -458,21 +464,58 @@ class CompactView:
             return 0
         return int(self.activity.get("seq") or 0)
 
+    def _current_volume_display(self, now: float | None = None) -> float:
+        """返回当前时刻横纵向音量条共用的平滑填充值 (0.0..1.0)。"""
+        now = time.monotonic() if now is None else now
+        if self._vol_anim_dur <= 1e-6:
+            self._vol_disp = self._vol_target
+            return self._vol_disp
+        t = clamp((now - self._vol_anim_t0) / self._vol_anim_dur, 0.0, 1.0)
+        k = 1.0 - (1.0 - t) ** 3
+        self._vol_disp = clamp(self._vol_from + (self._vol_target - self._vol_from) * k, 0.0, 1.0)
+        return self._vol_disp
+
+    def _set_volume_target(self, act: dict, continuing: bool, now: float):
+        """设置音量填充缓动目标：连续调节或快速反向时从当前已绘制位置无缝转向。"""
+        muted = bool(act.get("muted"))
+        target_v = 0.0 if muted else clamp(float(act.get("value", 0.0) or 0.0), 0.0, 1.0)
+        if continuing:
+            cur_v = self._current_volume_display(now)
+            self._vol_from = cur_v
+        else:
+            self._vol_from = 0.0
+            self._vol_disp = 0.0
+        self._vol_target = target_v
+        self._vol_anim_t0 = now
+        if abs(self._vol_target - self._vol_from) <= 1e-4:
+            self._vol_disp = self._vol_target
+
     def show_activity(self, act: dict, duration: float = 2.4):
         now = time.monotonic()
+        is_vol = (act.get("type") == "volume")
+        prev_vol_active = (
+            is_vol
+            and self.activity is not None
+            and self.activity.get("type") == "volume"
+            and now < float(self.activity.get("until", 0.0))
+        )
         self._activity_seq += 1
         a = dict(act)
         a["seq"] = self._activity_seq
         a["until"] = now + duration
-        a["start"] = now
+        a["start"] = float(self.activity.get("start", now)) if prev_vol_active else now
         self.activity = a
+        if is_vol:
+            self._set_volume_target(a, continuing=prev_vol_active, now=now)
         self._clear_interactive_rects()
         self.layout_state()
 
     def update_activity(self, **kw):
-        """原地更新（例如连续调音量时不重新入场）。"""
+        """原地更新（例如连续调音量时不重新入场，仅平滑转向新目标并续时）。"""
         if self.activity:
             self.activity.update(kw)
+            if self.activity.get("type") == "volume":
+                self._set_volume_target(self.activity, continuing=True, now=time.monotonic())
 
     def clear_activity(self, act_type: str | None = None):
         if self.activity is None:
@@ -604,6 +647,23 @@ class CompactView:
             return float(self._banner_pinned_rest_h)
         return self.vertical_rest_height()
 
+    def idle_horizontal_width(self) -> float:
+        """返回横向收起态时间/天气条的目标宽度（含未读色点对称预留），供时钟态与顶底边音量条共用。"""
+        nb = sum(1 for v in self.badges.values() if v)
+        clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
+        if self.weather and self.show_weather:
+            temp_w = max(
+                measure_temperature(self.clock_style, "-88°")["total_w"],
+                measure_temperature(self.clock_style, "100°")["total_w"],
+                measure_temperature(self.clock_style, self.weather[1])["total_w"],
+            )
+            weather_w = 15.0 + 4.5 + temp_w
+            base_w = max(146, int(math.ceil(clock_w + _IDLE_WEATHER_GAP + weather_w + 36)))
+        else:
+            base_w = max(96, int(math.ceil(clock_w + 36)))
+        extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
+        return float(base_w + extra_w)
+
     def size_hint(self, avail_max_w: float | None = None) -> tuple[float, float]:
         orientation, m = self.layout_state()
         nb = sum(1 for v in self.badges.values() if v)
@@ -619,7 +679,7 @@ class CompactView:
             a = self.activity
             t = a.get("type")
             if t == "volume":
-                return _cap_w(280.0), float(H_ACT)
+                return _cap_w(self.idle_horizontal_width()), float(H_ACT)
             if t == "life-reminder":
                 fm_t = QtGui.QFontMetrics(ui_font(12.5, W.DemiBold))
                 fm_s = QtGui.QFontMetrics(ui_font(12))
@@ -660,20 +720,7 @@ class CompactView:
             return _cap_w(w + nb * 12), float(H_MEDIA)
         if m == "pet":
             return _cap_w(134 + nb * 13), float(H_IDLE)
-        clock_w = measure_clock(self.clock_style, "88:88")["total_w"]
-        if self.weather and self.show_weather:
-            temp_w = max(
-                measure_temperature(self.clock_style, "-88°")["total_w"],
-                measure_temperature(self.clock_style, "100°")["total_w"],
-                measure_temperature(self.clock_style, self.weather[1])["total_w"],
-            )
-            weather_w = 15.0 + 4.5 + temp_w
-            base_w = max(146, int(math.ceil(clock_w + _IDLE_WEATHER_GAP + weather_w + 36)))
-        else:
-            base_w = max(96, int(math.ceil(clock_w + 36)))
-        # 对称扩展胶囊宽度：时间天气始终以整个胶囊中心居中，同时右侧预留色点空间
-        extra_w = 2 * (8 + nb * 4 + max(0, nb - 1) * 5.5) if nb else 0
-        return _cap_w(base_w + extra_w), float(H_IDLE)
+        return _cap_w(self.idle_horizontal_width()), float(H_IDLE)
 
     def _karaoke_glow_strength(self, idx: int, pos_now: float, cur_frac: float) -> float:
         """计算当前歌词交界微光强度；暂停态下返回 0，避免亮边定格在原地。"""
@@ -1205,11 +1252,11 @@ class CompactView:
         self._badges_vertical(p, m, a)
 
     def _paint_volume_vertical(self, p: QtGui.QPainter, r: QtCore.QRectF, a: float, act: dict | None = None):
-        """左右侧边纵向音量条：沿用侧边竖条宽度与当时高度，顶部显示扬声器/静音图标，中间音量从下往上填充。"""
+        """左右侧边纵向音量条：沿用侧边竖条宽度与当时高度，顶部显示扬声器/静音图标，中间音量从下往上平滑填充。"""
+        is_outgoing = act is not None and act is not self.activity
         act = act or self.activity or {}
         muted = bool(act.get("muted"))
-        val = 0.0 if muted else clamp(float(act.get("value", 0.0) or 0.0), 0.0, 1.0)
-        enter = ease_out((time.monotonic() - float(act.get("start", 0.0) or 0.0)) / 0.25)
+        disp_v = self._vol_disp if is_outgoing else self._current_volume_display()
 
         clip_w = max(6.0, float(r.width()) - 6.0)
         squeeze_ratio = clamp(clip_w / 30.0, 0.4, 1.0)
@@ -1237,8 +1284,8 @@ class CompactView:
         p.setBrush(tr_col)
         p.drawRoundedRect(track_rect, rad, rad)
 
-        if val > 0.005:
-            fill_h = clamp(track_h * val * enter, track_w, track_h)
+        if disp_v > 0.005:
+            fill_h = clamp(track_h * disp_v, min(track_w, track_h), track_h)
             fill_rect = QtCore.QRectF(track_rect.left(), track_bot - fill_h, track_w, fill_h)
             p.setBrush(theme.text(a))
             p.drawRoundedRect(fill_rect, rad, rad)
@@ -1577,9 +1624,13 @@ class CompactView:
         title = act.get("title", "")
         sub = act.get("sub", "")
         is_generic = not (is_notify or is_life or t == "volume")
-        # 左侧通知图标槽位 24×24px；通知整体右侧留出呼吸空间，通用轻提示按内容总宽居中
-        d = 24 if (is_notify or is_life) else (22 if is_generic else 26)
-        gap = 9 if (is_notify or is_life) else (6 if is_generic else 10)
+        # 左侧通知图标槽位 24×24px；横向窄音量条 (<126px) 收缩图标槽为 18px 预留轨道空间
+        if t == "volume":
+            d = 18 if r.width() < 126.0 else 22
+            gap = 4 if r.width() < 126.0 else 6
+        else:
+            d = 24 if (is_notify or is_life) else (22 if is_generic else 26)
+            gap = 9 if (is_notify or is_life) else (6 if is_generic else 10)
         if is_generic:
             f_title = ui_font(13, W.DemiBold)
             fm_t = QtGui.QFontMetrics(f_title)
@@ -1620,27 +1671,53 @@ class CompactView:
                 p.drawPixmap(cr.toRect(), img)
                 p.setOpacity(1)
             else:
-                p.setFont(icon_font((12 if is_notify else 13) if color is not None else (14 if is_generic else 16)))
-                p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
+                if t == "volume":
+                    vol_icon_px = 13.5 if r.width() < 126.0 else 15.5
+                    p.setFont(icon_font(vol_icon_px))
+                    vol_glyph = act.get("glyph") or (G.MUTE if act.get("muted") else G.VOLUME)
+                    p.drawText(cr, Qt.AlignmentFlag.AlignCenter, vol_glyph)
+                else:
+                    p.setFont(icon_font((12 if is_notify else 13) if color is not None else (14 if is_generic else 16)))
+                    p.drawText(cr, Qt.AlignmentFlag.AlignCenter, act.get("glyph", G.BELL))
         x = cr.right() + gap
         if t == "volume":
             self._notify_dismiss_rect = None
             self._dismiss_rect_seq = -1
-            if r.width() < 100.0:
+            if r.width() < 76.0:
                 return
-            v = clamp(act.get("value", 0.0), 0, 1)
-            bw = max(12.0, r.right() - 52 - x)
-            track = QtCore.QRectF(x, cy - 3, bw, 6)
+            muted = bool(act.get("muted"))
+            raw_v = clamp(float(act.get("value", 0.0) or 0.0), 0.0, 1.0)
+            disp_v = self._current_volume_display()
+            compact_vol = r.width() < 126.0
+            f_val = ui_font(11.5 if compact_vol else 12.5, W.DemiBold, num=not muted)
+            fm_val = QtGui.QFontMetrics(f_val)
+            val_txt = "静音" if muted else f"{round(raw_v * 100)}%"
+            right_pad = 8.0 if compact_vol else 11.0
+            gap_r = 5.0 if compact_vol else 8.0
+            lbl_w = max(24.0 if compact_vol else 28.0, float(math.ceil(fm_val.horizontalAdvance(val_txt)) + 2))
+            lbl_x = r.right() - right_pad - lbl_w
+            # 紧凑宽度下略微收窄图标与轨道间距，确保无天气 96px 宽度也能清晰容纳图标、轨道与 100%/静音
+            track_x = (cr.left() + 18.0 + 4.0) if compact_vol else (cr.right() + 6.0)
+            bw = max(14.0, lbl_x - gap_r - track_x)
+            track_h = 5.0 if compact_vol else 6.0
+            rad = track_h * 0.5
+            track = QtCore.QRectF(track_x, cy - rad, bw, track_h)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.track())
-            p.drawRoundedRect(track, 3, 3)
-            p.setBrush(theme.text(a))
-            p.drawRoundedRect(QtCore.QRectF(x, cy - 3, max(6, bw * v * enter), 6), 3, 3)
-            p.setFont(ui_font(12.5, W.DemiBold, num=True))
+            tr_col = QtGui.QColor(theme.track())
+            tr_col.setAlphaF(tr_col.alphaF() * a)
+            p.setBrush(tr_col)
+            p.drawRoundedRect(track, rad, rad)
+            if disp_v > 0.005:
+                fill_w = clamp(bw * disp_v, min(track_h, bw), bw)
+                p.setBrush(theme.text(a))
+                p.drawRoundedRect(QtCore.QRectF(track_x, cy - rad, fill_w, track_h), rad, rad)
+            p.setFont(f_val)
             p.setPen(theme.text(a))
-            p.drawText(QtCore.QRectF(r.right() - 48, r.y(), 34, r.height()),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                       "静音" if act.get("muted") else f"{round(v * 100)}")
+            p.drawText(
+                QtCore.QRectF(lbl_x, r.y(), lbl_w, r.height()),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                val_txt,
+            )
             return
         title = act.get("title", "")
         sub = act.get("sub", "")
@@ -1691,25 +1768,26 @@ class CompactView:
                     Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                     fm_t.elidedText(title, Qt.TextElideMode.ElideRight, int(tw)),
                 )
-                if r.width() >= 190.0 and sub and tw + 8 < avail:
-                    sub_x = x + tw + 8
-                    sub_w = max(10.0, avail - tw - 8)
+                sub_avail = avail - tw - 8.0
+                if sub and sub_avail >= 18.0:
+                    sub_x = x + tw + 8.0
+                    sub_a = a * clamp((sub_avail - 16.0) / 18.0, 0.25, 1.0)
                     f_sub = ui_font(12)
                     fm_s = QtGui.QFontMetrics(f_sub)
                     p.setFont(f_sub)
-                    p.setPen(theme.text2(a))
+                    p.setPen(theme.text2(sub_a))
                     p.drawText(
-                        QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
+                        QtCore.QRectF(sub_x, r.y(), sub_avail, r.height()),
                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                        fm_s.elidedText(sub, Qt.TextElideMode.ElideRight, int(sub_w)),
+                        fm_s.elidedText(sub, Qt.TextElideMode.ElideRight, int(sub_avail)),
                     )
                 return
 
-            # is_notify (r.width() >= 110.0)
+            # is_notify (r.width() >= 110.0)：按实际可用空间渐显与省略摘要，移除 190px 硬切换防止回弹闪动
             f_app = ui_font(12.5, W.DemiBold)
             fm_app = QtGui.QFontMetrics(f_app)
-            max_app = 108.0 if r.width() >= 190.0 else avail
-            app_w = min(max_app, float(math.ceil(fm_app.horizontalAdvance(title)) + 2), max(14.0, avail))
+            max_app = min(108.0, max(14.0, avail))
+            app_w = min(max_app, float(math.ceil(fm_app.horizontalAdvance(title)) + 2))
             p.setFont(f_app)
             p.setPen(theme.text(a))
             p.drawText(
@@ -1718,26 +1796,26 @@ class CompactView:
                 fm_app.elidedText(title, Qt.TextElideMode.ElideRight, int(app_w)),
             )
 
-            if r.width() >= 190.0:
-                sub_txt = sub or "有新消息"
-                f_sub = ui_font(12)
-                fm_sep = QtGui.QFontMetrics(f_sub)
-                sep_str = " · "
-                sep_w = float(fm_sep.horizontalAdvance(sep_str))
-                sx = x + app_w
-                if sx + sep_w + 12 <= dr.left() - 8:
-                    p.setFont(f_sub)
-                    p.setPen(theme.text3(0.75 * a))
-                    p.drawText(QtCore.QRectF(sx, r.y(), sep_w + 1, r.height()),
-                               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, sep_str)
-                    sub_x = sx + sep_w
-                    sub_w = max(10.0, dr.left() - 8 - sub_x)
-                    p.setPen(theme.text2(a))
-                    p.drawText(
-                        QtCore.QRectF(sub_x, r.y(), sub_w, r.height()),
-                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                        fm_sep.elidedText(sub_txt, Qt.TextElideMode.ElideRight, int(sub_w)),
-                    )
+            sub_txt = sub or "有新消息"
+            f_sub = ui_font(12)
+            fm_sep = QtGui.QFontMetrics(f_sub)
+            sep_str = " · "
+            sep_w = float(fm_sep.horizontalAdvance(sep_str))
+            sx = x + app_w
+            sub_x = sx + sep_w
+            sub_avail = (dr.left() - 8.0) - sub_x
+            if sub_avail >= 18.0:
+                sub_a = a * clamp((sub_avail - 16.0) / 18.0, 0.25, 1.0)
+                p.setFont(f_sub)
+                p.setPen(theme.text3(0.75 * sub_a))
+                p.drawText(QtCore.QRectF(sx, r.y(), sep_w + 1, r.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, sep_str)
+                p.setPen(theme.text2(sub_a))
+                p.drawText(
+                    QtCore.QRectF(sub_x, r.y(), sub_avail, r.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_sep.elidedText(sub_txt, Qt.TextElideMode.ElideRight, int(sub_avail)),
+                )
             return
 
         self._notify_dismiss_rect = None
