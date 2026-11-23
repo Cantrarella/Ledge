@@ -182,6 +182,8 @@ class MediaService(QtCore.QObject):
         self._cover_hash = ""
         self._prev_cover_hash = ""
         self._stale_cover_img = None
+        self._same_album = False
+        self._echo_cover_url = ""
         self._netease_cover_url = ""
         self._smtc_fallback_tried = False
         self._last_emit = None
@@ -301,6 +303,8 @@ class MediaService(QtCore.QObject):
                 self._cover_hash = ""
                 self._prev_cover_hash = ""
                 self._stale_cover_img = None
+                self._same_album = False
+                self._echo_cover_url = ""
                 self._netease_cover_url = ""
                 self._smtc_fallback_tried = False
                 self._emit_cover(None)
@@ -362,20 +366,42 @@ class MediaService(QtCore.QObject):
 
         key = (app_id, title, artist, album)
         if key != self._track_key:
+            prev_album = (
+                self._track_key[3]
+                if isinstance(self._track_key, tuple) and len(self._track_key) >= 4
+                else ""
+            )
             self._track_key = key
-            self._prev_cover_hash = self._cover_hash
+            # 仅保留最近一次非空封面哈希，避免连续快切时去重哈希被置空导致旧封面直接漏过
+            if self._cover_hash:
+                self._prev_cover_hash = self._cover_hash
             self._cover_hash = ""
             self._stale_cover_img = None
+            self._same_album = bool(
+                album.strip()
+                and prev_album.strip()
+                and album.strip().lower() == prev_album.strip().lower()
+            )
+            self._echo_cover_url = ""
             self._cover_tries = 1
             self._smtc_fallback_tried = False
             img, h = await self._read_cover(props)
             if img is not None and h and h == self._prev_cover_hash:
-                # 切歌瞬间 SMTC 常残留上一首的旧封面：先清空避免错配，若 3 次轮询后仍未变（同专辑）再恢复
+                # 切歌瞬间 SMTC 常残留上一首旧封面：先清空避免错配，仅在同专辑时才允许后续恢复
                 self._stale_cover_img = img
                 self._emit_cover(None)
             else:
                 self._cover_hash = h
                 self._emit_cover(img)
+            # Echo Music 本地库已有精确封面 URL 且当前尚未拿到新图时，立即异步拉取，不等 SMTC 补刷
+            if self.cover_image is None and echo_cover:
+                self._echo_cover_url = echo_cover
+                loop = asyncio.get_running_loop()
+                fb_img = await loop.run_in_executor(None, _download_cover, echo_cover)
+                if fb_img is not None:
+                    self._stale_cover_img = None
+                    self._smtc_fallback_tried = True
+                    self._emit_cover(fb_img)
         elif 0 < self._cover_tries < 15:
             # 切歌后持续观察 SMTC 缩略图是否更新（兼容 Echo Music / 浏览器延迟写入新封面）
             self._cover_tries += 1
@@ -385,19 +411,29 @@ class MediaService(QtCore.QObject):
                 self._stale_cover_img = None
                 self._emit_cover(img)
             elif self.cover_image is None:
-                if self._stale_cover_img is not None and self._cover_tries >= 4:
-                    # 连续多次哈希未变，大概率是同专辑共用封面，恢复显示并继续观察
+                if echo_cover and echo_cover != self._echo_cover_url:
+                    # Echo Music SQLite 写入略晚于 SMTC 时，一查到精确封面立即拉取
+                    self._echo_cover_url = echo_cover
+                    loop = asyncio.get_running_loop()
+                    fb_img = await loop.run_in_executor(None, _download_cover, echo_cover)
+                    if fb_img is not None:
+                        self._stale_cover_img = None
+                        self._smtc_fallback_tried = True
+                        self._emit_cover(fb_img)
+                elif self._stale_cover_img is not None and self._same_album and self._cover_tries >= 4:
+                    # 仅当新旧曲目专辑名非空且一致时，才按同专辑共用封面恢复显示
                     self._cover_hash = self._prev_cover_hash
                     self._emit_cover(self._stale_cover_img)
                     self._stale_cover_img = None
-                elif self._cover_tries == 4 and not self._smtc_fallback_tried and title:
-                    # 若 SMTC 连续多次仍无缩略图，优先用 Echo Music 本地封面或在线曲库兜底
+                elif self._cover_tries >= 4 and not self._smtc_fallback_tried and title:
+                    # 专辑不同或 SMTC 无图时绝不回退上一首旧封面，改用 Echo 封面或在线曲库兜底
                     self._smtc_fallback_tried = True
                     loop = asyncio.get_running_loop()
                     pic_url = echo_cover or await loop.run_in_executor(None, _search_cover_url, title, artist, dur)
                     if pic_url:
                         fb_img = await loop.run_in_executor(None, _download_cover, pic_url)
                         if fb_img is not None:
+                            self._stale_cover_img = None
                             self._emit_cover(fb_img)
         self._publish(st)
 
