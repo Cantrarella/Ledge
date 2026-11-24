@@ -53,6 +53,10 @@ class BatteryService(QtCore.QObject):
     low_battery = QtCore.Signal(str, str, int, str)    # (dev_id, display_name, percent, kind)
     full_battery = QtCore.Signal(str, str, str)        # (dev_id, display_name, kind)
     _watcher_want_changed = QtCore.Signal(bool)
+    _ble_watcher_stopped = QtCore.Signal(object)
+
+    _APPLE_SIDE_STALE_S = 180.0
+    _APPLE_MAX_KNOWN_ADDRS = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,11 +68,13 @@ class BatteryService(QtCore.QObject):
         self._full_alerted: set[str] = set()
         self._apple_adv: tuple[float, dict] | None = None
         self._apple_side_adv: dict[str, tuple[float, dict]] = {}
-        self._apple_known_addrs: set[int] = set()
+        self._apple_known_addrs: dict[int, float] = {}
         self._connected_apple: list[dict] = []
         self._bound_apple_models: set[str] = set()
         self._watcher = None
         self._busy = False
+        self._refresh_pending = False
+        self._refresh_pending_force = False
         self._cached_hid: list[tuple[object, DeviceCandidate]] | None = None
         self._last_discover_ts: float = 0.0
 
@@ -85,6 +91,7 @@ class BatteryService(QtCore.QObject):
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._watcher_want_changed.connect(self._sync_apple_watcher, QtCore.Qt.ConnectionType.QueuedConnection)
+        self._ble_watcher_stopped.connect(self._on_ble_stopped_main, QtCore.Qt.ConnectionType.QueuedConnection)
         self._started = False
 
     def start(self):
@@ -107,6 +114,8 @@ class BatteryService(QtCore.QObject):
         sec = max(15, min(300, int(cfg.get("battery.poll_interval_s", 60) or 60)))
         if not enabled:
             self._timer.stop()
+            self._refresh_pending = False
+            self._refresh_pending_force = False
             self._stop_apple_watcher()
             with self._lock:
                 self._devices = []
@@ -123,6 +132,8 @@ class BatteryService(QtCore.QObject):
 
     def stop(self):
         self._started = False
+        self._refresh_pending = False
+        self._refresh_pending_force = False
         self._timer.stop()
         self._stop_apple_watcher()
 
@@ -132,12 +143,18 @@ class BatteryService(QtCore.QObject):
         if not cfg.get("battery.enabled", True):
             return
         if self._busy:
+            # 轮询进行中若有新触发（例如 BLE 刚收到第一帧广播），记为待补刷而非静默丢弃
+            self._refresh_pending = True
+            if force_discover:
+                self._refresh_pending_force = True
             return
+        self._refresh_pending = False
+        self._refresh_pending_force = False
         self._set_busy(True)
         run_bg(
             lambda fd=bool(force_discover): self._poll_sync(force_discover=fd),
             on_done=self._on_poll_done,
-            on_error=lambda _e: self._set_busy(False),
+            on_error=self._on_poll_error,
         )
 
     def on_system_resume(self):
@@ -205,22 +222,20 @@ class BatteryService(QtCore.QObject):
             self._watcher = None
 
     def _on_ble_stopped(self, sender, _args):
-        """蓝牙适配器复位或系统休眠导致监听意外中止时，回到主线程自动重建。"""
-        if not self._started or sender is not self._watcher:
-            return
-        self._watcher = None
+        """蓝牙适配器复位或系统休眠导致监听意外中止时，投递回主线程统一清理与重建。"""
         try:
-            QtCore.QMetaObject.invokeMethod(
-                self, "_schedule_ble_restart", QtCore.Qt.ConnectionType.QueuedConnection
-            )
+            self._ble_watcher_stopped.emit(sender)
         except Exception:  # noqa: BLE001
             pass
 
-    @QtCore.Slot()
-    def _schedule_ble_restart(self):
+    @QtCore.Slot(object)
+    def _on_ble_stopped_main(self, sender):
+        if not self._started or sender is not self._watcher:
+            return
+        self._watcher = None
         with self._lock:
             has_apple = bool(self._connected_apple)
-        if self._started and has_apple and cfg.get("battery.enabled", True):
+        if has_apple and cfg.get("battery.enabled", True):
             QtCore.QTimer.singleShot(2000, self._start_apple_watcher)
 
     def _stop_apple_watcher(self):
@@ -238,7 +253,9 @@ class BatteryService(QtCore.QObject):
             return None
         entries = list(self._apple_side_adv.values())
         entries.sort(key=lambda item: item[0])
-        latest = entries[-1][1]
+        latest_ts, latest = entries[-1]
+        # 丢弃比最新帧过旧的另一侧缓存（避免充电盒合盖或单耳放回盒后旧数值永久残留）
+        entries = [e for e in entries if (latest_ts - e[0]) <= self._APPLE_SIDE_STALE_S]
         model = str(latest.get("model") or "AirPods")
         # 单电池设备（如 AirPods Max）直接使用最新帧
         if not any(e[1].get("parts") for e in entries):
@@ -298,7 +315,10 @@ class BatteryService(QtCore.QObject):
                         return
                     prev = self._apple_adv[1] if self._apple_adv else None
                     if addr:
-                        self._apple_known_addrs.add(addr)
+                        self._apple_known_addrs[addr] = now_ts
+                        if len(self._apple_known_addrs) > self._APPLE_MAX_KNOWN_ADDRS:
+                            oldest_addr = min(self._apple_known_addrs, key=self._apple_known_addrs.get)
+                            self._apple_known_addrs.pop(oldest_addr, None)
                     self._apple_side_adv[side] = (now_ts, parsed)
                     merged = self._merge_apple_sides_locked()
                     if merged is not None:
@@ -427,12 +447,24 @@ class BatteryService(QtCore.QObject):
                 )
         return out
 
+    def _drain_pending_refresh(self):
+        if self._refresh_pending and self._started and cfg.get("battery.enabled", True):
+            force = self._refresh_pending_force
+            self._refresh_pending = False
+            self._refresh_pending_force = False
+            self.refresh(force_discover=force)
+
+    def _on_poll_error(self, _err):
+        self._set_busy(False)
+        self._drain_pending_refresh()
+
     def _on_poll_done(self, devs: list[BatteryDevice]):
         self._set_busy(False)
         with self._lock:
             self._devices = devs
         self._check_low_battery(devs)
         self.changed.emit()
+        self._drain_pending_refresh()
 
     def _check_low_battery(self, devs: list[BatteryDevice]):
         low_on = bool(cfg.get("battery.low_notify", True))

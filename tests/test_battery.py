@@ -321,6 +321,73 @@ def test_apple_ble_state_manager_side_merge_and_disconnect_cleanup(monkeypatch):
     svc._poll_sync(force_discover=False)
     app.processEvents()
     assert svc._fresh_apple_adv() is None
-    assert svc._apple_known_addrs == set()
+    assert not svc._apple_known_addrs
     assert watcher_states[-1] is False
+    svc.stop()
+
+
+def test_apple_ble_review_fixes_pending_refresh_stale_side_and_no_cross_merge(monkeypatch):
+    """回归：轮询中排队补刷、过期旧侧淘汰、已知地址上限、以及不串台合并到非 Apple 蓝牙耳机。"""
+    import time
+    from types import SimpleNamespace
+    from PySide6 import QtWidgets
+    from wisland.services import battery as bat_mod
+    from wisland.services import battery_providers as bp
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    # 1) 非 Apple 蓝牙耳机与 AirPods 同时连接时，不得把 AirPods 电量串台合并到非 Apple 耳机上
+    monkeypatch.setattr(
+        bp,
+        "read_bluetooth_batteries",
+        lambda: [{"id": "bt:BTHENUM\\DEV_111122223333\\0", "name": "Sony WF-1000XM5 Earbuds", "percent": 65}],
+    )
+    snap = {"model": "AirPods Pro", "percent": 90, "charging": False, "parts": [("左", 90, False), ("右", 90, False)]}
+    conn = [{"mac": "282D7FDFF047", "name": "鹅夹似鹅鸡", "pid": 0x2024}]
+    res = bp.BluetoothBatteryProvider().discover_and_read(snap, connected_apple=conn)
+    assert len(res) == 2
+    by_name = {c.name: (c, r) for c, r in res}
+    assert by_name["Sony WF-1000XM5 Earbuds"][0].brand == "Bluetooth"
+    assert by_name["Sony WF-1000XM5 Earbuds"][1].percent == 65
+    assert by_name["Sony WF-1000XM5 Earbuds"][1].parts == []
+    assert by_name["鹅夹似鹅鸡"][0].brand == "Apple"
+    assert by_name["鹅夹似鹅鸡"][1].percent == 90
+
+    # 2) 新增型号映射（AirPods 4 / AirPods Max USB-C）
+    assert bp.AppleAdvertParser.model_for_pid(0x2019) == "AirPods 4"
+    assert bp.AppleAdvertParser.model_for_pid(0x201B) == "AirPods 4"
+    assert bp.AppleAdvertParser.model_for_pid(0x201F) == "AirPods Max"
+
+    # 3) _busy 期间触发 refresh() 会排队，在 _on_poll_done 后自动补刷一次
+    svc = BatteryService()
+    svc._started = True
+    launched: list[bool] = []
+    monkeypatch.setattr(bat_mod, "run_bg", lambda fn, on_done=None, on_error=None: launched.append(True))
+    svc.refresh()
+    assert len(launched) == 1 and svc._busy is True
+    svc.refresh(force_discover=True)
+    assert len(launched) == 1 and svc._refresh_pending is True and svc._refresh_pending_force is True
+    svc._on_poll_done([])
+    assert len(launched) == 2 and svc._refresh_pending is False
+
+    # 4) 另一侧广播过期超过 _APPLE_SIDE_STALE_S 时自动淘汰旧充电盒/单耳数据，且已知地址不超过上限
+    svc._connected_apple = conn
+    svc._bound_apple_models = {"AirPods Pro"}
+    old_ts = time.time() - (svc._APPLE_SIDE_STALE_S + 30.0)
+    svc._apple_side_adv["left"] = (
+        old_ts,
+        {"model": "AirPods Pro", "percent": 90, "charging": False, "parts": [("左", 90, False), ("盒", 60, True)]},
+    )
+    right_only = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x20, 0x8F, 0x0F])
+    for i in range(10):
+        args = SimpleNamespace(
+            raw_signal_strength_in_dbm=-50,
+            bluetooth_address=0xAA00 + i,
+            advertisement=SimpleNamespace(manufacturer_data=[SimpleNamespace(company_id=0x004C, data=right_only)]),
+        )
+        svc._on_ble_adv(None, args)
+    merged = svc._fresh_apple_adv()
+    assert merged is not None
+    assert merged["parts"] == [("右", 80, False)]
+    assert len(svc._apple_known_addrs) <= svc._APPLE_MAX_KNOWN_ADDRS
     svc.stop()

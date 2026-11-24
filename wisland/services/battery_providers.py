@@ -671,14 +671,17 @@ class AppleAdvertParser:
         0x0220: "AirPods",
         0x0F20: "AirPods",
         0x1320: "AirPods",
+        0x1920: "AirPods 4",
+        0x1B20: "AirPods 4",
         0x0E20: "AirPods Pro",
         0x1420: "AirPods Pro",
         0x2420: "AirPods Pro",
         0x2720: "AirPods Pro",
         0x0A20: "AirPods Max",
+        0x1F20: "AirPods Max",
         0x0B20: "Powerbeats Pro",
     }
-    _SINGLES = {0x0A20}
+    _SINGLES = {0x0A20, 0x1F20}
 
     @classmethod
     def model_for_pid(cls, pid: int) -> str | None:
@@ -752,15 +755,34 @@ class BluetoothBatteryProvider:
     ) -> list[tuple[DeviceCandidate, BatteryReading]]:
         rows = read_bluetooth_batteries()
         out: list[tuple[DeviceCandidate, BatteryReading]] = []
+        conn_list: list[dict] = (
+            list(connected_apple)
+            if connected_apple is not None
+            else (get_connected_apple_bluetooth_devices() if apple_snapshot else [])
+        )
+        apple_macs = {str(d.get("mac") or "").upper() for d in conn_list if d.get("mac")}
+        apple_names = {
+            str(d.get("name") or "").strip().lower()
+            for d in conn_list
+            if str(d.get("name") or "").strip()
+        }
         merged_apple = False
         for item in rows:
             name = item["name"]
             pct = int(item["percent"])
             kind = infer_device_kind(name, "bluetooth")
+            item_id_up = str(item.get("id") or "").upper()
+            name_low = name.strip().lower()
+            is_apple_row = (
+                any(mac in item_id_up for mac in apple_macs)
+                or (name_low in apple_names)
+                or ("airpods" in name_low)
+                or ("beats" in name_low)
+            )
             parts: list[tuple[str, int, bool]] = []
             charging: bool | None = None
             detail = "蓝牙"
-            if kind == "earbuds" and apple_snapshot and apple_snapshot.get("parts"):
+            if is_apple_row and apple_snapshot and apple_snapshot.get("parts"):
                 merged_apple = True
                 parts = list(apple_snapshot["parts"])
                 pct = int(apple_snapshot["percent"])
@@ -769,7 +791,7 @@ class BluetoothBatteryProvider:
             cand = DeviceCandidate(
                 id=item["id"],
                 name=name,
-                brand="Apple" if kind == "earbuds" else "Bluetooth",
+                brand="Apple" if is_apple_row else "Bluetooth",
                 model=name,
                 kind=kind,
                 provider=self.name,
@@ -777,7 +799,6 @@ class BluetoothBatteryProvider:
             rd = BatteryReading(percent=pct, charging=charging, online=True, detail=detail, parts=parts)
             out.append((cand, rd))
         if apple_snapshot and not merged_apple:
-            conn_list = connected_apple if connected_apple is not None else get_connected_apple_bluetooth_devices()
             if not conn_list and not has_connected_apple_bluetooth():
                 return out
             parts = list(apple_snapshot.get("parts") or [])
