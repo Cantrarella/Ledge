@@ -539,3 +539,24 @@ def test_apple_ble_restart_cancel_switch_pair_and_query_error_guard(monkeypatch)
     assert svc._connected_apple == []
     assert svc._fresh_apple_adv() is None
     svc.stop()
+
+
+def test_apple_ble_start_failure_schedules_retry_and_probe_self_heals(monkeypatch):
+    """当蓝牙适配器短暂报“设备未就绪”导致启动失败时，自动安排 2 秒重试且 5 秒心跳可自愈拉起。"""
+    from PySide6 import QtWidgets
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    svc = BatteryService()
+    svc._started = True
+    conn = [{"mac": "282D7FDFF047", "name": "鹅夹似鹅鸡", "pid": 0x2024}]
+    svc._connected_apple = list(conn)
+
+    # 1) 5 秒心跳发现状态未变但 _watcher 缺失且未在等待重试 -> 自动补调 _start_apple_watcher
+    started: list[bool] = []
+    monkeypatch.setattr(svc, "_start_apple_watcher", lambda: started.append(True))
+    monkeypatch.setattr(svc, "refresh", lambda force_discover=False: None)
+    svc._watcher = None
+    svc._ble_restart_timer.stop()
+    svc._on_apple_probe_done((True, conn))
+    assert len(started) == 1
+    svc.stop()

@@ -7,6 +7,8 @@ import os
 from ctypes import wintypes
 from dataclasses import dataclass
 
+import psutil
+
 from .models import NotificationEvent
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)

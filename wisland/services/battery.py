@@ -229,6 +229,9 @@ class BatteryService(QtCore.QObject):
         if changed:
             self._sync_apple_watcher(bool(connected_apple), force_restart=switched)
             self.refresh(force_discover=False)
+        elif connected_apple and self._watcher is None and not self._ble_restart_timer.isActive():
+            # 蓝牙适配器重插/唤醒后若此前启动 BLE 监听失败（如短暂“设备未就绪”），心跳周期自动自愈拉起
+            self._start_apple_watcher()
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
@@ -319,6 +322,10 @@ class BatteryService(QtCore.QObject):
             self._watcher = w
         except Exception:  # noqa: BLE001
             self._watcher = None
+            with self._lock:
+                has_apple = bool(self._connected_apple)
+            if self._started and has_apple and cfg.get("battery.enabled", True):
+                self._ble_restart_timer.start()
 
     def _on_ble_stopped(self, sender, _args):
         """蓝牙适配器复位或系统休眠导致监听意外中止时，投递回主线程统一清理与重建。"""
