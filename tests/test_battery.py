@@ -559,4 +559,18 @@ def test_apple_ble_start_failure_schedules_retry_and_probe_self_heals(monkeypatc
     svc._ble_restart_timer.stop()
     svc._on_apple_probe_done((True, conn))
     assert len(started) == 1
+    # 2) 模拟 WinRT 每次回调传入不同的 sender 包装对象，只要 watcher_gen 匹配仍必须正常接收广播
+    svc._watcher = object()
+    cur_gen = svc._watcher_gen
+    svc._bound_apple_models = {"AirPods Pro"}
+    right_pkt = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x20, 0x8F, 0x0F])
+    from types import SimpleNamespace
+    args = SimpleNamespace(
+        raw_signal_strength_in_dbm=-45,
+        bluetooth_address=0xBB01,
+        advertisement=SimpleNamespace(manufacturer_data=[SimpleNamespace(company_id=0x004C, data=right_pkt)]),
+    )
+    svc._on_ble_adv(object(), args, watcher_gen=cur_gen)
+    snap = svc._fresh_apple_adv()
+    assert snap is not None and ("右", 80, False) in snap["parts"]
     svc.stop()

@@ -315,7 +315,7 @@ class BatteryService(QtCore.QObject):
                 gen = self._watcher_gen
             w.add_received(lambda s, a, g=gen: self._on_ble_adv(s, a, g))
             try:
-                w.add_stopped(self._on_ble_stopped)
+                w.add_stopped(lambda s, a, g=gen: self._on_ble_stopped(s, a, g))
             except Exception:  # noqa: BLE001
                 pass
             w.start()
@@ -327,21 +327,29 @@ class BatteryService(QtCore.QObject):
             if self._started and has_apple and cfg.get("battery.enabled", True):
                 self._ble_restart_timer.start()
 
-    def _on_ble_stopped(self, sender, _args):
+    def _on_ble_stopped(self, sender, _args, watcher_gen: int | None = None):
         """蓝牙适配器复位或系统休眠导致监听意外中止时，投递回主线程统一清理与重建。"""
         try:
-            self._ble_watcher_stopped.emit(sender)
+            self._ble_watcher_stopped.emit((sender, watcher_gen))
         except Exception:  # noqa: BLE001
             pass
 
     @QtCore.Slot(object)
-    def _on_ble_stopped_main(self, sender):
-        if not self._started or sender is not self._watcher:
+    def _on_ble_stopped_main(self, payload):
+        if isinstance(payload, tuple) and len(payload) == 2:
+            sender, watcher_gen = payload
+        else:
+            sender, watcher_gen = payload, None
+        if not self._started or self._watcher is None:
             return
-        self._watcher = None
         with self._lock:
+            if watcher_gen is not None and watcher_gen != self._watcher_gen:
+                return
+            if watcher_gen is None and sender is not self._watcher:
+                return
             self._watcher_gen += 1
             has_apple = bool(self._connected_apple)
+        self._watcher = None
         if has_apple and cfg.get("battery.enabled", True):
             self._ble_restart_timer.start()
 
@@ -413,8 +421,6 @@ class BatteryService(QtCore.QObject):
             with self._lock:
                 if watcher_gen is not None and watcher_gen != self._watcher_gen:
                     return
-                if sender is not None and self._watcher is not None and sender is not self._watcher:
-                    return
                 if not self._connected_apple:
                     return
                 known = bool(addr and addr in self._apple_known_addrs)
@@ -434,8 +440,6 @@ class BatteryService(QtCore.QObject):
                 side = str(parsed.get("side") or "left")
                 with self._lock:
                     if watcher_gen is not None and watcher_gen != self._watcher_gen:
-                        return
-                    if sender is not None and self._watcher is not None and sender is not self._watcher:
                         return
                     if not self._connected_apple:
                         return
