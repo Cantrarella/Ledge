@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes
 import math
+import os
 import time
 from ctypes import wintypes
 
@@ -51,6 +52,12 @@ EDGE_MARGIN = 6
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TRANSPARENT = 0x00000020
+HWND_TOPMOST = ctypes.c_void_p(-1)
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
+SWP_NOOWNERZORDER = 0x0200
 WM_HOTKEY = 0x0312
 WM_DISPLAYCHANGE = 0x007E
 WM_POWERBROADCAST = 0x0218
@@ -59,12 +66,18 @@ DBT_DEVNODES_CHANGED = 0x0007
 WM_DPICHANGED = 0x02E0
 PBT_APMRESUMESUSPEND = 0x0007
 PBT_APMRESUMEAUTOMATIC = 0x0012
+HSHELL_WINDOWACTIVATED = 4
+HSHELL_RUDEAPPACTIVATED = 0x8004
 HSHELL_FLASH = 0x8006
 
 user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
 user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+user32.SetWindowPos.argtypes = [
+    wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT
+]
+user32.SetWindowPos.restype = wintypes.BOOL
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetForegroundWindow.restype = wintypes.HWND
@@ -562,6 +575,7 @@ class Island(QtWidgets.QWidget):
         self.content.setGeometry(self._content_rect(w, h))   # 先隐藏，形状就绪后再显示
         if self.passthrough():
             self._apply_passthrough()
+        self.ensure_topmost()
         self.unread_dock.set_island_state(True, 0.0)
         self.expanded_changed.emit(True)
         if self._panel_size_ready(w, h):
@@ -2007,6 +2021,7 @@ class Island(QtWidgets.QWidget):
         transparent = on
         ex = (ex | WS_EX_TRANSPARENT) if transparent else (ex & ~WS_EX_TRANSPARENT)
         user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex)
+        self.ensure_topmost(frame_changed=True)
         if on:
             self._rhook.install()
         else:
@@ -2168,6 +2183,29 @@ class Island(QtWidgets.QWidget):
         if self._prev_fg and user32.IsWindow(self._prev_fg):
             user32.SetForegroundWindow(self._prev_fg)
         self._prev_fg = None
+        self.ensure_topmost(frame_changed=True)
+
+    def ensure_topmost(self, frame_changed: bool = False):
+        """以不抢焦点方式重新将灵动岛推回 HWND_TOPMOST 顶层，避免被全屏应用或新激活的置顶窗口压住。"""
+        if self._fs_hidden or not self.isVisible() or "menu" in self.locks:
+            return
+        try:
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+            # 若本进程自己的设置窗口/确认弹窗正处于前台，不反盖自己的弹窗
+            fg = user32.GetForegroundWindow()
+            if fg and int(fg) != hwnd:
+                fg_pid = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(fg, ctypes.byref(fg_pid))
+                if int(fg_pid.value) == os.getpid():
+                    return
+            flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+            if frame_changed:
+                flags |= SWP_FRAMECHANGED
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ================================================================ 原生：热键、闪烁、样式
     def showEvent(self, e):
@@ -2182,6 +2220,7 @@ class Island(QtWidgets.QWidget):
         if not self._registered_hotkeys:
             self.register_hotkeys()
         self._apply_passthrough()
+        self.ensure_topmost(frame_changed=True)
         if self.pinned():
             QtCore.QTimer.singleShot(600, self.expand)
         self.poll.start()
@@ -2251,15 +2290,20 @@ class Island(QtWidgets.QWidget):
                 if int(msg.wParam) in (PBT_APMRESUMESUSPEND, PBT_APMRESUMEAUTOMATIC):
                     self._last = time.perf_counter()
                     self._on_screens_changed()
+                    QtCore.QTimer.singleShot(0, self.ensure_topmost)
                     self.resumed_from_sleep.emit()
             elif msg.message == WM_DEVICECHANGE:
                 if int(msg.wParam) == DBT_DEVNODES_CHANGED:
                     self.device_changed.emit()
             elif msg.message in (WM_DISPLAYCHANGE, WM_DPICHANGED):
                 self._on_screens_changed()
+                QtCore.QTimer.singleShot(0, self.ensure_topmost)
             elif self._shell_msg and msg.message == self._shell_msg:
-                if int(msg.wParam) == HSHELL_FLASH:
+                wp = int(msg.wParam)
+                if wp == HSHELL_FLASH:
                     self.flash.emit(int(msg.lParam or 0))
+                elif wp in (HSHELL_WINDOWACTIVATED, HSHELL_RUDEAPPACTIVATED):
+                    QtCore.QTimer.singleShot(0, self.ensure_topmost)
         except Exception:  # noqa: BLE001
             pass
         return False, 0
@@ -2273,6 +2317,7 @@ class Island(QtWidgets.QWidget):
             self.hide()
         else:
             self.show()
+            self.ensure_topmost()
             if self.pinned() and not self.passthrough():
                 self.expand()
             self._kick()

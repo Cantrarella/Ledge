@@ -509,3 +509,69 @@ def test_10_weather_add_city_failed_does_not_switch_on_later_refresh():
         assert pg._pending_select_new is False
     finally:
         pg.close()
+
+
+def test_11_island_ensure_topmost_reasserts_zorder_without_covering_own_dialogs(monkeypatch):
+    """灵动岛在外部窗口/全屏窗口在前台时应调用 SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)；
+    但隐藏态、菜单弹出、或本进程自己的设置窗口在前台时不得强行反盖。"""
+    import os
+    from wisland.ui import island as isl_mod
+    from wisland.ui.island import Island
+
+    _app()
+
+    class _DummyPage(QtWidgets.QWidget):
+        key = "home"
+        title = "主页"
+        glyph = ""
+        preferred_size = (320, 180)
+        def preferred_panel_width(self): return 320
+        def preferred_panel_height(self): return 180
+        def on_show(self): pass
+        def on_hide(self): pass
+
+    isl = Island([_DummyPage()])
+    try:
+        calls: list[tuple] = []
+        fg_state = {"hwnd": 99999, "pid": os.getpid() + 12345}
+
+        class _FakeUser32:
+            def GetForegroundWindow(self):
+                return fg_state["hwnd"]
+
+            def GetWindowThreadProcessId(self, _hwnd, pid_ptr):
+                pid_ptr._obj.value = fg_state["pid"]
+                return 1
+
+            def SetWindowPos(self, hwnd, insert_after, x, y, cx, cy, flags):
+                calls.append((hwnd, insert_after, flags))
+                return 1
+
+        monkeypatch.setattr(isl_mod, "user32", _FakeUser32())
+        monkeypatch.setattr(isl, "isVisible", lambda: True)
+        monkeypatch.setattr(isl, "winId", lambda: 12345)
+
+        # 1) 外部窗口在前台 -> 正常置顶且不抢焦点
+        isl.ensure_topmost()
+        assert len(calls) == 1
+        assert calls[0][0] == 12345
+        assert calls[0][1] == isl_mod.HWND_TOPMOST
+        assert (calls[0][2] & isl_mod.SWP_NOACTIVATE) != 0
+
+        # 2) 右键菜单弹出或全屏隐藏时 -> 不调用 SetWindowPos
+        isl.locks.add("menu")
+        isl.ensure_topmost()
+        assert len(calls) == 1
+        isl.locks.discard("menu")
+
+        isl._fs_hidden = True
+        isl.ensure_topmost()
+        assert len(calls) == 1
+        isl._fs_hidden = False
+
+        # 3) 本进程自己的设置窗口/弹窗在前台 -> 不反盖自己的窗口
+        fg_state["pid"] = os.getpid()
+        isl.ensure_topmost()
+        assert len(calls) == 1
+    finally:
+        isl.close()

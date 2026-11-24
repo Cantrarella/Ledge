@@ -620,13 +620,17 @@ def main():
         cycle_timer.setInterval(cyc * 1000)
         cycle_timer.start()
 
-    # ---------------- 全屏时隐藏 ----------------
+    # ---------------- 全屏时隐藏 & 维持置顶 ----------------
     def check_fullscreen():
         if not cfg.get("island.hide_fullscreen", True):
             island.set_fullscreen_hidden(False)
+            island.ensure_topmost()
             return
         try:
-            island.set_fullscreen_hidden(ctx.windows.foreground_is_fullscreen(int(island.winId())))
+            is_fs = ctx.windows.foreground_is_fullscreen(int(island.winId()))
+            island.set_fullscreen_hidden(is_fs)
+            if not is_fs:
+                island.ensure_topmost()
         except Exception:  # noqa: BLE001
             pass
     fs_timer = QtCore.QTimer(app, interval=1000, timeout=check_fullscreen)
