@@ -82,15 +82,19 @@ class ShelfService(QtCore.QObject):
         except Exception:  # noqa: BLE001
             pass
 
+    def _save_items_locked(self, items: list[dict]):
+        """在持锁状态下原子持久化候选列表，成功后再替换内存状态。"""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"version": 1, "items": items}
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, self.path)
+
     def save(self):
         """原子写入 data/shelf.json，不记录任何文件正文内容。"""
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"version": 1, "items": self.items}
-            text = json.dumps(payload, ensure_ascii=False, indent=2)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, self.path)
+            self._save_items_locked(self.items)
 
     def list_items(self) -> list[dict]:
         """返回所有条目及其当前文件存在状态。"""
@@ -126,8 +130,10 @@ class ShelfService(QtCore.QObject):
         added = 0
         skipped_dup = 0
         invalid = 0
+        save_err = ""
         with self._lock:
-            seen = {norm_file_key(it["path"]) for it in self.items}
+            candidate = list(self.items)
+            seen = {norm_file_key(it["path"]) for it in candidate}
             now = time.time()
             for raw_p in file_paths or []:
                 s = str(raw_p or "").strip()
@@ -146,11 +152,20 @@ class ShelfService(QtCore.QObject):
                     skipped_dup += 1
                     continue
                 seen.add(k)
-                self.items.append({"path": abs_p, "added_at": now})
+                candidate.append({"path": abs_p, "added_at": now})
                 added += 1
             if added > 0:
-                self.save()
+                try:
+                    self._save_items_locked(candidate)
+                    self.items = candidate
+                except Exception as e:  # noqa: BLE001
+                    save_err = str(e)
+                    added = 0
 
+        if save_err:
+            msg = f"保存文件置物架失败：{save_err}"
+            self.notice.emit(msg, True)
+            return 0, msg
         if added > 0:
             self.changed.emit()
             msg = f"已添加 {added} 个文件" + (f"（跳过 {skipped_dup} 个重复文件）" if skipped_dup else "")
@@ -170,23 +185,37 @@ class ShelfService(QtCore.QObject):
         """仅从置物架移除一条路径记录，绝不删除磁盘上的原文件。"""
         target_k = norm_file_key(path_str)
         removed = False
+        save_err = ""
         with self._lock:
             new_items = [it for it in self.items if norm_file_key(it["path"]) != target_k]
             if len(new_items) != len(self.items):
-                self.items = new_items
-                self.save()
-                removed = True
+                try:
+                    self._save_items_locked(new_items)
+                    self.items = new_items
+                    removed = True
+                except Exception as e:  # noqa: BLE001
+                    save_err = str(e)
+        if save_err:
+            self.notice.emit(f"保存文件置物架失败：{save_err}", True)
+            return False
         if removed:
             self.changed.emit()
         return removed
 
     def clear(self):
         """清空置物架全部路径记录，绝不删除磁盘上的原文件。"""
+        save_err = ""
         with self._lock:
             if not self.items:
                 return
-            self.items = []
-            self.save()
+            try:
+                self._save_items_locked([])
+                self.items = []
+            except Exception as e:  # noqa: BLE001
+                save_err = str(e)
+        if save_err:
+            self.notice.emit(f"保存文件置物架失败：{save_err}", True)
+            return
         self.changed.emit()
         self.notice.emit("已清空置物架（原文件未删除）", False)
 

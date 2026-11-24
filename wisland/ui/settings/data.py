@@ -115,13 +115,18 @@ class DataSettingsPage(SettingsPage):
             confirm_text="恢复默认",
         ):
             return
-        # 先备份原配置
+        # 先备份原配置；备份失败时中止恢复默认，保留原草稿并提示原因
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             backup_path = DATA_DIR / "config.backup.json"
             backup_path.write_text(json.dumps(cfg.data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            ConfirmDialog.info(
+                self.window(),
+                "备份原配置失败",
+                f"无法备份当前配置至 data/config.backup.json，已取消恢复默认设置：\n{e}",
+            )
+            return
         if self._draft_ref is not None:
             unknowns = {k: v for k, v in self._draft_ref.data.items() if k not in DEFAULTS}
             reset_data = _merge(DEFAULTS, unknowns)

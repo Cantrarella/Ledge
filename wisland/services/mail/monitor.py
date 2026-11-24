@@ -56,6 +56,8 @@ class _AccountMonitorWorker:
         client_factory=None,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         idle_renew_s: float = IDLE_RENEW_S,
+        initial_baseline_uid: int | None = None,
+        initial_uid_validity: str = "",
     ):
         self.account = account
         self.secret = secret
@@ -69,8 +71,8 @@ class _AccountMonitorWorker:
         self._client = None
         self._in_idle = False
         self._idle_lock = threading.Lock()
-        self._baseline_uid: int | None = None
-        self._uid_validity: str = ""
+        self._baseline_uid: int | None = initial_baseline_uid
+        self._uid_validity: str = str(initial_uid_validity or "")
         self.thread = threading.Thread(
             target=self._run,
             name=f"wisland-mail-mon-{account.id[:8]}",
@@ -280,7 +282,7 @@ class _AccountMonitorWorker:
 class MailMonitorService(QtCore.QObject):
     """后台监听所有已启用邮箱账号的新邮件，并接入 NotificationController。"""
 
-    _internal_new_mail = QtCore.Signal(str, str, list)  # account_id, uid_validity, list[MailHeader]
+    _internal_new_mail = QtCore.Signal(str, str, list, object)  # account_id, uid_validity, list[MailHeader], src_worker
 
     def __init__(
         self,
@@ -302,6 +304,7 @@ class MailMonitorService(QtCore.QObject):
 
         self._running = False
         self._workers: dict[str, _AccountMonitorWorker] = {}
+        self._last_cursor: dict[str, tuple[int | None, str]] = {}
         self._unread_by_account: dict[str, set[tuple[str, str]]] = {}
         self._internal_new_mail.connect(self._handle_new_mail_on_main)
         self._mgr.accounts_changed.connect(self.sync_accounts)
@@ -312,15 +315,21 @@ class MailMonitorService(QtCore.QObject):
 
     def stop(self):
         self._running = False
+        for aid, w in self._workers.items():
+            if w._baseline_uid is not None:
+                self._last_cursor[aid] = (w._baseline_uid, w._uid_validity)
         workers = list(self._workers.values())
         self._workers.clear()
         for w in workers:
             w.stop()
 
     def apply_config(self):
-        """休眠唤醒或配置变化时，重建已有账号监听连接并同步账号列表。"""
+        """休眠唤醒或配置变化时，保留各账号 UID 游标并重建监听连接，确保唤醒后补查漏掉的新邮件。"""
         if not self._running:
             return
+        for aid, w in self._workers.items():
+            if w._baseline_uid is not None:
+                self._last_cursor[aid] = (w._baseline_uid, w._uid_validity)
         workers = list(self._workers.values())
         self._workers.clear()
         for w in workers:
@@ -336,12 +345,19 @@ class MailMonitorService(QtCore.QObject):
             return
         enabled_map = {a.id: a for a in self._mgr.list_accounts() if a.enabled}
 
-        # 停止已删除或已停用的账号监听
+        # 停止已删除或已停用的账号监听，并清理其未读集合与游标
         for aid in list(self._workers.keys()):
             if aid not in enabled_map:
                 w = self._workers.pop(aid)
                 w.stop()
                 self._unread_by_account.pop(aid, None)
+                self._last_cursor.pop(aid, None)
+        for aid in list(self._unread_by_account.keys()):
+            if aid not in enabled_map:
+                self._unread_by_account.pop(aid, None)
+        for aid in list(self._last_cursor.keys()):
+            if aid not in enabled_map:
+                self._last_cursor.pop(aid, None)
         self._sync_controller_mail_count()
 
         # 为新启用的账号启动独立监听线程
@@ -351,22 +367,37 @@ class MailMonitorService(QtCore.QObject):
             secret = self._mgr._creds.read_secret(acc.credential_key)
             if not secret:
                 continue
+            init_uid, init_uv = self._last_cursor.get(aid, (None, ""))
+            worker_box: list[_AccountMonitorWorker] = []
             w = _AccountMonitorWorker(
                 acc,
                 secret,
                 poll_interval_fn=lambda: int(self._cfg.get("mail.interval_s", 120) or 120),
-                on_new_mail_fn=lambda a_id, uv, hdrs: self._internal_new_mail.emit(a_id, uv, hdrs),
+                on_new_mail_fn=lambda a_id, uv, hdrs, wb=worker_box: self._internal_new_mail.emit(
+                    a_id, uv, hdrs, wb[0] if wb else None
+                ),
                 client_factory=self._client_factory,
                 timeout_s=self._timeout_s,
                 idle_renew_s=self._idle_renew_s,
+                initial_baseline_uid=init_uid,
+                initial_uid_validity=init_uv,
             )
+            worker_box.append(w)
             self._workers[aid] = w
             w.start()
 
-    @QtCore.Slot(str, str, list)
-    def _handle_new_mail_on_main(self, account_id: str, uid_validity: str, hdrs: list):
-        if not hdrs:
+    @QtCore.Slot(str, str, list, object)
+    def _handle_new_mail_on_main(self, account_id: str, uid_validity: str, hdrs: list, src_worker=None):
+        if not self._running or not hdrs:
             return
+        # 丢弃已停用/删除账号或已销毁旧监听线程排队的过期批次
+        cur_w = self._workers.get(account_id)
+        if cur_w is None:
+            return
+        if src_worker is not None and cur_w is not src_worker:
+            return
+        if cur_w._baseline_uid is not None:
+            self._last_cursor[account_id] = (cur_w._baseline_uid, str(uid_validity or cur_w._uid_validity or ""))
         self._mgr.merge_incoming_headers(account_id, hdrs)
 
         unread_set = self._unread_by_account.setdefault(account_id, set())
