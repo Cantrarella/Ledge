@@ -354,7 +354,7 @@ def read_bluetooth_batteries() -> list[dict]:
     seen: set[str] = set()
     id_buf = ctypes.create_unicode_buffer(512)
     name_buf = ctypes.create_unicode_buffer(256)
-    for enum_name in ("BTHENUM", "BTHLE", "BTHLEDEVICE"):
+    for enum_name in ("BTHENUM", "BTHLE", "BTHLEDEVICE", "BTHHFENUM"):
         h_dev = _setupapi.SetupDiGetClassDevsW(None, enum_name, None, _DIGCF_PRESENT | _DIGCF_ALLCLASSES)
         if not h_dev or h_dev == _INVALID_HANDLE_VALUE:
             continue
@@ -369,7 +369,12 @@ def read_bluetooth_batteries() -> list[dict]:
                     continue
                 inst_id = id_buf.value
                 up_id = inst_id.upper()
-                if not (up_id.startswith("BTHENUM\\") or up_id.startswith("BTHLE\\") or up_id.startswith("BTHLEDEVICE\\")):
+                if not (
+                    up_id.startswith("BTHENUM\\")
+                    or up_id.startswith("BTHLE\\")
+                    or up_id.startswith("BTHLEDEVICE\\")
+                    or up_id.startswith("BTHHFENUM\\")
+                ):
                     continue
 
                 # 读取电池百分比（BYTE）

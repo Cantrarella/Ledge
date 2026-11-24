@@ -488,6 +488,10 @@ def main():
             ctx.mail_monitor.apply_config()
         except Exception:
             pass
+        try:
+            ctx.battery.on_system_resume()
+        except Exception:
+            pass
     island.resumed_from_sleep.connect(on_resume_from_sleep)
 
     # ---------------- 菜单 / 托盘 / 设置窗口 ----------------

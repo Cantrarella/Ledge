@@ -122,6 +122,8 @@ class BatteryService(QtCore.QObject):
     def refresh(self, force_discover: bool = False):
         if not cfg.get("battery.enabled", True):
             return
+        if self._started:
+            self._start_apple_watcher()
         if self._busy:
             return
         self._set_busy(True)
@@ -131,6 +133,20 @@ class BatteryService(QtCore.QObject):
             on_error=lambda _e: self._set_busy(False),
         )
 
+    def on_system_resume(self):
+        """系统睡眠/休眠唤醒后重建可能被 Windows 蓝牙栈中止的 BLE 监听器并刷新设备。"""
+        if not self._started or not cfg.get("battery.enabled", True):
+            return
+        self._stop_apple_watcher()
+        QtCore.QTimer.singleShot(1500, self._resume_restart_ble)
+
+    @QtCore.Slot()
+    def _resume_restart_ble(self):
+        if not self._started or not cfg.get("battery.enabled", True):
+            return
+        self._start_apple_watcher()
+        self.refresh(force_discover=True)
+
     def _set_busy(self, on: bool):
         if self._busy != on:
             self._busy = on
@@ -139,7 +155,13 @@ class BatteryService(QtCore.QObject):
     # ---------------- Apple BLE 被动监听（可选 WinRT 增强） ----------------
     def _start_apple_watcher(self):
         if self._watcher is not None:
-            return
+            try:
+                # BluetoothLEAdvertisementWatcherStatus: 0=CREATED, 1=STARTED, 2=STOPPING, 3=STOPPED, 4=ABORTED
+                if int(self._watcher.status) in (0, 1):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+            self._stop_apple_watcher()
         try:
             from winrt.windows.devices.bluetooth.advertisement import (
                 BluetoothLEAdvertisementBytePattern,
@@ -155,10 +177,31 @@ class BatteryService(QtCore.QObject):
             w.scanning_mode = BluetoothLEScanningMode.PASSIVE
             w.advertisement_filter.byte_patterns.append(pat)
             w.add_received(self._on_ble_adv)
+            try:
+                w.add_stopped(self._on_ble_stopped)
+            except Exception:  # noqa: BLE001
+                pass
             w.start()
             self._watcher = w
         except Exception:  # noqa: BLE001
             self._watcher = None
+
+    def _on_ble_stopped(self, sender, _args):
+        """蓝牙适配器复位或系统休眠导致监听意外中止时，回到主线程自动重建。"""
+        if not self._started or sender is not self._watcher:
+            return
+        self._watcher = None
+        try:
+            QtCore.QMetaObject.invokeMethod(
+                self, "_schedule_ble_restart", QtCore.Qt.ConnectionType.QueuedConnection
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    @QtCore.Slot()
+    def _schedule_ble_restart(self):
+        if self._started and cfg.get("battery.enabled", True):
+            QtCore.QTimer.singleShot(2000, self._start_apple_watcher)
 
     def _stop_apple_watcher(self):
         w = self._watcher
@@ -195,7 +238,7 @@ class BatteryService(QtCore.QObject):
         if not snap:
             return None
         ts, data = snap
-        if time.time() - ts > 180.0:
+        if time.time() - ts > 600.0:
             return None
         return data
 
