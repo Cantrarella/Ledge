@@ -471,7 +471,7 @@ def test_apple_ble_restart_cancel_switch_pair_and_query_error_guard(monkeypatch)
     svc._try_restart_apple_watcher()
     assert len(starts) == 2
 
-    # 2) 快速切换两副同型号 AirPods（A -> B，中间未经过空列表）-> 清空 A 的缓存与已知地址；旧会话广播被丢弃
+    # 2) 快速切换两副同型号 AirPods（A -> B，中间未经过空列表）-> 生产代码自动清空 A 缓存、重启扫描并使旧回调失效
     svc._started = True
     svc._on_apple_probe_done((True, conn_a))
     old_gen = svc._watcher_gen
@@ -485,25 +485,57 @@ def test_apple_ble_restart_cancel_switch_pair_and_query_error_guard(monkeypatch)
     assert svc._fresh_apple_adv() is not None
     assert 0xAAA1 in svc._apple_known_addrs
 
+    starts_before_switch = len(starts)
+    svc._watcher = fake_w
+    stops_before_switch = len(stops)
     svc._on_apple_probe_done((True, conn_b))
     assert svc._fresh_apple_adv() is None
     assert not svc._apple_known_addrs
+    assert len(stops) == stops_before_switch + 1
+    assert len(starts) == starts_before_switch + 1
+    assert svc._watcher_gen > old_gen
 
-    # 模拟停扫推进会话代际后，旧会话迟到的广播被丢弃
-    svc._watcher_gen += 1
+    # 不手动修改 _watcher_gen：直接投递切换前捕获的 old_gen 回调，必须被丢弃且 B 的缓存保持为空
     svc._on_ble_adv(None, args_a, watcher_gen=old_gen)
     assert svc._fresh_apple_adv() is None
 
-    # 3) 底层查询失败 (False, []) 保留当前已连接与电量缓存，不触发假断连；真正断开 (True, []) 立即清缓存
+    # 3) 从底层模拟 SetupAPI 句柄有效但 SetupDiEnumDeviceInfo 中途报错（非 ERROR_NO_MORE_ITEMS）-> 不假断连
+    import ctypes
+    from wisland.services import hid_native as hn
+
     cur_gen = svc._watcher_gen
     svc._on_ble_adv(None, args_a, watcher_gen=cur_gen)
     assert svc._fresh_apple_adv() is not None
 
-    svc._on_apple_probe_done((False, []))
+    enum_err = [5]  # ERROR_ACCESS_DENIED
+    destroyed = []
+
+    class _FakeSetupApi:
+        def SetupDiGetClassDevsW(self, *_a):
+            return 0x1234
+
+        def SetupDiEnumDeviceInfo(self, *_a):
+            ctypes.set_last_error(enum_err[0])
+            return 0
+
+        def SetupDiDestroyDeviceInfoList(self, h):
+            destroyed.append(h)
+            return 1
+
+    monkeypatch.setattr(hn, "_setupapi", _FakeSetupApi())
+    ok_err, devs_err = hn.query_connected_apple_bluetooth_devices()
+    assert ok_err is False and devs_err == [] and destroyed == [0x1234]
+
+    svc._on_apple_probe_done(svc._query_connected_apple_safe())
     assert svc._connected_apple == conn_b
     assert svc._fresh_apple_adv() is not None
 
-    svc._on_apple_probe_done((True, []))
+    # 正常枚举结束（ERROR_NO_MORE_ITEMS = 259）返回 (True, []) -> 立即清空缓存
+    enum_err[0] = hn._ERROR_NO_MORE_ITEMS
+    ok_empty, devs_empty = hn.query_connected_apple_bluetooth_devices()
+    assert ok_empty is True and devs_empty == []
+
+    svc._on_apple_probe_done(svc._query_connected_apple_safe())
     assert svc._connected_apple == []
     assert svc._fresh_apple_adv() is None
     svc.stop()

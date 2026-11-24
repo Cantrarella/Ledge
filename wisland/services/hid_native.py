@@ -18,6 +18,7 @@ _FILE_SHARE_RW = 0x00000003
 _OPEN_EXISTING = 3
 _FILE_FLAG_OVERLAPPED = 0x40000000
 _ERROR_IO_PENDING = 997
+_ERROR_NO_MORE_ITEMS = 259
 _WAIT_OBJECT_0 = 0
 _DIGCF_PRESENT = 0x02
 _DIGCF_ALLCLASSES = 0x04
@@ -434,7 +435,13 @@ def query_connected_apple_bluetooth_devices() -> tuple[bool, list[dict]]:
         name_buf = ctypes.create_unicode_buffer(256)
         connected_names: dict[str, str] = {}
         apple_pids: dict[str, int] = {}
-        while _setupapi.SetupDiEnumDeviceInfo(h_dev, idx, ctypes.byref(dev_data)):
+        while True:
+            ctypes.set_last_error(0)
+            if not _setupapi.SetupDiEnumDeviceInfo(h_dev, idx, ctypes.byref(dev_data)):
+                err = ctypes.get_last_error()
+                if err not in (0, _ERROR_NO_MORE_ITEMS):
+                    return False, []
+                break
             idx += 1
             req = wintypes.DWORD(0)
             if not _setupapi.SetupDiGetDeviceInstanceIdW(h_dev, ctypes.byref(dev_data), id_buf, len(id_buf), ctypes.byref(req)):

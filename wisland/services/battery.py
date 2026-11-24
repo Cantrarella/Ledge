@@ -57,7 +57,7 @@ class BatteryService(QtCore.QObject):
     busy_changed = QtCore.Signal(bool)
     low_battery = QtCore.Signal(str, str, int, str)    # (dev_id, display_name, percent, kind)
     full_battery = QtCore.Signal(str, str, str)        # (dev_id, display_name, kind)
-    _watcher_want_changed = QtCore.Signal(bool)
+    _watcher_want_changed = QtCore.Signal(bool, bool)  # (want, force_restart)
     _ble_watcher_stopped = QtCore.Signal(object)
 
     _APPLE_SIDE_STALE_S = 180.0
@@ -178,16 +178,19 @@ class BatteryService(QtCore.QObject):
         except Exception:  # noqa: BLE001
             return False, []
 
-    def _update_connected_apple_locked(self, connected_apple: list[dict]) -> bool:
-        """更新已连接 Apple 列表与绑定型号；断开或切换到完全不同的一副耳机时清空上一组广播缓存。"""
+    def _update_connected_apple_locked(self, connected_apple: list[dict]) -> tuple[bool, bool]:
+        """更新已连接 Apple 列表与绑定型号，返回 (changed, switched)。
+        断开或直接切换到完全不同的一副耳机时清空上一组广播缓存并递增 _watcher_gen 使旧回调立即失效。
+        """
         prev_macs = {str(d.get("mac") or "").upper() for d in self._connected_apple if d.get("mac")}
         new_macs = {str(d.get("mac") or "").upper() for d in connected_apple if d.get("mac")}
         changed = (new_macs != prev_macs) or (bool(connected_apple) != bool(self._connected_apple))
+        switched = bool(prev_macs and new_macs and prev_macs.isdisjoint(new_macs))
         self._connected_apple = list(connected_apple)
         if connected_apple:
-            # 若新旧连接集合无任何共同设备（例如快速从耳机 A 切换到同型号耳机 B），清空旧广播缓存
-            if prev_macs and new_macs and prev_macs.isdisjoint(new_macs):
+            if switched:
                 self._reset_apple_state_locked()
+                self._watcher_gen += 1
             self._bound_apple_models = {
                 m for d in connected_apple
                 if (m := AppleAdvertParser.model_for_pid(int(d.get("pid") or 0)))
@@ -195,7 +198,7 @@ class BatteryService(QtCore.QObject):
         else:
             self._bound_apple_models.clear()
             self._reset_apple_state_locked()
-        return changed
+        return changed, switched
 
     @QtCore.Slot()
     def _probe_apple_connection(self):
@@ -222,9 +225,9 @@ class BatteryService(QtCore.QObject):
         else:
             connected_apple = list(result or [])
         with self._lock:
-            changed = self._update_connected_apple_locked(connected_apple)
+            changed, switched = self._update_connected_apple_locked(connected_apple)
         if changed:
-            self._sync_apple_watcher(bool(connected_apple))
+            self._sync_apple_watcher(bool(connected_apple), force_restart=switched)
             self.refresh(force_discover=False)
 
     @QtCore.Slot()
@@ -260,9 +263,11 @@ class BatteryService(QtCore.QObject):
             return
         self.refresh(force_discover=True)
 
-    @QtCore.Slot(bool)
-    def _sync_apple_watcher(self, want: bool):
+    @QtCore.Slot(bool, bool)
+    def _sync_apple_watcher(self, want: bool, force_restart: bool = False):
         if want and self._started and cfg.get("battery.enabled", True):
+            if force_restart:
+                self._stop_apple_watcher()
             self._start_apple_watcher()
         else:
             self._stop_apple_watcher()
@@ -476,12 +481,13 @@ class BatteryService(QtCore.QObject):
 
         # 参考 AirPodsDesktop：以系统蓝牙连接状态门控 BLE 扫描与缓存生命周期（枚举失败时保留上次状态避免假断连）
         ok_apple, queried_apple = self._query_connected_apple_safe()
+        switched = False
         with self._lock:
             if ok_apple:
-                self._update_connected_apple_locked(queried_apple)
+                _, switched = self._update_connected_apple_locked(queried_apple)
             connected_apple = list(self._connected_apple)
         if self._started:
-            self._watcher_want_changed.emit(bool(connected_apple))
+            self._watcher_want_changed.emit(bool(connected_apple), switched)
 
         apple_snap = self._fresh_apple_adv()
 
