@@ -73,6 +73,12 @@ class _AccountMonitorWorker:
         self._idle_lock = threading.Lock()
         self._baseline_uid: int | None = initial_baseline_uid
         self._uid_validity: str = str(initial_uid_validity or "")
+        # 仅在首次建基线或 UIDVALIDITY 变更时写入，不随未确认的新邮件批次提前推进
+        self._init_cursor: tuple[int, str] | None = (
+            (initial_baseline_uid, self._uid_validity)
+            if initial_baseline_uid is not None
+            else None
+        )
         self.thread = threading.Thread(
             target=self._run,
             name=f"wisland-mail-mon-{account.id[:8]}",
@@ -139,9 +145,12 @@ class _AccountMonitorWorker:
                 if self._baseline_uid is None or (uv and self._uid_validity and uv != self._uid_validity):
                     self._uid_validity = uv
                     self._baseline_uid = max_uid
+                    self._init_cursor = (max_uid, uv)
                 else:
                     if uv:
                         self._uid_validity = uv
+                        if self._init_cursor is not None and not self._init_cursor[1]:
+                            self._init_cursor = (self._init_cursor[0], uv)
                     self._check_and_emit_new(client, uids)
 
                 backoff = 3.0
@@ -313,23 +322,38 @@ class MailMonitorService(QtCore.QObject):
         self._running = True
         self.sync_accounts()
 
+    def _snapshot_worker_cursors(self):
+        """仅同步首次建基线或 UIDVALIDITY 变更后的初始游标；已收到新邮件的推进以主线程确认处理为准。"""
+        for aid, w in self._workers.items():
+            init_cur = getattr(w, "_init_cursor", None)
+            if init_cur is None:
+                continue
+            init_uid, init_uv = init_cur
+            prev = self._last_cursor.get(aid)
+            if prev is None:
+                self._last_cursor[aid] = (init_uid, init_uv)
+            else:
+                prev_uid, prev_uv = prev
+                if init_uv and prev_uv and init_uv != prev_uv:
+                    self._last_cursor[aid] = (init_uid, init_uv)
+                elif prev_uid is None or init_uid > prev_uid:
+                    self._last_cursor[aid] = (init_uid, init_uv or prev_uv)
+                elif init_uv and not prev_uv:
+                    self._last_cursor[aid] = (prev_uid, init_uv)
+
     def stop(self):
         self._running = False
-        for aid, w in self._workers.items():
-            if w._baseline_uid is not None:
-                self._last_cursor[aid] = (w._baseline_uid, w._uid_validity)
+        self._snapshot_worker_cursors()
         workers = list(self._workers.values())
         self._workers.clear()
         for w in workers:
             w.stop()
 
     def apply_config(self):
-        """休眠唤醒或配置变化时，保留各账号 UID 游标并重建监听连接，确保唤醒后补查漏掉的新邮件。"""
+        """休眠唤醒或配置变化时，保留各账号主线程已确认的 UID 游标并重建监听连接，确保不漏掉未处理的邮件。"""
         if not self._running:
             return
-        for aid, w in self._workers.items():
-            if w._baseline_uid is not None:
-                self._last_cursor[aid] = (w._baseline_uid, w._uid_validity)
+        self._snapshot_worker_cursors()
         workers = list(self._workers.values())
         self._workers.clear()
         for w in workers:
@@ -396,9 +420,17 @@ class MailMonitorService(QtCore.QObject):
             return
         if src_worker is not None and cur_w is not src_worker:
             return
-        if cur_w._baseline_uid is not None:
-            self._last_cursor[account_id] = (cur_w._baseline_uid, str(uid_validity or cur_w._uid_validity or ""))
         self._mgr.merge_incoming_headers(account_id, hdrs)
+
+        # 仅在主线程成功处理当前活跃批次后，再推进恢复游标
+        batch_max_uid = max((_uid_int(h.uid) for h in hdrs), default=0)
+        batch_uv = str(uid_validity or getattr(cur_w, "_uid_validity", "") or "")
+        prev = self._last_cursor.get(account_id)
+        if prev is None or (batch_uv and prev[1] and batch_uv != prev[1]):
+            self._last_cursor[account_id] = (batch_max_uid, batch_uv)
+        else:
+            prev_uid = prev[0] if prev[0] is not None else 0
+            self._last_cursor[account_id] = (max(prev_uid, batch_max_uid), batch_uv or prev[1])
 
         unread_set = self._unread_by_account.setdefault(account_id, set())
         for h in hdrs:

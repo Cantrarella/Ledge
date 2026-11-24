@@ -97,6 +97,7 @@ def test_01_mail_resume_preserves_uid_cursor_and_catches_missed_mail(tmp_path):
     events: list = []
     ctrl = SimpleNamespace(
         counts={},
+        counts_changed=SimpleNamespace(emit=lambda *a, **k: None),
         ingest_event=lambda ev: events.append(ev),
         set_source_unread=lambda *a, **k: None,
         clear_unread=lambda *a, **k: None,
@@ -155,6 +156,7 @@ def test_02_mail_disabled_or_stale_worker_batch_dropped(tmp_path):
     events: list = []
     ctrl = SimpleNamespace(
         counts={},
+        counts_changed=SimpleNamespace(emit=lambda *a, **k: None),
         ingest_event=lambda ev: events.append(ev),
         set_source_unread=lambda *a, **k: None,
         clear_unread=lambda *a, **k: None,
@@ -358,3 +360,100 @@ def test_07_shelf_save_failure_preserves_memory_and_allows_retry(tmp_path, monke
     monkeypatch.setattr(shelf, "_save_items_locked", orig_save)
     shelf.clear()
     assert shelf.paths() == []
+
+
+def test_08_mail_queued_old_batch_before_resume_not_lost(tmp_path):
+    """固定交错顺序：旧线程已取到 UID 101 并入队、但主线程先处理唤醒重建，最后消费队列 -> 101 恰好入库并提醒一次。"""
+    app = _app()
+    cm = Config(tmp_path / "cfg.json")
+    creds = _MemCreds()
+    mgr = MailAccountManager(config_obj=cm, cred_store=creds, body_cache=LocalMailBodyCache(tmp_path / "cache.json"))
+    acc = MailAccount(
+        id="acc-race-101",
+        email="race@example.com",
+        username="race@example.com",
+        host="imap.example.com",
+        port=993,
+        provider="custom",
+        credential_key="k-race-101",
+        enabled=True,
+    )
+    creds.write_secret(acc.credential_key, "pw")
+    mgr._accounts.append(acc)
+
+    events: list = []
+    ctrl = SimpleNamespace(
+        counts={},
+        counts_changed=SimpleNamespace(emit=lambda *a, **k: None),
+        ingest_event=lambda ev: events.append(ev),
+        set_source_unread=lambda *a, **k: None,
+        clear_unread=lambda *a, **k: None,
+    )
+
+    wake_idle = threading.Event()
+    queued_101 = threading.Event()
+    entered_idle = threading.Event()
+    state = {"uv": "42", "uids": [100]}
+
+    class _RaceImapClient(_FakeImapClient):
+        def idle_wait(self, timeout, stop_ev: threading.Event):
+            entered_idle.set()
+            # 第一次 IDLE 等待外部唤醒拉取 101，或等待停止信号
+            deadline = time.monotonic() + timeout
+            while not stop_ev.is_set() and not wake_idle.is_set() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            wake_idle.clear()
+
+        def uid(self, cmd, *args):
+            res = super().uid(cmd, *args)
+            if cmd.upper() == "FETCH" and "101" in str(args[0]):
+                queued_101.set()
+            return res
+
+    mon = MailMonitorService(
+        mgr,
+        controller=ctrl,
+        config_obj=cm,
+        client_factory=lambda *a, **k: _RaceImapClient(state),
+        idle_renew_s=5.0,
+    )
+    mon.start()
+    try:
+        # 1) 旧线程建立基线 100 并进入 IDLE
+        assert entered_idle.wait(3.0)
+        app.processEvents()
+        old_w = mon._workers[acc.id]
+        assert old_w._baseline_uid == 100
+
+        # 2) 收件箱到达 UID 101；旧线程拉取 101、推进自身 _baseline_uid=101 并把批次排进 Qt 队列（此时不 processEvents）
+        state["uids"].append(101)
+        entered_idle.clear()
+        wake_idle.set()
+        assert queued_101.wait(3.0)
+        deadline = time.monotonic() + 2.0
+        while old_w._baseline_uid != 101 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert old_w._baseline_uid == 101
+
+        # 3) 在主线程消费旧批次前，先触发唤醒重建监听
+        entered_idle.clear()
+        queued_101.clear()
+        mon.apply_config()
+        assert entered_idle.wait(3.0)
+        assert queued_101.wait(3.0)
+
+        # 4) 最后消费主线程队列：旧批次被丢弃，新线程补查的 101 恰好入库并提醒一次
+        deadline = time.monotonic() + 2.0
+        while not events and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+        app.processEvents()
+
+        assert len(events) == 1
+        assert events[0].meta["uid"] == "101"
+        cached_uids = [h.uid for h in mgr.all_headers() if h.account_id == acc.id]
+        assert cached_uids == ["101"]
+        assert mon.unread_count_for_account(acc.id) == 1
+        assert mon._last_cursor[acc.id] == (101, "42")
+    finally:
+        mon.stop()
