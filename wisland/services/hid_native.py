@@ -418,14 +418,14 @@ def read_bluetooth_batteries() -> list[dict]:
     return out
 
 
-def get_connected_apple_bluetooth_devices() -> list[dict]:
-    """返回当前 Windows 处于已连接状态（IsConnected=True）的 Apple 蓝牙设备列表。
+def query_connected_apple_bluetooth_devices() -> tuple[bool, list[dict]]:
+    """查询当前 Windows 处于已连接状态（IsConnected=True）的 Apple 蓝牙设备列表。
+    返回 (ok, devices)：ok=False 表示底层 SetupAPI 枚举失败，与“成功枚举到 0 台设备”区分开。
     每项格式: {"mac": "282D7FDFF047", "name": "AirPods Pro", "pid": 0x2024}。
-    参考 AirPodsDesktop：仅对已连接本机的 Apple 设备开启 BLE 扫描并按型号过滤。
     """
     h_dev = _setupapi.SetupDiGetClassDevsW(None, "BTHENUM", None, _DIGCF_PRESENT | _DIGCF_ALLCLASSES)
     if not h_dev or h_dev == _INVALID_HANDLE_VALUE:
-        return []
+        return False, []
     try:
         dev_data = _SP_DEVINFO_DATA()
         dev_data.cbSize = ctypes.sizeof(_SP_DEVINFO_DATA)
@@ -486,9 +486,15 @@ def get_connected_apple_bluetooth_devices() -> list[dict]:
         for mac, pid_val in apple_pids.items():
             if mac in connected_names:
                 out.append({"mac": mac, "name": connected_names[mac], "pid": pid_val})
-        return out
+        return True, out
     finally:
         _setupapi.SetupDiDestroyDeviceInfoList(h_dev)
+
+
+def get_connected_apple_bluetooth_devices() -> list[dict]:
+    """返回当前 Windows 处于已连接状态（IsConnected=True）的 Apple 蓝牙设备列表。"""
+    _ok, out = query_connected_apple_bluetooth_devices()
+    return out
 
 
 def has_connected_apple_bluetooth() -> bool:

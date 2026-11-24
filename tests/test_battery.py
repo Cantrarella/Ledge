@@ -429,3 +429,81 @@ def test_apple_fast_connection_probe_starts_and_stops_watcher_without_waiting_po
     assert len(refreshes) == 2
     assert svc._fresh_apple_adv() is None
     svc.stop()
+
+
+def test_apple_ble_restart_cancel_switch_pair_and_query_error_guard(monkeypatch):
+    """回归：断开/禁用后延迟重启不得空扫；切换同型号 AirPods 清空旧缓存并丢弃旧会话广播；枚举失败不假断连。"""
+    from types import SimpleNamespace
+    from PySide6 import QtWidgets
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    svc = BatteryService()
+    svc._started = True
+    starts: list[bool] = []
+    stops: list[bool] = []
+    monkeypatch.setattr(svc, "_start_apple_watcher", lambda: starts.append(True))
+    monkeypatch.setattr(svc, "refresh", lambda force_discover=False: None)
+
+    conn_a = [{"mac": "111111111111", "name": "AirPods A", "pid": 0x2024}]
+    conn_b = [{"mac": "222222222222", "name": "AirPods B", "pid": 0x2024}]
+    svc._on_apple_probe_done((True, conn_a))
+    assert len(starts) == 1
+
+    # 1) 扫描器意外停止安排 2 秒延迟重启 -> 期间断开 -> 到期回调不得重新启动扫描
+    fake_w = SimpleNamespace(stop=lambda: stops.append(True))
+    svc._watcher = fake_w
+    svc._on_ble_stopped_main(fake_w)
+    assert svc._ble_restart_timer.isActive() is True
+
+    svc._on_apple_probe_done((True, []))
+    assert svc._ble_restart_timer.isActive() is False
+    svc._try_restart_apple_watcher()
+    assert len(starts) == 1
+
+    # 1b) 再次安排重启 -> 期间用户停止/关闭服务 -> 到期回调同样不得重启
+    svc._on_apple_probe_done((True, conn_a))
+    assert len(starts) == 2
+    svc._watcher = fake_w
+    svc._on_ble_stopped_main(fake_w)
+    assert svc._ble_restart_timer.isActive() is True
+    svc.stop()
+    assert svc._ble_restart_timer.isActive() is False
+    svc._try_restart_apple_watcher()
+    assert len(starts) == 2
+
+    # 2) 快速切换两副同型号 AirPods（A -> B，中间未经过空列表）-> 清空 A 的缓存与已知地址；旧会话广播被丢弃
+    svc._started = True
+    svc._on_apple_probe_done((True, conn_a))
+    old_gen = svc._watcher_gen
+    left_a = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x00, 0x9F, 0x46])
+    args_a = SimpleNamespace(
+        raw_signal_strength_in_dbm=-50,
+        bluetooth_address=0xAAA1,
+        advertisement=SimpleNamespace(manufacturer_data=[SimpleNamespace(company_id=0x004C, data=left_a)]),
+    )
+    svc._on_ble_adv(None, args_a, watcher_gen=old_gen)
+    assert svc._fresh_apple_adv() is not None
+    assert 0xAAA1 in svc._apple_known_addrs
+
+    svc._on_apple_probe_done((True, conn_b))
+    assert svc._fresh_apple_adv() is None
+    assert not svc._apple_known_addrs
+
+    # 模拟停扫推进会话代际后，旧会话迟到的广播被丢弃
+    svc._watcher_gen += 1
+    svc._on_ble_adv(None, args_a, watcher_gen=old_gen)
+    assert svc._fresh_apple_adv() is None
+
+    # 3) 底层查询失败 (False, []) 保留当前已连接与电量缓存，不触发假断连；真正断开 (True, []) 立即清缓存
+    cur_gen = svc._watcher_gen
+    svc._on_ble_adv(None, args_a, watcher_gen=cur_gen)
+    assert svc._fresh_apple_adv() is not None
+
+    svc._on_apple_probe_done((False, []))
+    assert svc._connected_apple == conn_b
+    assert svc._fresh_apple_adv() is not None
+
+    svc._on_apple_probe_done((True, []))
+    assert svc._connected_apple == []
+    assert svc._fresh_apple_adv() is None
+    svc.stop()

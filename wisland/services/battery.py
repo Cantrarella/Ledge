@@ -22,7 +22,12 @@ from .battery_providers import (
     PlayStationProvider,
     XInputProvider,
 )
-from .hid_native import enumerate_hid, get_connected_apple_bluetooth_devices
+from .hid_native import (
+    enumerate_hid,
+    get_connected_apple_bluetooth_devices,
+    query_connected_apple_bluetooth_devices,
+)
+_ORIG_GET_CONNECTED_APPLE = get_connected_apple_bluetooth_devices
 
 
 @dataclass
@@ -73,6 +78,7 @@ class BatteryService(QtCore.QObject):
         self._connected_apple: list[dict] = []
         self._bound_apple_models: set[str] = set()
         self._watcher = None
+        self._watcher_gen = 0
         self._busy = False
         self._bt_probe_busy = False
         self._refresh_pending = False
@@ -99,6 +105,10 @@ class BatteryService(QtCore.QObject):
         self._dev_change_debounce.setSingleShot(True)
         self._dev_change_debounce.setInterval(800)
         self._dev_change_debounce.timeout.connect(self._probe_apple_connection)
+        self._ble_restart_timer = QtCore.QTimer(self)
+        self._ble_restart_timer.setSingleShot(True)
+        self._ble_restart_timer.setInterval(2000)
+        self._ble_restart_timer.timeout.connect(self._try_restart_apple_watcher)
         self._watcher_want_changed.connect(self._sync_apple_watcher, QtCore.Qt.ConnectionType.QueuedConnection)
         self._ble_watcher_stopped.connect(self._on_ble_stopped_main, QtCore.Qt.ConnectionType.QueuedConnection)
         self._started = False
@@ -158,43 +168,61 @@ class BatteryService(QtCore.QObject):
             return
         self._dev_change_debounce.start()
 
+    def _query_connected_apple_safe(self) -> tuple[bool, list[dict]]:
+        """区分“枚举失败”与“成功枚举到 0 台设备”，同时兼容单测对 get_connected_apple_bluetooth_devices 的替换。"""
+        try:
+            if get_connected_apple_bluetooth_devices is not _ORIG_GET_CONNECTED_APPLE:
+                return True, list(get_connected_apple_bluetooth_devices() or [])
+            ok, devs = query_connected_apple_bluetooth_devices()
+            return bool(ok), list(devs or [])
+        except Exception:  # noqa: BLE001
+            return False, []
+
+    def _update_connected_apple_locked(self, connected_apple: list[dict]) -> bool:
+        """更新已连接 Apple 列表与绑定型号；断开或切换到完全不同的一副耳机时清空上一组广播缓存。"""
+        prev_macs = {str(d.get("mac") or "").upper() for d in self._connected_apple if d.get("mac")}
+        new_macs = {str(d.get("mac") or "").upper() for d in connected_apple if d.get("mac")}
+        changed = (new_macs != prev_macs) or (bool(connected_apple) != bool(self._connected_apple))
+        self._connected_apple = list(connected_apple)
+        if connected_apple:
+            # 若新旧连接集合无任何共同设备（例如快速从耳机 A 切换到同型号耳机 B），清空旧广播缓存
+            if prev_macs and new_macs and prev_macs.isdisjoint(new_macs):
+                self._reset_apple_state_locked()
+            self._bound_apple_models = {
+                m for d in connected_apple
+                if (m := AppleAdvertParser.model_for_pid(int(d.get("pid") or 0)))
+            }
+        else:
+            self._bound_apple_models.clear()
+            self._reset_apple_state_locked()
+        return changed
+
     @QtCore.Slot()
     def _probe_apple_connection(self):
         """轻量级后台探测（仅查询 BTHENUM，约 2~3ms，不碰 HID），实现连上/断开 1~5 秒内响应。"""
         if not self._started or not cfg.get("battery.enabled", True) or self._bt_probe_busy:
             return
         self._bt_probe_busy = True
-
-        def _work():
-            try:
-                return get_connected_apple_bluetooth_devices()
-            except Exception:  # noqa: BLE001
-                return []
-
         run_bg(
-            _work,
+            self._query_connected_apple_safe,
             on_done=self._on_apple_probe_done,
             on_error=lambda _e: setattr(self, "_bt_probe_busy", False),
         )
 
-    def _on_apple_probe_done(self, connected_apple: list[dict]):
+    def _on_apple_probe_done(self, result):
         self._bt_probe_busy = False
         if not self._started or not cfg.get("battery.enabled", True):
             return
-        new_macs = {str(d.get("mac") or "").upper() for d in (connected_apple or [])}
+        # 兼容直接传入 list（单测）或 (ok, list)
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
+            ok, connected_apple = result
+            if not ok:
+                # 单次底层枚举失败，保留上一次状态避免假断连
+                return
+        else:
+            connected_apple = list(result or [])
         with self._lock:
-            prev_macs = {str(d.get("mac") or "").upper() for d in self._connected_apple}
-            changed = (new_macs != prev_macs)
-            if changed:
-                self._connected_apple = list(connected_apple or [])
-                if connected_apple:
-                    self._bound_apple_models = {
-                        m for d in connected_apple
-                        if (m := AppleAdvertParser.model_for_pid(int(d.get("pid") or 0)))
-                    }
-                else:
-                    self._bound_apple_models.clear()
-                    self._reset_apple_state_locked()
+            changed = self._update_connected_apple_locked(connected_apple)
         if changed:
             self._sync_apple_watcher(bool(connected_apple))
             self.refresh(force_discover=False)
@@ -251,6 +279,7 @@ class BatteryService(QtCore.QObject):
 
     # ---------------- Apple BLE 被动监听（可选 WinRT 增强） ----------------
     def _start_apple_watcher(self):
+        self._ble_restart_timer.stop()
         if self._watcher is not None:
             try:
                 # BluetoothLEAdvertisementWatcherStatus: 0=CREATED, 1=STARTED, 2=STOPPING, 3=STOPPED, 4=ABORTED
@@ -273,7 +302,10 @@ class BatteryService(QtCore.QObject):
             w = BluetoothLEAdvertisementWatcher()
             w.scanning_mode = BluetoothLEScanningMode.PASSIVE
             w.advertisement_filter.byte_patterns.append(pat)
-            w.add_received(self._on_ble_adv)
+            with self._lock:
+                self._watcher_gen += 1
+                gen = self._watcher_gen
+            w.add_received(lambda s, a, g=gen: self._on_ble_adv(s, a, g))
             try:
                 w.add_stopped(self._on_ble_stopped)
             except Exception:  # noqa: BLE001
@@ -296,11 +328,23 @@ class BatteryService(QtCore.QObject):
             return
         self._watcher = None
         with self._lock:
+            self._watcher_gen += 1
             has_apple = bool(self._connected_apple)
         if has_apple and cfg.get("battery.enabled", True):
-            QtCore.QTimer.singleShot(2000, self._start_apple_watcher)
+            self._ble_restart_timer.start()
+
+    @QtCore.Slot()
+    def _try_restart_apple_watcher(self):
+        """延迟重启回调到期时再次确认服务状态与连接状态，防止断开或禁用后误重启空扫。"""
+        with self._lock:
+            has_apple = bool(self._connected_apple)
+        if self._started and has_apple and cfg.get("battery.enabled", True):
+            self._start_apple_watcher()
 
     def _stop_apple_watcher(self):
+        self._ble_restart_timer.stop()
+        with self._lock:
+            self._watcher_gen += 1
         w = self._watcher
         self._watcher = None
         if w is not None:
@@ -348,13 +392,17 @@ class BatteryService(QtCore.QObject):
         charging = bool(bud_pcts) and all(p[2] for p in parts if p[0] in ("左", "右"))
         return {"model": model, "percent": overall, "charging": charging, "parts": parts}
 
-    def _on_ble_adv(self, _sender, args):
+    def _on_ble_adv(self, sender, args, watcher_gen: int | None = None):
         try:
             rssi = int(args.raw_signal_strength_in_dbm)
             if rssi <= -127:
                 return
             addr = int(getattr(args, "bluetooth_address", 0) or 0)
             with self._lock:
+                if watcher_gen is not None and watcher_gen != self._watcher_gen:
+                    return
+                if sender is not None and self._watcher is not None and sender is not self._watcher:
+                    return
                 if not self._connected_apple:
                     return
                 known = bool(addr and addr in self._apple_known_addrs)
@@ -373,6 +421,10 @@ class BatteryService(QtCore.QObject):
                 now_ts = time.time()
                 side = str(parsed.get("side") or "left")
                 with self._lock:
+                    if watcher_gen is not None and watcher_gen != self._watcher_gen:
+                        return
+                    if sender is not None and self._watcher is not None and sender is not self._watcher:
+                        return
                     if not self._connected_apple:
                         return
                     prev = self._apple_adv[1] if self._apple_adv else None
@@ -422,22 +474,12 @@ class BatteryService(QtCore.QObject):
         else:
             pairs = list(self._cached_hid or [])
 
-        # 参考 AirPodsDesktop：以系统蓝牙连接状态门控 BLE 扫描与缓存生命周期
-        try:
-            connected_apple = get_connected_apple_bluetooth_devices()
-        except Exception:  # noqa: BLE001
-            connected_apple = []
+        # 参考 AirPodsDesktop：以系统蓝牙连接状态门控 BLE 扫描与缓存生命周期（枚举失败时保留上次状态避免假断连）
+        ok_apple, queried_apple = self._query_connected_apple_safe()
         with self._lock:
-            self._connected_apple = list(connected_apple)
-            if connected_apple:
-                models = {
-                    m for d in connected_apple
-                    if (m := AppleAdvertParser.model_for_pid(int(d.get("pid") or 0)))
-                }
-                self._bound_apple_models = models
-            else:
-                self._bound_apple_models.clear()
-                self._reset_apple_state_locked()
+            if ok_apple:
+                self._update_connected_apple_locked(queried_apple)
+            connected_apple = list(self._connected_apple)
         if self._started:
             self._watcher_want_changed.emit(bool(connected_apple))
 
