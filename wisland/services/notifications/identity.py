@@ -369,8 +369,16 @@ def _activate_tray_client(event: NotificationEvent) -> tuple[bool, str]:
     if len(roots) > 1:
         return False, "客户端已打开但无法识别账号"
     target = roots[0] if roots else next(iter(procs.values()))
-    if event.pid is not None and event.pid not in procs:
-        if event.process_started_at is None or not _same_started_at(target.get("create_time"), event.process_started_at):
+    if event.pid is not None:
+        if event.pid in procs:
+            matched_proc = procs[event.pid]
+            if event.process_started_at is not None and not _same_started_at(
+                matched_proc.get("create_time"), event.process_started_at
+            ):
+                return False, "无法确认账号，原客户端窗口已失效"
+        elif event.process_started_at is None or not _same_started_at(
+            target.get("create_time"), event.process_started_at
+        ):
             return False, "无法确认账号，原客户端窗口已失效"
 
     exe_path = target.get("exe") or ""

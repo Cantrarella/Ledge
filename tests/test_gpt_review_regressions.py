@@ -457,3 +457,39 @@ def test_08_mail_queued_old_batch_before_resume_not_lost(tmp_path):
         assert mon._last_cursor[acc.id] == (101, "42")
     finally:
         mon.stop()
+
+
+def test_09_tray_focus_rejects_reused_pid_with_different_create_time(monkeypatch):
+    """点击托盘通知时若同 PID 已被新启动的同名客户端复用（create_time 不同），拒绝唤起且不调用 Popen。"""
+    import subprocess
+    from wisland.services.notifications import identity as id_mod
+    from wisland.services.notifications.models import NotificationEvent
+
+    fake_proc = SimpleNamespace(
+        info={
+            "pid": 4321,
+            "ppid": 100,
+            "name": "Weixin.exe",
+            "exe": r"C:\Program Files\Tencent\Weixin\Weixin.exe",
+            "create_time": 2000.0,  # 新进程启动时间
+        }
+    )
+    monkeypatch.setattr(id_mod.psutil, "process_iter", lambda _attrs: [fake_proc])
+    popen_calls: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+    ev = NotificationEvent(
+        event_id="wx:1",
+        source_key="wechat",
+        app_name="微信",
+        app_identity="wechat",
+        title="hi",
+        sender="alice",
+        pid=4321,
+        process_started_at=1000.0,  # 旧通知记录的原进程启动时间
+    )
+    monkeypatch.setattr(id_mod, "enumerate_client_windows", lambda _k: [])
+    ok, msg = id_mod.focus_event_target(ev)
+    assert ok is False
+    assert "失效" in msg
+    assert popen_calls == []

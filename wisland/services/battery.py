@@ -79,6 +79,8 @@ class BatteryService(QtCore.QObject):
         self._bound_apple_models: set[str] = set()
         self._watcher = None
         self._watcher_gen = 0
+        self._ble_retry_fail_count = 0
+        self._ble_next_retry_at = 0.0
         self._busy = False
         self._bt_probe_busy = False
         self._refresh_pending = False
@@ -227,10 +229,17 @@ class BatteryService(QtCore.QObject):
         with self._lock:
             changed, switched = self._update_connected_apple_locked(connected_apple)
         if changed:
+            self._ble_retry_fail_count = 0
+            self._ble_next_retry_at = 0.0
             self._sync_apple_watcher(bool(connected_apple), force_restart=switched)
             self.refresh(force_discover=False)
-        elif connected_apple and self._watcher is None and not self._ble_restart_timer.isActive():
-            # 蓝牙适配器重插/唤醒后若此前启动 BLE 监听失败（如短暂“设备未就绪”），心跳周期自动自愈拉起
+        elif (
+            connected_apple
+            and self._watcher is None
+            and not self._ble_restart_timer.isActive()
+            and time.monotonic() >= self._ble_next_retry_at
+        ):
+            # 蓝牙适配器重插/唤醒后若此前启动 BLE 监听失败（如短暂“设备未就绪”），遵守退避间隔自动自愈拉起
             self._start_apple_watcher()
 
     @QtCore.Slot()
@@ -320,11 +329,17 @@ class BatteryService(QtCore.QObject):
                 pass
             w.start()
             self._watcher = w
+            self._ble_retry_fail_count = 0
+            self._ble_next_retry_at = 0.0
         except Exception:  # noqa: BLE001
             self._watcher = None
             with self._lock:
                 has_apple = bool(self._connected_apple)
             if self._started and has_apple and cfg.get("battery.enabled", True):
+                self._ble_retry_fail_count += 1
+                delay_s = min(60.0, 2.0 * (2 ** (self._ble_retry_fail_count - 1)))
+                self._ble_next_retry_at = time.monotonic() + delay_s
+                self._ble_restart_timer.setInterval(int(delay_s * 1000))
                 self._ble_restart_timer.start()
 
     def _on_ble_stopped(self, sender, _args, watcher_gen: int | None = None):
@@ -351,6 +366,8 @@ class BatteryService(QtCore.QObject):
             has_apple = bool(self._connected_apple)
         self._watcher = None
         if has_apple and cfg.get("battery.enabled", True):
+            self._ble_next_retry_at = time.monotonic() + 2.0
+            self._ble_restart_timer.setInterval(2000)
             self._ble_restart_timer.start()
 
     @QtCore.Slot()
@@ -363,6 +380,8 @@ class BatteryService(QtCore.QObject):
 
     def _stop_apple_watcher(self):
         self._ble_restart_timer.stop()
+        self._ble_retry_fail_count = 0
+        self._ble_next_retry_at = 0.0
         with self._lock:
             self._watcher_gen += 1
         w = self._watcher

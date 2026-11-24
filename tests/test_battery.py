@@ -542,7 +542,9 @@ def test_apple_ble_restart_cancel_switch_pair_and_query_error_guard(monkeypatch)
 
 
 def test_apple_ble_start_failure_schedules_retry_and_probe_self_heals(monkeypatch):
-    """当蓝牙适配器短暂报“设备未就绪”导致启动失败时，自动安排 2 秒重试且 5 秒心跳可自愈拉起。"""
+    """当蓝牙适配器报“设备未就绪”导致 w.start() 失败时：首次 2s 快速重试，连续失败指数退避且心跳不抢跑，恢复后重置计数。"""
+    import sys
+    from types import ModuleType, SimpleNamespace
     from PySide6 import QtWidgets
 
     _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -550,21 +552,75 @@ def test_apple_ble_start_failure_schedules_retry_and_probe_self_heals(monkeypatc
     svc._started = True
     conn = [{"mac": "282D7FDFF047", "name": "鹅夹似鹅鸡", "pid": 0x2024}]
     svc._connected_apple = list(conn)
-
-    # 1) 5 秒心跳发现状态未变但 _watcher 缺失且未在等待重试 -> 自动补调 _start_apple_watcher
-    started: list[bool] = []
-    monkeypatch.setattr(svc, "_start_apple_watcher", lambda: started.append(True))
     monkeypatch.setattr(svc, "refresh", lambda force_discover=False: None)
-    svc._watcher = None
+
+    fail_left = [3]
+    start_calls = [0]
+
+    class _FakeWatcher:
+        def __init__(self):
+            self.scanning_mode = None
+            self.advertisement_filter = SimpleNamespace(byte_patterns=[])
+            self.status = 1
+
+        def add_received(self, cb):
+            self._rx = cb
+
+        def add_stopped(self, cb):
+            self._st = cb
+
+        def start(self):
+            start_calls[0] += 1
+            if fail_left[0] > 0:
+                fail_left[0] -= 1
+                raise OSError("device not ready")
+
+        def stop(self):
+            pass
+
+    class _FakeDataWriter:
+        def write_bytes(self, _b):
+            pass
+
+        def detach_buffer(self):
+            return b""
+
+    adv_mod = ModuleType("winrt.windows.devices.bluetooth.advertisement")
+    adv_mod.BluetoothLEAdvertisementBytePattern = lambda *a: a
+    adv_mod.BluetoothLEAdvertisementWatcher = _FakeWatcher
+    adv_mod.BluetoothLEScanningMode = SimpleNamespace(PASSIVE=0)
+    streams_mod = ModuleType("winrt.windows.storage.streams")
+    streams_mod.DataWriter = _FakeDataWriter
+    for name, mod in [
+        ("winrt.windows.devices.bluetooth.advertisement", adv_mod),
+        ("winrt.windows.storage.streams", streams_mod),
+    ]:
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    # 1) 连续 3 次 w.start() 失败 -> 间隔依次 2000 -> 4000 -> 8000ms
+    svc._start_apple_watcher()
+    assert svc._watcher is None and svc._ble_restart_timer.isActive() and svc._ble_restart_timer.interval() == 2000
+    svc._try_restart_apple_watcher()
+    assert svc._watcher is None and svc._ble_restart_timer.interval() == 4000
+    svc._try_restart_apple_watcher()
+    assert svc._watcher is None and svc._ble_restart_timer.interval() == 8000
+
+    # 2) 在退避窗口期内即使 timer 被停，5 秒心跳也遵守退避时间不抢跑
     svc._ble_restart_timer.stop()
+    calls_before_probe = start_calls[0]
     svc._on_apple_probe_done((True, conn))
-    assert len(started) == 1
-    # 2) 模拟 WinRT 每次回调传入不同的 sender 包装对象，只要 watcher_gen 匹配仍必须正常接收广播
-    svc._watcher = object()
+    assert start_calls[0] == calls_before_probe
+
+    # 3) 第 4 次恢复成功 -> 重置退避计数
+    svc._try_restart_apple_watcher()
+    assert svc._watcher is not None
+    assert svc._ble_retry_fail_count == 0
+    assert svc._ble_next_retry_at == 0.0
+
+    # 4) 模拟 WinRT 每次回调传入不同的 sender 包装对象，只要 watcher_gen 匹配仍必须正常接收广播
     cur_gen = svc._watcher_gen
     svc._bound_apple_models = {"AirPods Pro"}
     right_pkt = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x20, 0x8F, 0x0F])
-    from types import SimpleNamespace
     args = SimpleNamespace(
         raw_signal_strength_in_dbm=-45,
         bluetooth_address=0xBB01,
