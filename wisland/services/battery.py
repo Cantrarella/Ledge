@@ -57,6 +57,7 @@ class BatteryService(QtCore.QObject):
 
     _APPLE_SIDE_STALE_S = 180.0
     _APPLE_MAX_KNOWN_ADDRS = 6
+    _BT_WATCH_INTERVAL_MS = 5000
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,6 +74,7 @@ class BatteryService(QtCore.QObject):
         self._bound_apple_models: set[str] = set()
         self._watcher = None
         self._busy = False
+        self._bt_probe_busy = False
         self._refresh_pending = False
         self._refresh_pending_force = False
         self._cached_hid: list[tuple[object, DeviceCandidate]] | None = None
@@ -90,6 +92,13 @@ class BatteryService(QtCore.QObject):
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.refresh)
+        self._bt_watch_timer = QtCore.QTimer(self)
+        self._bt_watch_timer.setInterval(self._BT_WATCH_INTERVAL_MS)
+        self._bt_watch_timer.timeout.connect(self._probe_apple_connection)
+        self._dev_change_debounce = QtCore.QTimer(self)
+        self._dev_change_debounce.setSingleShot(True)
+        self._dev_change_debounce.setInterval(800)
+        self._dev_change_debounce.timeout.connect(self._probe_apple_connection)
         self._watcher_want_changed.connect(self._sync_apple_watcher, QtCore.Qt.ConnectionType.QueuedConnection)
         self._ble_watcher_stopped.connect(self._on_ble_stopped_main, QtCore.Qt.ConnectionType.QueuedConnection)
         self._started = False
@@ -114,6 +123,8 @@ class BatteryService(QtCore.QObject):
         sec = max(15, min(300, int(cfg.get("battery.poll_interval_s", 60) or 60)))
         if not enabled:
             self._timer.stop()
+            self._bt_watch_timer.stop()
+            self._dev_change_debounce.stop()
             self._refresh_pending = False
             self._refresh_pending_force = False
             self._stop_apple_watcher()
@@ -127,6 +138,7 @@ class BatteryService(QtCore.QObject):
         if not self._started:
             return
         self._timer.start(sec * 1000)
+        self._bt_watch_timer.start()
         # 参考 AirPodsDesktop：由当前经典蓝牙连接状态门控 BLE 扫描，不再无条件常驻空扫
         self.refresh()
 
@@ -135,7 +147,57 @@ class BatteryService(QtCore.QObject):
         self._refresh_pending = False
         self._refresh_pending_force = False
         self._timer.stop()
+        self._bt_watch_timer.stop()
+        self._dev_change_debounce.stop()
         self._stop_apple_watcher()
+
+    @QtCore.Slot()
+    def on_device_changed(self):
+        """Windows 收到 WM_DEVICECHANGE（蓝牙/USB 拔插或连接）时，防抖后快速探测 Apple 蓝牙连接变化。"""
+        if not self._started or not cfg.get("battery.enabled", True):
+            return
+        self._dev_change_debounce.start()
+
+    @QtCore.Slot()
+    def _probe_apple_connection(self):
+        """轻量级后台探测（仅查询 BTHENUM，约 2~3ms，不碰 HID），实现连上/断开 1~5 秒内响应。"""
+        if not self._started or not cfg.get("battery.enabled", True) or self._bt_probe_busy:
+            return
+        self._bt_probe_busy = True
+
+        def _work():
+            try:
+                return get_connected_apple_bluetooth_devices()
+            except Exception:  # noqa: BLE001
+                return []
+
+        run_bg(
+            _work,
+            on_done=self._on_apple_probe_done,
+            on_error=lambda _e: setattr(self, "_bt_probe_busy", False),
+        )
+
+    def _on_apple_probe_done(self, connected_apple: list[dict]):
+        self._bt_probe_busy = False
+        if not self._started or not cfg.get("battery.enabled", True):
+            return
+        new_macs = {str(d.get("mac") or "").upper() for d in (connected_apple or [])}
+        with self._lock:
+            prev_macs = {str(d.get("mac") or "").upper() for d in self._connected_apple}
+            changed = (new_macs != prev_macs)
+            if changed:
+                self._connected_apple = list(connected_apple or [])
+                if connected_apple:
+                    self._bound_apple_models = {
+                        m for d in connected_apple
+                        if (m := AppleAdvertParser.model_for_pid(int(d.get("pid") or 0)))
+                    }
+                else:
+                    self._bound_apple_models.clear()
+                    self._reset_apple_state_locked()
+        if changed:
+            self._sync_apple_watcher(bool(connected_apple))
+            self.refresh(force_discover=False)
 
     @QtCore.Slot()
     @QtCore.Slot(bool)

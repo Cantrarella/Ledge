@@ -54,6 +54,8 @@ WS_EX_TRANSPARENT = 0x00000020
 WM_HOTKEY = 0x0312
 WM_DISPLAYCHANGE = 0x007E
 WM_POWERBROADCAST = 0x0218
+WM_DEVICECHANGE = 0x0219
+DBT_DEVNODES_CHANGED = 0x0007
 WM_DPICHANGED = 0x02E0
 PBT_APMRESUMESUSPEND = 0x0007
 PBT_APMRESUMEAUTOMATIC = 0x0012
@@ -85,6 +87,7 @@ class Island(QtWidgets.QWidget):
     notify_banner_dismissed = QtCore.Signal()   # 关闭收起态通知横幅（不清未读）
     life_reminder_clicked = QtCore.Signal(str)  # 点击生活提醒 ("water"|"sit")
     resumed_from_sleep = QtCore.Signal()        # 系统从睡眠/休眠唤醒
+    device_changed = QtCore.Signal()            # 系统 USB/蓝牙设备连接或断开变化
 
     def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -2249,6 +2252,9 @@ class Island(QtWidgets.QWidget):
                     self._last = time.perf_counter()
                     self._on_screens_changed()
                     self.resumed_from_sleep.emit()
+            elif msg.message == WM_DEVICECHANGE:
+                if int(msg.wParam) == DBT_DEVNODES_CHANGED:
+                    self.device_changed.emit()
             elif msg.message in (WM_DISPLAYCHANGE, WM_DPICHANGED):
                 self._on_screens_changed()
             elif self._shell_msg and msg.message == self._shell_msg:

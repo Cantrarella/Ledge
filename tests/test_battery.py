@@ -391,3 +391,41 @@ def test_apple_ble_review_fixes_pending_refresh_stale_side_and_no_cross_merge(mo
     assert merged["parts"] == [("右", 80, False)]
     assert len(svc._apple_known_addrs) <= svc._APPLE_MAX_KNOWN_ADDRS
     svc.stop()
+
+
+def test_apple_fast_connection_probe_starts_and_stops_watcher_without_waiting_poll(monkeypatch):
+    """快速蓝牙探测：连上/断开 AirPods 时无需等 60 秒轮询，立刻启停 BLE 扫描并触发刷新。"""
+    from PySide6 import QtWidgets
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    svc = BatteryService()
+    svc._started = True
+    watcher_states: list[bool] = []
+    refreshes: list[bool] = []
+    monkeypatch.setattr(svc, "_start_apple_watcher", lambda: watcher_states.append(True))
+    monkeypatch.setattr(svc, "_stop_apple_watcher", lambda: watcher_states.append(False))
+    monkeypatch.setattr(svc, "refresh", lambda force_discover=False: refreshes.append(force_discover))
+
+    # 1) 状态无变化（仍为空）-> 不重复触发刷新
+    svc._on_apple_probe_done([])
+    assert watcher_states == []
+    assert refreshes == []
+
+    # 2) 检测到连上 AirPods Pro -> 立刻开启 BLE 扫描并刷新
+    conn = [{"mac": "282D7FDFF047", "name": "鹅夹似鹅鸡", "pid": 0x2024}]
+    svc._on_apple_probe_done(conn)
+    assert watcher_states == [True]
+    assert len(refreshes) == 1
+    assert svc._bound_apple_models == {"AirPods Pro"}
+
+    # 3) 状态未变 -> 不重复触发刷新
+    svc._on_apple_probe_done(conn)
+    assert len(refreshes) == 1
+
+    # 4) 检测到断开 -> 立刻清空缓存、停扫并刷新
+    svc._apple_adv = (1.0, {"model": "AirPods Pro", "percent": 80, "charging": False, "parts": []})
+    svc._on_apple_probe_done([])
+    assert watcher_states[-1] is False
+    assert len(refreshes) == 2
+    assert svc._fresh_apple_adv() is None
+    svc.stop()

@@ -493,6 +493,7 @@ def main():
         except Exception:
             pass
     island.resumed_from_sleep.connect(on_resume_from_sleep)
+    island.device_changed.connect(ctx.battery.on_device_changed)
 
     # ---------------- 菜单 / 托盘 / 设置窗口 ----------------
     def open_settings(category: str | None = None, account_id: str | None = None):
