@@ -201,7 +201,8 @@ def test_battery_service_lifecycle_deferred_start(monkeypatch):
     svc.start()
     assert svc._timer.isActive()
     assert calls["refresh"] == 1
-    assert calls["watcher_start"] == 1
+    # BLE watcher 按系统已连接 Apple 蓝牙状态按需启停，不在 start() 无条件空跑
+    assert calls["watcher_start"] == 0
 
     svc.stop()
     assert not svc._timer.isActive()
@@ -233,3 +234,93 @@ def test_battery_alias_clear_persists_after_commit(tmp_path):
     assert cm.get("battery.aliases") == {}
     cm2 = Config(tmp_path / "config.json")
     assert cm2.get("battery.aliases") == {}
+
+
+def test_apple_ble_ignored_when_not_connected_to_windows(monkeypatch):
+    """未连接本机 Windows 蓝牙时，附近孤立的 AirPods BLE 广播不得显示为在线设备；已连接时正常显示系统设备名。"""
+    from wisland.services import battery_providers as bp
+
+    monkeypatch.setattr(bp, "read_bluetooth_batteries", lambda: [])
+    snap = {"model": "AirPods Pro", "percent": 80, "charging": False, "parts": [("右", 80, False)]}
+    prov = bp.BluetoothBatteryProvider()
+
+    # 断开本机连接 -> 不显示
+    monkeypatch.setattr(bp, "get_connected_apple_bluetooth_devices", lambda: [])
+    monkeypatch.setattr(bp, "has_connected_apple_bluetooth", lambda: False)
+    assert prov.discover_and_read(snap, connected_apple=[]) == []
+
+    # 已连接本机（PID 0x2024 <-> 0x2420 AirPods Pro）-> 正常显示并优先采用系统设备名
+    conn = [{"mac": "282D7FDFF047", "name": "鹅夹似鹅鸡", "pid": 0x2024}]
+    assert bp.AppleAdvertParser.model_for_pid(0x2024) == "AirPods Pro"
+    res = prov.discover_and_read(snap, connected_apple=conn)
+    assert len(res) == 1
+    assert res[0][0].name == "鹅夹似鹅鸡"
+    assert res[0][1].percent == 80
+
+
+def test_apple_ble_state_manager_side_merge_and_disconnect_cleanup(monkeypatch):
+    """参考 AirPodsDesktop：左/右耳分侧广播合并，按已连接型号过滤，断开时立刻清状态并停扫。"""
+    from types import SimpleNamespace
+    from PySide6 import QtWidgets
+    from wisland.services import battery as bat_mod
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    svc = BatteryService()
+    svc._started = True
+    watcher_states: list[bool] = []
+    monkeypatch.setattr(svc, "_start_apple_watcher", lambda: watcher_states.append(True))
+    monkeypatch.setattr(svc, "_stop_apple_watcher", lambda: watcher_states.append(False))
+    monkeypatch.setattr(bat_mod, "enumerate_hid", lambda: [])
+
+    # 1) 模拟已连接 AirPods Pro（PID 0x2024）
+    conn_state = [[{"mac": "282D7FDFF047", "name": "鹅夹似鹅鸡", "pid": 0x2024}]]
+    monkeypatch.setattr(bat_mod, "get_connected_apple_bluetooth_devices", lambda: conn_state[0])
+    monkeypatch.setattr(svc._bt_provider, "discover_and_read", lambda snap, connected_apple=None: [])
+
+    svc._poll_sync(force_discover=True)
+    app.processEvents()
+    assert watcher_states[-1] is True
+    assert svc._bound_apple_models == {"AirPods Pro"}
+
+    def _mk_args(raw: bytes, rssi: int = -55, addr: int = 0x112233445566):
+        mdata = SimpleNamespace(company_id=0x004C, data=raw)
+        return SimpleNamespace(
+            raw_signal_strength_in_dbm=rssi,
+            bluetooth_address=addr,
+            advertisement=SimpleNamespace(manufacturer_data=[mdata]),
+        )
+
+    # 2) 不同型号广播（AirPods 0x0220）应被过滤
+    other_adv = bytes([0x07, 0x19, 0x01, 0x02, 0x20, 0x00, 0x99, 0x05])
+    svc._on_ble_adv(None, _mk_args(other_adv, rssi=-45, addr=0x999999))
+    assert svc._fresh_apple_adv() is None
+
+    # 3) 右侧广播只含右耳 80%（左耳 0xF 不可用）+ 随后左侧广播含左耳 90% & 充电盒 60% -> 合并保留全部部位
+    right_only = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x20, 0x8F, 0x0F])  # flipped=False -> side=right, high=right=8, low=left=15
+    svc._on_ble_adv(None, _mk_args(right_only, rssi=-52, addr=0xAAA1))
+    snap1 = svc._fresh_apple_adv()
+    assert snap1 is not None and ("右", 80, False) in snap1["parts"]
+
+    left_and_case = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x00, 0x9F, 0x46])  # flipped=True -> side=left, left=9, right=15, case=6 chg
+    svc._on_ble_adv(None, _mk_args(left_and_case, rssi=-50, addr=0xAAA2))
+    snap2 = svc._fresh_apple_adv()
+    assert snap2 is not None
+    assert ("左", 90, False) in snap2["parts"]
+    assert ("右", 80, False) in snap2["parts"]
+    assert ("盒", 60, True) in snap2["parts"]
+    assert snap2["percent"] == 80
+
+    # 4) 已锁定地址即使信号偏弱 (-90 dBm) 仍可更新
+    right_drop = bytes([0x07, 0x19, 0x01, 0x24, 0x20, 0x20, 0x7F, 0x0F])  # right=70%
+    svc._on_ble_adv(None, _mk_args(right_drop, rssi=-90, addr=0xAAA1))
+    snap3 = svc._fresh_apple_adv()
+    assert snap3 is not None and ("右", 70, False) in snap3["parts"]
+
+    # 5) 断开系统蓝牙连接 -> 立即清空缓存并停止 BLE 扫描
+    conn_state[0] = []
+    svc._poll_sync(force_discover=False)
+    app.processEvents()
+    assert svc._fresh_apple_adv() is None
+    assert svc._apple_known_addrs == set()
+    assert watcher_states[-1] is False
+    svc.stop()

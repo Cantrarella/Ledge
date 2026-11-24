@@ -416,3 +416,81 @@ def read_bluetooth_batteries() -> list[dict]:
         finally:
             _setupapi.SetupDiDestroyDeviceInfoList(h_dev)
     return out
+
+
+def get_connected_apple_bluetooth_devices() -> list[dict]:
+    """返回当前 Windows 处于已连接状态（IsConnected=True）的 Apple 蓝牙设备列表。
+    每项格式: {"mac": "282D7FDFF047", "name": "AirPods Pro", "pid": 0x2024}。
+    参考 AirPodsDesktop：仅对已连接本机的 Apple 设备开启 BLE 扫描并按型号过滤。
+    """
+    h_dev = _setupapi.SetupDiGetClassDevsW(None, "BTHENUM", None, _DIGCF_PRESENT | _DIGCF_ALLCLASSES)
+    if not h_dev or h_dev == _INVALID_HANDLE_VALUE:
+        return []
+    try:
+        dev_data = _SP_DEVINFO_DATA()
+        dev_data.cbSize = ctypes.sizeof(_SP_DEVINFO_DATA)
+        idx = 0
+        id_buf = ctypes.create_unicode_buffer(512)
+        name_buf = ctypes.create_unicode_buffer(256)
+        connected_names: dict[str, str] = {}
+        apple_pids: dict[str, int] = {}
+        while _setupapi.SetupDiEnumDeviceInfo(h_dev, idx, ctypes.byref(dev_data)):
+            idx += 1
+            req = wintypes.DWORD(0)
+            if not _setupapi.SetupDiGetDeviceInstanceIdW(h_dev, ctypes.byref(dev_data), id_buf, len(id_buf), ctypes.byref(req)):
+                continue
+            up = id_buf.value.upper()
+            ptype = wintypes.ULONG(0)
+            conn = ctypes.c_ubyte(0)
+            rsize = wintypes.DWORD(0)
+            has_conn = bool(
+                _setupapi.SetupDiGetDevicePropertyW(
+                    h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_CONNECTED),
+                    ctypes.byref(ptype), ctypes.byref(conn), ctypes.sizeof(conn), ctypes.byref(rsize), 0
+                )
+            )
+            is_conn = has_conn and conn.value != 0
+
+            # BTHENUM\DEV_282D7FDFF047\...
+            if up.startswith("BTHENUM\\DEV_"):
+                rest = up[len("BTHENUM\\DEV_"):]
+                mac = rest.split("\\", 1)[0]
+                if mac and is_conn:
+                    dev_name = ""
+                    if _setupapi.SetupDiGetDevicePropertyW(
+                        h_dev, ctypes.byref(dev_data), ctypes.byref(_DEVPKEY_NAME),
+                        ctypes.byref(ptype), name_buf, ctypes.sizeof(name_buf), ctypes.byref(rsize), 0
+                    ):
+                        dev_name = name_buf.value.strip()
+                    connected_names[mac] = dev_name
+                continue
+
+            # BTHENUM\{GUID}_VID&0001004C_PID&2024\...&282D7FDFF047_C00000000
+            if "_VID&0001004C" in up or "_VID&0002004C" in up:
+                pid_val = 0
+                if "_PID&" in up:
+                    pid_hex = up.split("_PID&", 1)[1].split("\\", 1)[0].split("_", 1)[0]
+                    try:
+                        pid_val = int(pid_hex, 16)
+                    except ValueError:
+                        pid_val = 0
+                tail = up.rsplit("\\", 1)[-1]
+                for seg in tail.split("&"):
+                    cand = seg.split("_", 1)[0]
+                    if len(cand) == 12 and all(ch in "0123456789ABCDEF" for ch in cand):
+                        if cand not in apple_pids or pid_val:
+                            apple_pids[cand] = pid_val
+                        if is_conn and cand not in connected_names:
+                            connected_names[cand] = ""
+        out: list[dict] = []
+        for mac, pid_val in apple_pids.items():
+            if mac in connected_names:
+                out.append({"mac": mac, "name": connected_names[mac], "pid": pid_val})
+        return out
+    finally:
+        _setupapi.SetupDiDestroyDeviceInfoList(h_dev)
+
+
+def has_connected_apple_bluetooth() -> bool:
+    """检查当前 Windows 是否存在已连接的 Apple 蓝牙设备（VID 0x004C 且 IsConnected=True）。"""
+    return bool(get_connected_apple_bluetooth_devices())

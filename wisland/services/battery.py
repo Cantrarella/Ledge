@@ -22,7 +22,7 @@ from .battery_providers import (
     PlayStationProvider,
     XInputProvider,
 )
-from .hid_native import enumerate_hid
+from .hid_native import enumerate_hid, get_connected_apple_bluetooth_devices
 
 
 @dataclass
@@ -52,6 +52,7 @@ class BatteryService(QtCore.QObject):
     busy_changed = QtCore.Signal(bool)
     low_battery = QtCore.Signal(str, str, int, str)    # (dev_id, display_name, percent, kind)
     full_battery = QtCore.Signal(str, str, str)        # (dev_id, display_name, kind)
+    _watcher_want_changed = QtCore.Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,6 +63,10 @@ class BatteryService(QtCore.QObject):
         self._seen_charging: set[str] = set()
         self._full_alerted: set[str] = set()
         self._apple_adv: tuple[float, dict] | None = None
+        self._apple_side_adv: dict[str, tuple[float, dict]] = {}
+        self._apple_known_addrs: set[int] = set()
+        self._connected_apple: list[dict] = []
+        self._bound_apple_models: set[str] = set()
         self._watcher = None
         self._busy = False
         self._cached_hid: list[tuple[object, DeviceCandidate]] | None = None
@@ -79,6 +84,7 @@ class BatteryService(QtCore.QObject):
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.refresh)
+        self._watcher_want_changed.connect(self._sync_apple_watcher, QtCore.Qt.ConnectionType.QueuedConnection)
         self._started = False
 
     def start(self):
@@ -104,12 +110,15 @@ class BatteryService(QtCore.QObject):
             self._stop_apple_watcher()
             with self._lock:
                 self._devices = []
+                self._connected_apple = []
+                self._bound_apple_models.clear()
+                self._reset_apple_state_locked()
             self.changed.emit()
             return
         if not self._started:
             return
         self._timer.start(sec * 1000)
-        self._start_apple_watcher()
+        # 参考 AirPodsDesktop：由当前经典蓝牙连接状态门控 BLE 扫描，不再无条件常驻空扫
         self.refresh()
 
     def stop(self):
@@ -122,8 +131,6 @@ class BatteryService(QtCore.QObject):
     def refresh(self, force_discover: bool = False):
         if not cfg.get("battery.enabled", True):
             return
-        if self._started:
-            self._start_apple_watcher()
         if self._busy:
             return
         self._set_busy(True)
@@ -144,8 +151,19 @@ class BatteryService(QtCore.QObject):
     def _resume_restart_ble(self):
         if not self._started or not cfg.get("battery.enabled", True):
             return
-        self._start_apple_watcher()
         self.refresh(force_discover=True)
+
+    @QtCore.Slot(bool)
+    def _sync_apple_watcher(self, want: bool):
+        if want and self._started and cfg.get("battery.enabled", True):
+            self._start_apple_watcher()
+        else:
+            self._stop_apple_watcher()
+
+    def _reset_apple_state_locked(self):
+        self._apple_adv = None
+        self._apple_side_adv.clear()
+        self._apple_known_addrs.clear()
 
     def _set_busy(self, on: bool):
         if self._busy != on:
@@ -200,7 +218,9 @@ class BatteryService(QtCore.QObject):
 
     @QtCore.Slot()
     def _schedule_ble_restart(self):
-        if self._started and cfg.get("battery.enabled", True):
+        with self._lock:
+            has_apple = bool(self._connected_apple)
+        if self._started and has_apple and cfg.get("battery.enabled", True):
             QtCore.QTimer.singleShot(2000, self._start_apple_watcher)
 
     def _stop_apple_watcher(self):
@@ -212,35 +232,92 @@ class BatteryService(QtCore.QObject):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _merge_apple_sides_locked(self) -> dict | None:
+        """参考 AirPodsStateManager：合并左/右耳分侧广播，保留每个部位最新有效电量。"""
+        if not self._apple_side_adv:
+            return None
+        entries = list(self._apple_side_adv.values())
+        entries.sort(key=lambda item: item[0])
+        latest = entries[-1][1]
+        model = str(latest.get("model") or "AirPods")
+        # 单电池设备（如 AirPods Max）直接使用最新帧
+        if not any(e[1].get("parts") for e in entries):
+            return {
+                "model": model,
+                "percent": int(latest["percent"]),
+                "charging": bool(latest.get("charging", False)),
+                "parts": [],
+            }
+        # 对“左/右/盒”分别保留时间戳最新的有效读数
+        part_map: dict[str, tuple[float, int, bool]] = {}
+        for ts, d in entries:
+            for k, val, chg in d.get("parts") or ():
+                prev = part_map.get(k)
+                if prev is None or ts >= prev[0]:
+                    part_map[k] = (ts, int(val), bool(chg))
+        parts: list[tuple[str, int, bool]] = []
+        bud_pcts: list[int] = []
+        for k in ("左", "右", "盒"):
+            if k in part_map:
+                _, val, chg = part_map[k]
+                parts.append((k, val, chg))
+                if k in ("左", "右"):
+                    bud_pcts.append(val)
+        if not parts:
+            return None
+        overall = min(bud_pcts) if bud_pcts else parts[0][1]
+        charging = bool(bud_pcts) and all(p[2] for p in parts if p[0] in ("左", "右"))
+        return {"model": model, "percent": overall, "charging": charging, "parts": parts}
+
     def _on_ble_adv(self, _sender, args):
         try:
-            if int(args.raw_signal_strength_in_dbm) < -82:
+            rssi = int(args.raw_signal_strength_in_dbm)
+            if rssi <= -127:
+                return
+            addr = int(getattr(args, "bluetooth_address", 0) or 0)
+            with self._lock:
+                if not self._connected_apple:
+                    return
+                known = bool(addr and addr in self._apple_known_addrs)
+                bound_models = set(self._bound_apple_models)
+            if not known and rssi < -82:
                 return
             for mdata in args.advertisement.manufacturer_data:
                 if int(mdata.company_id) != AppleAdvertParser.COMPANY_ID:
                     continue
                 raw = bytes(mdata.data)
                 parsed = AppleAdvertParser.parse(raw)
-                if parsed:
-                    with self._lock:
-                        prev = self._apple_adv[1] if self._apple_adv else None
-                        self._apple_adv = (time.time(), parsed)
-                    if prev != parsed:
-                        QtCore.QMetaObject.invokeMethod(
-                            self, "refresh", QtCore.Qt.ConnectionType.QueuedConnection
-                        )
+                if not parsed:
+                    continue
+                if bound_models and parsed.get("model") not in bound_models:
+                    continue
+                now_ts = time.time()
+                side = str(parsed.get("side") or "left")
+                with self._lock:
+                    if not self._connected_apple:
+                        return
+                    prev = self._apple_adv[1] if self._apple_adv else None
+                    if addr:
+                        self._apple_known_addrs.add(addr)
+                    self._apple_side_adv[side] = (now_ts, parsed)
+                    merged = self._merge_apple_sides_locked()
+                    if merged is not None:
+                        self._apple_adv = (now_ts, merged)
+                if merged is not None and prev != merged:
+                    QtCore.QMetaObject.invokeMethod(
+                        self, "refresh", QtCore.Qt.ConnectionType.QueuedConnection
+                    )
         except Exception:  # noqa: BLE001
             pass
 
     def _fresh_apple_adv(self) -> dict | None:
         with self._lock:
+            if not self._connected_apple:
+                return None
             snap = self._apple_adv
         if not snap:
             return None
-        ts, data = snap
-        if time.time() - ts > 600.0:
-            return None
-        return data
+        return snap[1]
 
     # ---------------- 后台扫描与合并 ----------------
     def _poll_sync(self, force_discover: bool = False) -> list[BatteryDevice]:
@@ -263,6 +340,25 @@ class BatteryService(QtCore.QObject):
         else:
             pairs = list(self._cached_hid or [])
 
+        # 参考 AirPodsDesktop：以系统蓝牙连接状态门控 BLE 扫描与缓存生命周期
+        try:
+            connected_apple = get_connected_apple_bluetooth_devices()
+        except Exception:  # noqa: BLE001
+            connected_apple = []
+        with self._lock:
+            self._connected_apple = list(connected_apple)
+            if connected_apple:
+                models = {
+                    m for d in connected_apple
+                    if (m := AppleAdvertParser.model_for_pid(int(d.get("pid") or 0)))
+                }
+                self._bound_apple_models = models
+            else:
+                self._bound_apple_models.clear()
+                self._reset_apple_state_locked()
+        if self._started:
+            self._watcher_want_changed.emit(bool(connected_apple))
+
         apple_snap = self._fresh_apple_adv()
 
         results: list[tuple[DeviceCandidate, BatteryReading]] = []
@@ -281,7 +377,7 @@ class BatteryService(QtCore.QObject):
             self._cached_hid = None
 
         try:
-            results.extend(self._bt_provider.discover_and_read(apple_snap))
+            results.extend(self._bt_provider.discover_and_read(apple_snap, connected_apple=connected_apple))
         except Exception:  # noqa: BLE001
             pass
 

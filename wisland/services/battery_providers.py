@@ -16,7 +16,13 @@ from dataclasses import dataclass, field
 import re
 import time
 
-from .hid_native import HidDeviceInfo, HidSession, read_bluetooth_batteries
+from .hid_native import (
+    HidDeviceInfo,
+    HidSession,
+    get_connected_apple_bluetooth_devices,
+    has_connected_apple_bluetooth,
+    read_bluetooth_batteries,
+)
 
 
 @dataclass
@@ -675,6 +681,14 @@ class AppleAdvertParser:
     _SINGLES = {0x0A20}
 
     @classmethod
+    def model_for_pid(cls, pid: int) -> str | None:
+        """将 Windows 蓝牙 PnP ProductId（如 0x2024）映射为型号名（兼容大/小端字节序）。"""
+        if not pid:
+            return None
+        swapped = ((pid & 0xFF) << 8) | ((pid >> 8) & 0xFF)
+        return cls._MODELS.get(swapped) or cls._MODELS.get(pid)
+
+    @classmethod
     def parse(cls, data: bytes) -> dict | None:
         if len(data) < 8 or data[0] != 0x07 or data[1] != 0x19:
             return None
@@ -686,9 +700,17 @@ class AppleAdvertParser:
             nibble = data[6] & 0x0F
             if nibble > 10:
                 return None
-            return {"model": model, "percent": nibble * 10, "charging": (data[7] & 0x10) != 0, "parts": []}
+            return {
+                "model": model,
+                "model_id": model_id,
+                "side": "left",
+                "percent": nibble * 10,
+                "charging": (data[7] & 0x10) != 0,
+                "parts": [],
+            }
 
         flipped = (data[5] & 0x20) == 0
+        side = "left" if flipped else "right"
         high, low = data[6] >> 4, data[6] & 0x0F
         case_nibble, chg = data[7] & 0x0F, data[7] >> 4
         left_n = high if flipped else low
@@ -710,13 +732,24 @@ class AppleAdvertParser:
         if not parts:
             return None
         overall = min(bud_pcts) if bud_pcts else parts[0][1]
-        return {"model": model, "percent": overall, "charging": bool(bud_pcts) and all(p[2] for p in parts if p[0] in ("左", "右")), "parts": parts}
+        return {
+            "model": model,
+            "model_id": model_id,
+            "side": side,
+            "percent": overall,
+            "charging": bool(bud_pcts) and all(p[2] for p in parts if p[0] in ("左", "右")),
+            "parts": parts,
+        }
 
 
 class BluetoothBatteryProvider:
     name = "Windows Bluetooth"
 
-    def discover_and_read(self, apple_snapshot: dict | None = None) -> list[tuple[DeviceCandidate, BatteryReading]]:
+    def discover_and_read(
+        self,
+        apple_snapshot: dict | None = None,
+        connected_apple: list[dict] | None = None,
+    ) -> list[tuple[DeviceCandidate, BatteryReading]]:
         rows = read_bluetooth_batteries()
         out: list[tuple[DeviceCandidate, BatteryReading]] = []
         merged_apple = False
@@ -744,16 +777,25 @@ class BluetoothBatteryProvider:
             rd = BatteryReading(percent=pct, charging=charging, online=True, detail=detail, parts=parts)
             out.append((cand, rd))
         if apple_snapshot and not merged_apple:
+            conn_list = connected_apple if connected_apple is not None else get_connected_apple_bluetooth_devices()
+            if not conn_list and not has_connected_apple_bluetooth():
+                return out
             parts = list(apple_snapshot.get("parts") or [])
             pct = int(apple_snapshot["percent"])
             charging = bool(apple_snapshot.get("charging", False))
             model = str(apple_snapshot.get("model") or "AirPods")
+            display_name = model
+            for dev in conn_list:
+                dev_model = AppleAdvertParser.model_for_pid(int(dev.get("pid") or 0))
+                if (dev_model is None or dev_model == model) and str(dev.get("name") or "").strip():
+                    display_name = str(dev["name"]).strip()
+                    break
             detail = " ".join(f"{k}{v}%" for k, v, _ in parts) if parts else "蓝牙广播"
             out.append(
                 (
                     DeviceCandidate(
                         id=f"apple:{model.lower().replace(' ', '-')}",
-                        name=model,
+                        name=display_name,
                         brand="Apple",
                         model=model,
                         kind="earbuds",
