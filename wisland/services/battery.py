@@ -280,6 +280,13 @@ class BatteryService(QtCore.QObject):
         if want and self._started and cfg.get("battery.enabled", True):
             if force_restart:
                 self._stop_apple_watcher()
+                self._start_apple_watcher()
+                return
+            if self._watcher is None and (
+                self._ble_restart_timer.isActive()
+                or (self._ble_next_retry_at > 0.0 and time.monotonic() < self._ble_next_retry_at)
+            ):
+                return
             self._start_apple_watcher()
         else:
             self._stop_apple_watcher()
@@ -337,7 +344,8 @@ class BatteryService(QtCore.QObject):
                 has_apple = bool(self._connected_apple)
             if self._started and has_apple and cfg.get("battery.enabled", True):
                 self._ble_retry_fail_count += 1
-                delay_s = min(60.0, 2.0 * (2 ** (self._ble_retry_fail_count - 1)))
+                shift = min(5, max(0, self._ble_retry_fail_count - 1))
+                delay_s = min(60.0, float(2 << shift))
                 self._ble_next_retry_at = time.monotonic() + delay_s
                 self._ble_restart_timer.setInterval(int(delay_s * 1000))
                 self._ble_restart_timer.start()

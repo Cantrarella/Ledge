@@ -605,13 +605,28 @@ def test_apple_ble_start_failure_schedules_retry_and_probe_self_heals(monkeypatc
     svc._try_restart_apple_watcher()
     assert svc._watcher is None and svc._ble_restart_timer.interval() == 8000
 
-    # 2) 在退避窗口期内即使 timer 被停，5 秒心跳也遵守退避时间不抢跑
+    # 2) 在退避窗口期内：5 秒心跳和常规轮询均遵守退避截止时间，不提前重试
     svc._ble_restart_timer.stop()
     calls_before_probe = start_calls[0]
     svc._on_apple_probe_done((True, conn))
     assert start_calls[0] == calls_before_probe
 
-    # 3) 第 4 次恢复成功 -> 重置退避计数
+    from wisland.services import battery as bat_mod
+    monkeypatch.setattr(bat_mod, "enumerate_hid", lambda: [])
+    monkeypatch.setattr(bat_mod, "get_connected_apple_bluetooth_devices", lambda: conn)
+    monkeypatch.setattr(svc._bt_provider, "discover_and_read", lambda snap, connected_apple=None: [])
+    svc._poll_sync(force_discover=False)
+    _app.processEvents()
+    assert start_calls[0] == calls_before_probe
+
+    # 2b) 极端连续失败（1024 次）退避计算不得溢出，上限封顶 60000ms
+    fail_left[0] = 1
+    svc._ble_retry_fail_count = 1024
+    svc._try_restart_apple_watcher()
+    assert svc._watcher is None
+    assert svc._ble_restart_timer.interval() == 60000
+
+    # 3) 恢复成功 -> 重置退避计数
     svc._try_restart_apple_watcher()
     assert svc._watcher is not None
     assert svc._ble_retry_fail_count == 0
