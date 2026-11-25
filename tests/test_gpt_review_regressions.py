@@ -493,3 +493,226 @@ def test_09_tray_focus_rejects_reused_pid_with_different_create_time(monkeypatch
     assert ok is False
     assert "失效" in msg
     assert popen_calls == []
+
+
+def test_10_vad_download_uses_pinned_v5_mirror_and_github_fallback(monkeypatch):
+    """字幕 VAD 模型应使用上游 v1.3.0 锁定的 v5 仓库与 revision，并保留 GitHub 与 hf-mirror 兜底。"""
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    vad_urls = dl_mod._urls(dl_mod.VAD_REPO, "silero_vad.onnx")
+    assert dl_mod.VAD_REPO == "R4kSo1997/sherpa-onnx-silero-vad-v5"
+    assert vad_urls[0] == f"https://huggingface.co/{dl_mod.VAD_REPO}/resolve/{dl_mod.VAD_REVISION}/silero_vad.onnx"
+    assert vad_urls[1] == dl_mod.VAD_GITHUB
+    assert any("hf-mirror.com" in u and dl_mod.VAD_REVISION in u for u in vad_urls)
+
+    parakeet_urls = dl_mod._urls(dl_mod.PARAKEET, "tokens.txt")
+    assert parakeet_urls[0].endswith("/resolve/main/tokens.txt")
+
+
+def test_11_hidden_page_services_pause_and_resume_cleanly(tmp_path, monkeypatch):
+    """隐藏页面时暂停天气与 AI 额度后台定时器，恢复显示时重新启动且不销毁线程池/客户端。"""
+    from wisland.services.quota.manager import QuotaManager
+    from wisland.services.weather import WeatherService
+
+    _app()
+
+    # 1) WeatherService.set_active(False/True)
+    w = WeatherService()
+    refreshes: list[bool] = []
+    monkeypatch.setattr(w, "refresh", lambda: refreshes.append(True))
+    w.start()
+    assert w.is_active() is True
+    assert len(refreshes) == 1
+    w.set_active(False)
+    assert w.is_active() is False
+    assert not w._timer.isActive()
+    w.set_active(True)
+    assert w.is_active() is True
+    assert len(refreshes) == 2
+    w.stop()
+
+    # 2) QuotaManager.set_active(False/True)
+    cm = Config(tmp_path / "qcfg.json")
+    qm = QuotaManager(config_obj=cm, cred_store=_MemCreds())
+    q_refreshes: list[bool] = []
+    monkeypatch.setattr(qm, "refresh_all", lambda: q_refreshes.append(True))
+    qm._page_active = False
+    qm.start()
+    assert qm.is_active() is False
+    assert not qm._auto_timer.isActive()
+    assert q_refreshes == []
+
+    qm.set_active(True)
+    assert qm.is_active() is True
+    assert qm._auto_timer.isActive() is True
+    assert len(q_refreshes) == 1
+
+    qm.set_active(False)
+    assert qm.is_active() is False
+    assert not qm._auto_timer.isActive()
+    qm.stop()
+
+
+def test_12_clipboard_write_uses_valid_hwnd_and_preserves_clipboard_on_alloc_error(monkeypatch):
+    """剪贴板历史回写必须使用非空有效窗口句柄，且先分配内存再清空剪贴板，避免清空后失败丢失原内容。"""
+    from wisland.services import clipboard_history as cb_mod
+
+    seq: list[str] = []
+    opened_hwnds: list[int] = []
+    freed: list[int] = []
+
+    class _FakeUser32:
+        def RegisterClipboardFormatW(self, _name):
+            return 0xC123
+
+        def OpenClipboard(self, hwnd):
+            opened_hwnds.append(int(hwnd))
+            seq.append("open")
+            return 1
+
+        def EmptyClipboard(self):
+            seq.append("empty")
+            return 1
+
+        def SetClipboardData(self, fmt, handle):
+            seq.append(f"set:{fmt}")
+            return handle
+
+        def CloseClipboard(self):
+            seq.append("close")
+            return 1
+
+    alloc_ok = [True]
+    alloc_seq = [100]
+
+    class _FakeKernel32:
+        def GlobalAlloc(self, _flags, _size):
+            seq.append("alloc")
+            if not alloc_ok[0]:
+                return 0
+            alloc_seq[0] += 1
+            return alloc_seq[0]
+
+        def GlobalLock(self, h):
+            return h
+
+        def GlobalUnlock(self, _h):
+            return 1
+
+        def GlobalFree(self, h):
+            freed.append(h)
+            return 0
+
+    monkeypatch.setattr(cb_mod, "user32", _FakeUser32())
+    monkeypatch.setattr(cb_mod, "kernel32", _FakeKernel32())
+    monkeypatch.setattr(cb_mod.ctypes, "memmove", lambda *a: None)
+    monkeypatch.setattr(cb_mod.ctypes, "memset", lambda *a: None)
+
+    # 1) 正常回写：先 alloc，再以非空有效 HWND 打开、清空、写入
+    assert cb_mod._win32_write_history_text("hello", owner_hwnd=0x2222) is True
+    assert opened_hwnds == [0x2222]
+    assert seq.index("alloc") < seq.index("open") < seq.index("empty") < seq.index("set:13")
+
+    # 2) 内存分配失败：不得调用 OpenClipboard / EmptyClipboard，原剪贴板不被清空
+    seq.clear()
+    opened_hwnds.clear()
+    alloc_ok[0] = False
+    assert cb_mod._win32_write_history_text("hello", owner_hwnd=0x2222) is False
+    assert opened_hwnds == []
+    assert "empty" not in seq
+
+
+def test_13_mail_initial_search_failure_does_not_treat_history_as_new(tmp_path):
+    """首次 UID SEARCH ALL 返回 NO/BAD 时不得把 baseline 设为 0，恢复后历史邮件不会被当成新邮件提醒。"""
+    app = _app()
+    cm = Config(tmp_path / "cfg.json")
+    creds = _MemCreds()
+    mgr = MailAccountManager(config_obj=cm, cred_store=creds, body_cache=LocalMailBodyCache(tmp_path / "cache.json"))
+    acc = MailAccount(
+        id="acc-search-fail",
+        email="sf@example.com",
+        username="sf@example.com",
+        host="imap.example.com",
+        port=993,
+        provider="custom",
+        credential_key="k-sf",
+        enabled=True,
+    )
+    creds.write_secret(acc.credential_key, "pw")
+    mgr._accounts.append(acc)
+
+    events: list = []
+    ctrl = SimpleNamespace(
+        counts={},
+        counts_changed=SimpleNamespace(emit=lambda *a, **k: None),
+        ingest_event=lambda ev: events.append(ev),
+        set_source_unread=lambda *a, **k: None,
+        clear_unread=lambda *a, **k: None,
+    )
+
+    attempts = [0]
+    entered_idle = threading.Event()
+    state = {"uv": "77", "uids": [10, 20, 30], "entered_idle": entered_idle}
+
+    class _FlakySearchImapClient(_FakeImapClient):
+        def uid(self, cmd, *args):
+            if cmd.upper() == "SEARCH":
+                attempts[0] += 1
+                if attempts[0] == 1:
+                    return ("NO", [b"temporary failure"])
+            return super().uid(cmd, *args)
+
+    mon = MailMonitorService(
+        mgr,
+        controller=ctrl,
+        config_obj=cm,
+        client_factory=lambda *a, **k: _FlakySearchImapClient(state),
+        idle_renew_s=5.0,
+    )
+    # 缩短退避重试等待，方便测试快速完成
+    orig_start = mon.sync_accounts
+    mon.start()
+    try:
+        # 等首次失败重连后第二次成功进入 IDLE（backoff 3s 内）
+        assert entered_idle.wait(5.0)
+        app.processEvents()
+        w = mon._workers[acc.id]
+        assert attempts[0] >= 2
+        assert w._baseline_uid == 30
+        assert events == []
+        assert mon.unread_count_for_account(acc.id) == 0
+    finally:
+        mon.stop()
+
+
+def test_14_foreground_activated_checks_fullscreen_before_topmost(monkeypatch):
+    """开启全屏隐藏时，前台窗口切入全屏应用瞬间应先判断全屏并隐藏，不得先调用 ensure_topmost()。"""
+    from wisland.ui.island import Island
+
+    _app()
+
+    class _DummyPage(QtWidgets.QWidget):
+        key = "home"
+        title = "主页"
+        glyph = ""
+        preferred_size = (320, 180)
+        def preferred_panel_width(self): return 320
+        def preferred_panel_height(self): return 180
+        def on_show(self): pass
+        def on_hide(self): pass
+
+    isl = Island([_DummyPage()])
+    try:
+        topmost_calls: list[bool] = []
+        monkeypatch.setattr(isl, "ensure_topmost", lambda frame_changed=False: topmost_calls.append(True))
+
+        def _fake_check_fullscreen():
+            # 模拟刚切入全屏应用：先隐藏，不置顶
+            isl.set_fullscreen_hidden(True)
+
+        isl.foreground_activated.connect(_fake_check_fullscreen)
+        assert isl._fs_hidden is False
+        isl._on_foreground_activated()
+        assert isl._fs_hidden is True
+        assert topmost_calls == []
+    finally:
+        isl.close()

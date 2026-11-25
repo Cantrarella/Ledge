@@ -101,6 +101,7 @@ class Island(QtWidgets.QWidget):
     life_reminder_clicked = QtCore.Signal(str)  # 点击生活提醒 ("water"|"sit")
     resumed_from_sleep = QtCore.Signal()        # 系统从睡眠/休眠唤醒
     device_changed = QtCore.Signal()            # 系统 USB/蓝牙设备连接或断开变化
+    foreground_activated = QtCore.Signal()      # 前台窗口切换或全屏应用激活
 
     def __init__(self, pages: list, peak_fn=None, registry=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -2278,6 +2279,13 @@ class Island(QtWidgets.QWidget):
         self.register_hotkeys()
         self._kick()
 
+    def _on_foreground_activated(self):
+        """前台窗口切换/全屏激活时，优先交给外部全屏检测逻辑决定隐藏或置顶；无外部监听时直接置顶。"""
+        if self.receivers(QtCore.SIGNAL("foreground_activated()")) > 0:
+            self.foreground_activated.emit()
+        else:
+            self.ensure_topmost()
+
     def nativeEvent(self, etype, message):
         try:
             msg = wintypes.MSG.from_address(int(message))
@@ -2303,7 +2311,7 @@ class Island(QtWidgets.QWidget):
                 if wp == HSHELL_FLASH:
                     self.flash.emit(int(msg.lParam or 0))
                 elif wp in (HSHELL_WINDOWACTIVATED, HSHELL_RUDEAPPACTIVATED):
-                    QtCore.QTimer.singleShot(0, self.ensure_topmost)
+                    QtCore.QTimer.singleShot(0, self._on_foreground_activated)
         except Exception:  # noqa: BLE001
             pass
         return False, 0

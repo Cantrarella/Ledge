@@ -477,11 +477,13 @@ def main():
 
     def on_resume_from_sleep():
         try:
-            ctx.weather.refresh()
+            if ctx.weather.is_active():
+                ctx.weather.refresh()
         except Exception:
             pass
         try:
-            ctx.quota.refresh_all()
+            if ctx.quota.is_active():
+                ctx.quota.refresh_all()
         except Exception:
             pass
         try:
@@ -502,6 +504,31 @@ def main():
     ctx.open_settings = open_settings
 
     cycle_timer = QtCore.QTimer(app)
+
+    def sync_page_services(initial_start: bool = False):
+        """按 pages.visible 联动启停纯页面型后台服务，避免隐藏页面后定时器和监听继续空转。"""
+        vis = cfg.get("pages.visible") or {}
+        if not isinstance(vis, dict):
+            vis = {}
+        weather_active = bool(vis.get("weather", True)) or bool(cfg.get("island.compact_weather", True))
+        quota_active = bool(vis.get("quota", True))
+        tools_active = bool(vis.get("tools", True))
+
+        if initial_start:
+            ctx.quota._page_active = quota_active
+            ctx.quota.start()
+            if weather_active:
+                ctx.weather.start()
+            else:
+                ctx.weather.set_active(False)
+        else:
+            ctx.weather.set_active(weather_active)
+            ctx.quota.set_active(quota_active)
+
+        if tools_active and cfg.get("tools.clipboard_enabled", True):
+            ctx.clipboard.start()
+        else:
+            ctx.clipboard.stop()
 
     def apply_runtime_config(show_toast: bool = False):
         island_theme.set_mode(cfg.get("island.theme", "auto"))
@@ -525,11 +552,7 @@ def main():
                 cycle_timer.start()
         else:
             cycle_timer.stop()
-        ctx.weather.refresh()
-        if cfg.get("tools.clipboard_enabled", True):
-            ctx.clipboard.start()
-        else:
-            ctx.clipboard.stop()
+        sync_page_services(initial_start=False)
         ctx.notify.apply_config()
         if "tools" in P:
             P["tools"].refresh_shelf()
@@ -634,16 +657,21 @@ def main():
         except Exception:  # noqa: BLE001
             pass
     fs_timer = QtCore.QTimer(app, interval=1000, timeout=check_fullscreen)
+    island.foreground_activated.connect(check_fullscreen)
 
     # ---------------- 启动 ----------------
     island.show()
     for s in (ctx.media, ctx.audio, ctx.windows, ctx.notify,
-              ctx.weather, ctx.mail_monitor, ctx.quota, ctx.battery, ctx.clipboard, ctx.health):
+              ctx.mail_monitor, ctx.battery, ctx.health):
         try:
             if hasattr(s, "start"):
                 s.start()
         except Exception:  # noqa: BLE001
             traceback.print_exc()
+    try:
+        sync_page_services(initial_start=True)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
     fs_timer.start()
     from .core.memory import trim_working_set
     QtCore.QTimer.singleShot(8000, lambda: trim_working_set(collect_gc=True))

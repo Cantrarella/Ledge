@@ -186,7 +186,9 @@ class _AccountMonitorWorker:
 
     def _search_all_uids(self, client) -> list[str]:
         typ, data = client.uid("SEARCH", None, "ALL")
-        if typ != "OK" or not data or not data[0]:
+        if typ != "OK":
+            raise RuntimeError(f"UID SEARCH ALL failed: {typ}")
+        if not data or not data[0]:
             return []
         return [
             (u.decode("ascii", errors="ignore") if isinstance(u, (bytes, bytearray)) else str(u))

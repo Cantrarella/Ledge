@@ -353,6 +353,8 @@ class WeatherService(QtCore.QObject):
             pass
 
     def start(self):
+        if getattr(self._client, "is_closed", False):
+            self._client = httpx.Client(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True)
         try:
             mins = max(5.0, float(cfg.get("weather.interval_min") or 15))
         except (TypeError, ValueError):
@@ -360,6 +362,20 @@ class WeatherService(QtCore.QObject):
         self._load_cache()
         self._timer.start(int(mins * 60_000))
         self.refresh()
+
+    def set_active(self, active: bool):
+        """按页面/收起态天气可见性动态启停后台轮询，避免隐藏后空转联网。"""
+        if not active:
+            self._timer.stop()
+            self._retry_timer.stop()
+            return
+        if not self._timer.isActive():
+            self.start()
+        else:
+            self.refresh()
+
+    def is_active(self) -> bool:
+        return self._timer.isActive()
 
     def stop(self):
         self._timer.stop()

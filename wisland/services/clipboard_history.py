@@ -205,48 +205,99 @@ def _win32_read_clipboard_text(hwnd: int = 0) -> tuple[str, bool] | None:
         user32.CloseClipboard()
 
 
-def _win32_write_history_text(text: str) -> bool:
-    """将历史条目写回系统剪贴板，并打上 Wisland.ClipboardHistoryCopy 标记避免再次生成重复记录。"""
+def _resolve_clipboard_owner_hwnd(owner_hwnd: int = 0) -> tuple[int, bool]:
+    """返回 (有效窗口句柄, 是否为临时创建的窗口)。
+    Windows 要求 OpenClipboard + EmptyClipboard 必须传入非空有效 HWND，否则所有者为 NULL 会导致 SetClipboardData 失败。
+    """
+    if owner_hwnd:
+        return int(owner_hwnd), False
+    try:
+        from PySide6 import QtWidgets
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            for w in app.topLevelWidgets():
+                try:
+                    wid = int(w.winId())
+                    if wid:
+                        return wid, False
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        pass
+    hmod = kernel32.GetModuleHandleW(None)
+    tmp_hwnd = user32.CreateWindowExW(0, "STATIC", "", 0, 0, 0, 0, 0, HWND_MESSAGE, None, hmod, None)
+    if tmp_hwnd:
+        return int(tmp_hwnd), True
+    return 0, False
+
+
+def _win32_write_history_text(text: str, owner_hwnd: int = 0) -> bool:
+    """将历史条目写回系统剪贴板，并打上 Wisland.ClipboardHistoryCopy 标记避免再次生成重复记录。
+    先准备好文本与标记内存，再使用有效窗口句柄打开并清空剪贴板，避免清空后写入失败导致原剪贴板丢失。
+    """
     fmt_self = user32.RegisterClipboardFormatW(HISTORY_COPY_FORMAT)
-    opened = False
-    for _ in range(8):
-        if user32.OpenClipboard(0):
-            opened = True
-            break
-        time.sleep(0.015)
-    if not opened:
+    raw_bytes = (text + "\x00").encode("utf-16-le")
+    h_text = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(raw_bytes))
+    if not h_text:
+        return False
+    p_text = kernel32.GlobalLock(h_text)
+    if not p_text:
+        kernel32.GlobalFree(h_text)
+        return False
+    ctypes.memmove(p_text, raw_bytes, len(raw_bytes))
+    kernel32.GlobalUnlock(h_text)
+
+    h_flag = None
+    if fmt_self:
+        h_flag = kernel32.GlobalAlloc(GMEM_MOVEABLE, 4)
+        if h_flag:
+            p_flag = kernel32.GlobalLock(h_flag)
+            if p_flag:
+                ctypes.memset(p_flag, 1, 4)
+                kernel32.GlobalUnlock(h_flag)
+            else:
+                kernel32.GlobalFree(h_flag)
+                h_flag = None
+
+    hwnd, is_temp_hwnd = _resolve_clipboard_owner_hwnd(owner_hwnd)
+    if not hwnd:
+        kernel32.GlobalFree(h_text)
+        if h_flag:
+            kernel32.GlobalFree(h_flag)
         return False
 
+    opened = False
     try:
-        user32.EmptyClipboard()
-        raw_bytes = (text + "\x00").encode("utf-16-le")
-        h_text = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(raw_bytes))
-        if not h_text:
-            return False
-        p_text = kernel32.GlobalLock(h_text)
-        if not p_text:
-            kernel32.GlobalFree(h_text)
-            return False
-        ctypes.memmove(p_text, raw_bytes, len(raw_bytes))
-        kernel32.GlobalUnlock(h_text)
-        if not user32.SetClipboardData(CF_UNICODETEXT, h_text):
-            kernel32.GlobalFree(h_text)
+        for _ in range(8):
+            if user32.OpenClipboard(hwnd):
+                opened = True
+                break
+            time.sleep(0.015)
+        if not opened:
             return False
 
-        if fmt_self:
-            h_flag = kernel32.GlobalAlloc(GMEM_MOVEABLE, 4)
-            if h_flag:
-                p_flag = kernel32.GlobalLock(h_flag)
-                if p_flag:
-                    ctypes.memset(p_flag, 1, 4)
-                    kernel32.GlobalUnlock(h_flag)
-                    if not user32.SetClipboardData(fmt_self, h_flag):
-                        kernel32.GlobalFree(h_flag)
-                else:
-                    kernel32.GlobalFree(h_flag)
+        if not user32.EmptyClipboard():
+            return False
+        if not user32.SetClipboardData(CF_UNICODETEXT, h_text):
+            return False
+        h_text = None  # 所有权已移交系统剪贴板
+
+        if fmt_self and h_flag:
+            if user32.SetClipboardData(fmt_self, h_flag):
+                h_flag = None
         return True
     finally:
-        user32.CloseClipboard()
+        if opened:
+            user32.CloseClipboard()
+        if h_text:
+            kernel32.GlobalFree(h_text)
+        if h_flag:
+            kernel32.GlobalFree(h_flag)
+        if is_temp_hwnd and hwnd:
+            try:
+                user32.DestroyWindow(hwnd)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class ClipboardHistoryService(QtCore.QObject):
@@ -437,7 +488,7 @@ class ClipboardHistoryService(QtCore.QObject):
 
     def copy_from_history(self, text: str) -> bool:
         """从历史列表中点击复制：打上自身复制标记，不重新改变历史顺序或生成重复项。"""
-        ok = _win32_write_history_text(text)
+        ok = _win32_write_history_text(text, owner_hwnd=self._watcher_hwnd)
         if ok:
             self.notice.emit("已复制到剪贴板", False)
         else:

@@ -942,7 +942,8 @@ class QuotaManager(QtCore.QObject):
     # ---------------- 生命周期与自动刷新 ----------------
     def _sync_auto_timer(self):
         enabled = bool(self._cfg.get("quota.enabled", True))
-        if not self._started or self._stopping or not enabled:
+        page_active = bool(getattr(self, "_page_active", True))
+        if not self._started or self._stopping or not enabled or not page_active:
             if self._auto_timer.isActive():
                 self._auto_timer.stop()
             return
@@ -952,17 +953,29 @@ class QuotaManager(QtCore.QObject):
         if self._auto_timer.interval() != interval_ms or not self._auto_timer.isActive():
             self._auto_timer.start(interval_ms)
 
+    def set_active(self, active: bool):
+        """按 AI 额度页可见性动态启停后台定时刷新（不销毁线程池，恢复显示时立即可用）。"""
+        want = bool(active)
+        prev = bool(getattr(self, "_page_active", True))
+        self._page_active = want
+        self._sync_auto_timer()
+        if want and not prev and self._started and not self._stopping and bool(self._cfg.get("quota.enabled", True)):
+            self.refresh_all()
+
+    def is_active(self) -> bool:
+        return bool(getattr(self, "_page_active", True)) and self._started and not self._stopping
+
     @QtCore.Slot()
     def _on_auto_timer(self):
-        if bool(self._cfg.get("quota.enabled", True)) and not self._stopping:
+        if bool(self._cfg.get("quota.enabled", True)) and bool(getattr(self, "_page_active", True)) and not self._stopping:
             self.refresh_all()
 
     def start(self):
-        """启动后台自动刷新（仅在 quota.enabled 为 True 时运行）。"""
+        """启动后台自动刷新（仅在 quota.enabled 且页面可见时运行）。"""
         self._stopping = False
         self._started = True
         self._sync_auto_timer()
-        if bool(self._cfg.get("quota.enabled", True)):
+        if bool(self._cfg.get("quota.enabled", True)) and bool(getattr(self, "_page_active", True)):
             self.refresh_all()
 
     def stop(self):
