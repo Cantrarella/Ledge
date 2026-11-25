@@ -14,6 +14,7 @@ import html
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 import zlib
@@ -209,8 +210,7 @@ class LyricsService(QtCore.QObject):
         self._pending: set[str] = set()
         self._lock = threading.Lock()
         self._disk_lock = threading.Lock()
-        self._disk_loaded = False
-        self._disk_cache: dict[str, dict] = {}
+        self._disk_inited_path: Path | None = None
         self._active_key: str | None = None
         self._active_track: dict | None = None
         self._retry_timer = QtCore.QTimer(self, singleShot=True)
@@ -323,48 +323,105 @@ class LyricsService(QtCore.QObject):
             self._retry_timer.start(retry_ms)
         self.ready.emit(k)
 
-    def _ensure_disk_cache(self):
+    @staticmethod
+    def _disk_db_path() -> Path:
+        return _DISK_CACHE_FILE.with_suffix(".sqlite3")
+
+    def _ensure_disk_cache(self) -> Path:
+        db_path = self._disk_db_path()
         with self._disk_lock:
-            if self._disk_loaded:
-                return
-            self._disk_loaded = True
+            if self._disk_inited_path == db_path and db_path.is_file():
+                return db_path
             try:
-                if _DISK_CACHE_FILE.is_file():
-                    raw = json.loads(_DISK_CACHE_FILE.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        now = time.time()
-                        self._disk_cache = {
-                            k: v for k, v in raw.items()
-                            if isinstance(v, dict) and now - float(v.get("ts") or 0) < _DISK_CACHE_TTL
-                        }
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                now = int(time.time())
+                with sqlite3.connect(str(db_path), timeout=2.0) as con:
+                    con.execute(
+                        "CREATE TABLE IF NOT EXISTS lyrics_cache ("
+                        "k TEXT PRIMARY KEY, payload TEXT NOT NULL, ts INTEGER NOT NULL)"
+                    )
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_lyrics_cache_ts ON lyrics_cache(ts)")
+                    con.execute("DELETE FROM lyrics_cache WHERE ts <= ?", (now - _DISK_CACHE_TTL,))
+
+                    # 首次启动无缝迁移旧版整文件 lyrics_cache.json，迁移后删除旧 JSON 释放空间
+                    if _DISK_CACHE_FILE.is_file():
+                        try:
+                            raw = json.loads(_DISK_CACHE_FILE.read_text(encoding="utf-8"))
+                            if isinstance(raw, dict):
+                                rows: list[tuple[str, str, int]] = []
+                                for k, v in raw.items():
+                                    if not isinstance(v, dict):
+                                        continue
+                                    ts_val = int(float(v.get("ts") or 0))
+                                    if now - ts_val >= _DISK_CACHE_TTL:
+                                        continue
+                                    payload = json.dumps(
+                                        {
+                                            "times": v.get("times") or [],
+                                            "lines": v.get("lines") or [],
+                                            "trans": v.get("trans") or [],
+                                            "words": v.get("words") or [],
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                    rows.append((str(k), payload, ts_val))
+                                if rows:
+                                    con.executemany(
+                                        "INSERT OR REPLACE INTO lyrics_cache (k, payload, ts) VALUES (?, ?, ?)",
+                                        rows,
+                                    )
+                            _DISK_CACHE_FILE.unlink(missing_ok=True)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    con.execute(
+                        "DELETE FROM lyrics_cache WHERE k IN ("
+                        "SELECT k FROM lyrics_cache ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                        (_DISK_CACHE_MAX,),
+                    )
+                self._disk_inited_path = db_path
             except Exception:  # noqa: BLE001
-                self._disk_cache = {}
+                pass
+            return db_path
 
     def _disk_get(self, k: str) -> Lyrics | None:
-        self._ensure_disk_cache()
+        db_path = self._ensure_disk_cache()
         with self._disk_lock:
-            ent = self._disk_cache.get(k)
-            if not ent:
+            try:
+                now = int(time.time())
+                with sqlite3.connect(str(db_path), timeout=2.0) as con:
+                    row = con.execute(
+                        "SELECT payload, ts FROM lyrics_cache WHERE k = ?",
+                        (k,),
+                    ).fetchone()
+                    if not row:
+                        return None
+                    payload_str, ts_val = str(row[0]), int(row[1] or 0)
+                    if now - ts_val >= _DISK_CACHE_TTL:
+                        con.execute("DELETE FROM lyrics_cache WHERE k = ?", (k,))
+                        return None
+                data = json.loads(payload_str)
+                return Lyrics.from_dict(data) if isinstance(data, dict) else None
+            except Exception:  # noqa: BLE001
                 return None
-            if time.time() - float(ent.get("ts") or 0) >= _DISK_CACHE_TTL:
-                self._disk_cache.pop(k, None)
-                return None
-            return Lyrics.from_dict(ent)
 
     def _disk_put(self, k: str, lyr: Lyrics):
-        self._ensure_disk_cache()
+        db_path = self._ensure_disk_cache()
         with self._disk_lock:
-            self._disk_cache.pop(k, None)
-            ent = lyr.to_dict()
-            ent["ts"] = int(time.time())
-            self._disk_cache[k] = ent
-            while len(self._disk_cache) > _DISK_CACHE_MAX:
-                self._disk_cache.pop(next(iter(self._disk_cache)))
             try:
-                _DISK_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                tmp = _DISK_CACHE_FILE.with_suffix(".tmp")
-                tmp.write_text(json.dumps(self._disk_cache, ensure_ascii=False), encoding="utf-8")
-                os.replace(tmp, _DISK_CACHE_FILE)
+                now = int(time.time())
+                payload = json.dumps(lyr.to_dict(), ensure_ascii=False)
+                with sqlite3.connect(str(db_path), timeout=2.0) as con:
+                    con.execute(
+                        "INSERT OR REPLACE INTO lyrics_cache (k, payload, ts) VALUES (?, ?, ?)",
+                        (k, payload, now),
+                    )
+                    con.execute("DELETE FROM lyrics_cache WHERE ts <= ?", (now - _DISK_CACHE_TTL,))
+                    con.execute(
+                        "DELETE FROM lyrics_cache WHERE k IN ("
+                        "SELECT k FROM lyrics_cache ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                        (_DISK_CACHE_MAX,),
+                    )
             except Exception:  # noqa: BLE001
                 pass
 

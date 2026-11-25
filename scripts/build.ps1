@@ -69,11 +69,6 @@ if ($LASTEXITCODE -ne 0) {
 # 创建便携目录的 data 空文件夹（不包含大体量实时字幕模型与个人隐私配置）
 New-Item -ItemType Directory -Force (Join-Path $PortableDir "data") | Out-Null
 
-Write-Host "[3/4] 同步可执行文件至仓库根目录..." -ForegroundColor Cyan
-Copy-Item -Force (Join-Path $PortableDir "Ledge.exe") (Join-Path $RepoRoot "Ledge.exe")
-New-Item -ItemType Directory -Force (Join-Path $RepoRoot "_internal") | Out-Null
-Copy-Item -Recurse -Force (Join-Path $PortableDir "_internal\*") (Join-Path $RepoRoot "_internal")
-
 if (-not $SkipZip) {
     Write-Host "[4/5] 生成便携版压缩包与 SHA256 校验文件: $ZipPath ..." -ForegroundColor Cyan
     if (Test-Path $ZipPath) {

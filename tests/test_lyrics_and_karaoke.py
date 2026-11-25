@@ -236,3 +236,54 @@ def test_lyrics_backoff_auto_retries_current_track_and_cancels_on_switch(monkeyp
     assert svc.get(track_b_init) is None
     assert len(cancelled) >= 1
     assert svc._active_key is None
+
+
+def test_lyrics_sqlite_per_track_disk_cache_and_legacy_json_migration(monkeypatch, tmp_path):
+    """歌词磁盘缓存改为 SQLite 按曲读取：不在内存常驻 200 首 _disk_cache，首次启动自动迁移旧 lyrics_cache.json 并支持上限淘汰。"""
+    import json
+    import time
+    import wisland.services.lyrics as lyr_mod
+
+    legacy_json = tmp_path / "lyrics_cache.json"
+    monkeypatch.setattr(lyr_mod, "_DISK_CACHE_FILE", legacy_json)
+    monkeypatch.setattr(lyr_mod, "_DISK_CACHE_MAX", 3)
+
+    now_ts = int(time.time())
+    legacy_payload = {
+        "id:old_ok": {
+            "times": [0.0, 2.5],
+            "lines": ["第一句", "第二句"],
+            "trans": ["line 1", "line 2"],
+            "words": [[(0.0, 1.0, "第一"), (1.0, 2.0, "句")], []],
+            "ts": now_ts - 10,
+        },
+        "id:expired": {
+            "times": [0.0],
+            "lines": ["过期"],
+            "trans": [""],
+            "words": [],
+            "ts": now_ts - lyr_mod._DISK_CACHE_TTL - 100,
+        },
+    }
+    legacy_json.write_text(json.dumps(legacy_payload, ensure_ascii=False), encoding="utf-8")
+
+    svc = LyricsService()
+    assert not hasattr(svc, "_disk_cache")
+
+    # 1) 首次读取触发旧 JSON 迁移至 SQLite 并清理旧 JSON 文件，过期条目被过滤
+    migrated = svc._disk_get("id:old_ok")
+    assert migrated is not None
+    assert migrated.lines == ["第一句", "第二句"]
+    assert migrated.words[0][0][2] == "第一"
+    assert svc._disk_get("id:expired") is None
+    assert not legacy_json.exists()
+    assert legacy_json.with_suffix(".sqlite3").is_file()
+
+    # 2) 按曲写入与容量上限淘汰（MAX=3）
+    for idx in range(1, 5):
+        lyr = Lyrics([(0.0, f"song-{idx}")], [])
+        svc._disk_put(f"id:s{idx}", lyr)
+    assert svc._disk_get("id:s1") is None
+    for idx in (2, 3, 4):
+        got = svc._disk_get(f"id:s{idx}")
+        assert got is not None and got.lines == [f"song-{idx}"]

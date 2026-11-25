@@ -48,6 +48,7 @@ a = Analysis(
         "tkinter",
         "unittest",
         "pydoc",
+        "PySide6.QtNetwork",
         "PySide6.QtOpenGL",
         "PySide6.QtOpenGLWidgets",
     ],
@@ -60,6 +61,16 @@ def _keep_toc_item(item, is_binary: bool) -> bool:
     dest = str(item[0]).replace("\\", "/")
     low = dest.lower()
     if low.endswith("opengl32sw.dll"):
+        return False
+    if low.endswith(("qt6network.dll", "qtnetwork.pyd")):
+        return False
+    if "pyside6/plugins/tls/" in low or "pyside6/plugins/networkinformation/" in low:
+        return False
+    if "pyside6/plugins/generic/qtuiotouchplugin.dll" in low:
+        return False
+    if "pyside6/plugins/platforms/" in low and not low.endswith("qwindows.dll"):
+        return False
+    if "pyside6/plugins/imageformats/" in low and low.endswith(("qtiff.dll", "qicns.dll", "qtga.dll", "qwbmp.dll")):
         return False
     if "pyside6/translations/" in low and not (
         low.endswith("_zh_cn.qm") or low.endswith("_en.qm")

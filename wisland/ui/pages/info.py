@@ -44,22 +44,13 @@ class Hourly(QtWidgets.QWidget, Themed):
         super().__init__(parent)
         self.items: list[dict] = []
         self.tz = None
-        self.setFixedHeight(40)
+        self.setFixedHeight(46)
         self._hook_theme()
 
     def set_items(self, items):
         self.items = items[:8]
         self.setMinimumWidth(max(360, len(self.items) * 48))
-        tips = []
-        for it in self.items:
-            t_str = (
-                dt.datetime.fromtimestamp(it.get("time", 0) + self.tz, dt.timezone.utc)
-                if self.tz is not None
-                else dt.datetime.fromtimestamp(it.get("time", 0))
-            ).strftime("%H:%M")
-            pop = round((it.get("pop") or 0) * 100)
-            tips.append(f"{t_str} {round(it.get('temp', 0))}°" + (f" ({pop}%)" if pop else ""))
-        self.setToolTip("分时预报：" + "  |  ".join(tips))
+        self.setToolTip("")
         self.update()
 
     def paintEvent(self, e):
@@ -78,7 +69,7 @@ class Hourly(QtWidgets.QWidget, Themed):
                 if self.tz is not None
                 else dt.datetime.fromtimestamp(it.get("time", 0))
             ).strftime("%H时")
-            p.drawText(QtCore.QRectF(x, 0, cw, 11), Qt.AlignmentFlag.AlignCenter, t_str)
+            p.drawText(QtCore.QRectF(x, 0, cw, 12), Qt.AlignmentFlag.AlignCenter, t_str)
 
             g, fam = weather_glyph(it.get("icon"))
             f = QtGui.QFont()
@@ -86,31 +77,30 @@ class Hourly(QtWidgets.QWidget, Themed):
             f.setPixelSize(13)
             p.setFont(f)
             p.setPen(theme.text(0.9))
-            p.drawText(QtCore.QRectF(x, 11, cw, 13), Qt.AlignmentFlag.AlignCenter, g)
+            p.drawText(QtCore.QRectF(x, 12, cw, 13), Qt.AlignmentFlag.AlignCenter, g)
 
             p.setFont(ui_font(10.5, W.DemiBold, num=True))
             p.setPen(theme.text())
-            p.drawText(QtCore.QRectF(x, 24, cw, 10), Qt.AlignmentFlag.AlignCenter, f"{round(it.get('temp', 0))}°")
+            p.drawText(QtCore.QRectF(x, 24, cw, 12), Qt.AlignmentFlag.AlignCenter, f"{round(it.get('temp', 0))}°")
 
             pop = it.get("pop") or 0
             if pop >= 0.1:
-                p.setFont(ui_font(9, num=True))
+                p.setFont(ui_font(8.5, num=True))
                 p.setPen(QtGui.QColor("#4f9cff"))
-                p.drawText(QtCore.QRectF(x, 33, cw, 9), Qt.AlignmentFlag.AlignCenter, f"{round(pop * 100)}%")
+                p.drawText(QtCore.QRectF(x, 35, cw, 11), Qt.AlignmentFlag.AlignCenter, f"{round(pop * 100)}%")
 
 
 class Daily(QtWidgets.QWidget, Themed):
-    """五日预报紧凑列表（固定 5 行，含完整日期/温度悬停提示）。"""
+    """五日预报紧凑列表（固定 5 行）。"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.items: list[dict] = []
-        self.setFixedHeight(72)
+        self.setFixedHeight(68)
         self._hook_theme()
 
     def set_items(self, items):
         self.items = items[:5]
-        tips = [f"{it.get('date')}: {round(it['min'])}° ~ {round(it['max'])}°" for it in self.items]
-        self.setToolTip("\n".join(tips))
+        self.setToolTip("")
         self.update()
 
     def paintEvent(self, e):
@@ -172,8 +162,7 @@ class Facts(QtWidgets.QWidget, Themed):
 
     def set_items(self, items):
         self.items = list(items)
-        tip = "  |  ".join(f"{k}: {v}" for k, v in self.items)
-        self.setToolTip(tip)
+        self.setToolTip("")
         self.update()
 
     def _cell_rect(self, row_idx: int, col_idx: int) -> QtCore.QRectF:
@@ -273,7 +262,7 @@ class WeatherPage(Page):
 
         self.left_wrap = QtWidgets.QWidget()
         self.left_wrap.setFixedWidth(154)
-        self.left_wrap.setMinimumHeight(72)
+        self.left_wrap.setMinimumHeight(68)
         self.left_grid = QtWidgets.QGridLayout(self.left_wrap)
         self.left_grid.setContentsMargins(0, 2, 0, 0)
         self.left_grid.setHorizontalSpacing(10)
@@ -315,7 +304,7 @@ class WeatherPage(Page):
         self.hourly_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.hourly_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.hourly_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.hourly_scroll.setFixedHeight(42)
+        self.hourly_scroll.setFixedHeight(46)
         self.hourly_scroll.setStyleSheet("QScrollArea,QWidget{background:transparent;border:none;}")
         self.hourly_scroll.setWidget(self.hourly)
 
@@ -410,7 +399,7 @@ class WeatherPage(Page):
         self.body.show()
         t_round = round(d.get("temp", 0))
         self.city_btn.set_text(name)
-        self.city_btn.setToolTip(f"{name}（点击切换或管理城市）")
+        self.city_btn.setToolTip("")
 
         err_txt = d.get("error") or ""
         self.msg.setText(err_txt)
@@ -420,7 +409,7 @@ class WeatherPage(Page):
         self.temp.setText(f"{t_round}°")
         desc = str(d.get("desc") or "")
         self.desc.setText(desc)
-        self.desc.setToolTip(desc)
+        self.desc.setToolTip("")
 
         lo, hi = d.get("temp_min"), d.get("temp_max")
         rng = f"{round(lo)}°~{round(hi)}°" if lo is not None and hi is not None else "--°~--°"
