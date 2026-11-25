@@ -270,7 +270,31 @@ def test_lyrics_sqlite_per_track_disk_cache_and_legacy_json_migration(monkeypatc
     svc = LyricsService()
     assert not hasattr(svc, "_disk_cache")
 
-    # 1) 首次读取触发旧 JSON 迁移至 SQLite 并清理旧 JSON 文件，过期条目被过滤
+    # 1) 若 SQLite 事务提交失败（如磁盘满），旧 lyrics_cache.json 必须保留不被提前删除
+    orig_connect = lyr_mod.sqlite3.connect
+
+    class _CommitFailCon:
+        def execute(self, *a, **k):
+            return None
+
+        def executemany(self, *a, **k):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            raise lyr_mod.sqlite3.OperationalError("disk full on commit")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(lyr_mod.sqlite3, "connect", lambda *a, **k: _CommitFailCon())
+    assert svc._disk_get("id:old_ok") is None
+    assert legacy_json.is_file()
+    monkeypatch.setattr(lyr_mod.sqlite3, "connect", orig_connect)
+
+    # 2) 事务正常提交后：旧 JSON 迁移至 SQLite 并清理旧 JSON 文件，过期条目被过滤
     migrated = svc._disk_get("id:old_ok")
     assert migrated is not None
     assert migrated.lines == ["第一句", "第二句"]
@@ -279,7 +303,7 @@ def test_lyrics_sqlite_per_track_disk_cache_and_legacy_json_migration(monkeypatc
     assert not legacy_json.exists()
     assert legacy_json.with_suffix(".sqlite3").is_file()
 
-    # 2) 按曲写入与容量上限淘汰（MAX=3）
+    # 3) 按曲写入与容量上限淘汰（MAX=3）
     for idx in range(1, 5):
         lyr = Lyrics([(0.0, f"song-{idx}")], [])
         svc._disk_put(f"id:s{idx}", lyr)

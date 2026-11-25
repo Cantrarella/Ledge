@@ -335,50 +335,57 @@ class LyricsService(QtCore.QObject):
             try:
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 now = int(time.time())
-                with sqlite3.connect(str(db_path), timeout=2.0) as con:
-                    con.execute(
-                        "CREATE TABLE IF NOT EXISTS lyrics_cache ("
-                        "k TEXT PRIMARY KEY, payload TEXT NOT NULL, ts INTEGER NOT NULL)"
-                    )
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_lyrics_cache_ts ON lyrics_cache(ts)")
-                    con.execute("DELETE FROM lyrics_cache WHERE ts <= ?", (now - _DISK_CACHE_TTL,))
+                migrated_legacy = False
+                con = sqlite3.connect(str(db_path), timeout=2.0)
+                try:
+                    with con:
+                        con.execute(
+                            "CREATE TABLE IF NOT EXISTS lyrics_cache ("
+                            "k TEXT PRIMARY KEY, payload TEXT NOT NULL, ts INTEGER NOT NULL)"
+                        )
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_lyrics_cache_ts ON lyrics_cache(ts)")
+                        con.execute("DELETE FROM lyrics_cache WHERE ts <= ?", (now - _DISK_CACHE_TTL,))
 
-                    # 首次启动无缝迁移旧版整文件 lyrics_cache.json，迁移后删除旧 JSON 释放空间
-                    if _DISK_CACHE_FILE.is_file():
-                        try:
-                            raw = json.loads(_DISK_CACHE_FILE.read_text(encoding="utf-8"))
-                            if isinstance(raw, dict):
-                                rows: list[tuple[str, str, int]] = []
-                                for k, v in raw.items():
-                                    if not isinstance(v, dict):
-                                        continue
-                                    ts_val = int(float(v.get("ts") or 0))
-                                    if now - ts_val >= _DISK_CACHE_TTL:
-                                        continue
-                                    payload = json.dumps(
-                                        {
-                                            "times": v.get("times") or [],
-                                            "lines": v.get("lines") or [],
-                                            "trans": v.get("trans") or [],
-                                            "words": v.get("words") or [],
-                                        },
-                                        ensure_ascii=False,
-                                    )
-                                    rows.append((str(k), payload, ts_val))
-                                if rows:
-                                    con.executemany(
-                                        "INSERT OR REPLACE INTO lyrics_cache (k, payload, ts) VALUES (?, ?, ?)",
-                                        rows,
-                                    )
-                            _DISK_CACHE_FILE.unlink(missing_ok=True)
-                        except Exception:  # noqa: BLE001
-                            pass
+                        # 首次启动无缝迁移旧版整文件 lyrics_cache.json；仅在事务成功提交后再删除旧 JSON
+                        if _DISK_CACHE_FILE.is_file():
+                            try:
+                                raw = json.loads(_DISK_CACHE_FILE.read_text(encoding="utf-8"))
+                                if isinstance(raw, dict):
+                                    rows: list[tuple[str, str, int]] = []
+                                    for k, v in raw.items():
+                                        if not isinstance(v, dict):
+                                            continue
+                                        ts_val = int(float(v.get("ts") or 0))
+                                        if now - ts_val >= _DISK_CACHE_TTL:
+                                            continue
+                                        payload = json.dumps(
+                                            {
+                                                "times": v.get("times") or [],
+                                                "lines": v.get("lines") or [],
+                                                "trans": v.get("trans") or [],
+                                                "words": v.get("words") or [],
+                                            },
+                                            ensure_ascii=False,
+                                        )
+                                        rows.append((str(k), payload, ts_val))
+                                    if rows:
+                                        con.executemany(
+                                            "INSERT OR REPLACE INTO lyrics_cache (k, payload, ts) VALUES (?, ?, ?)",
+                                            rows,
+                                        )
+                                migrated_legacy = True
+                            except (OSError, ValueError):
+                                migrated_legacy = False
 
-                    con.execute(
-                        "DELETE FROM lyrics_cache WHERE k IN ("
-                        "SELECT k FROM lyrics_cache ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
-                        (_DISK_CACHE_MAX,),
-                    )
+                        con.execute(
+                            "DELETE FROM lyrics_cache WHERE k IN ("
+                            "SELECT k FROM lyrics_cache ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                            (_DISK_CACHE_MAX,),
+                        )
+                finally:
+                    con.close()
+                if migrated_legacy:
+                    _DISK_CACHE_FILE.unlink(missing_ok=True)
                 self._disk_inited_path = db_path
             except Exception:  # noqa: BLE001
                 pass
@@ -389,17 +396,21 @@ class LyricsService(QtCore.QObject):
         with self._disk_lock:
             try:
                 now = int(time.time())
-                with sqlite3.connect(str(db_path), timeout=2.0) as con:
-                    row = con.execute(
-                        "SELECT payload, ts FROM lyrics_cache WHERE k = ?",
-                        (k,),
-                    ).fetchone()
-                    if not row:
-                        return None
-                    payload_str, ts_val = str(row[0]), int(row[1] or 0)
-                    if now - ts_val >= _DISK_CACHE_TTL:
-                        con.execute("DELETE FROM lyrics_cache WHERE k = ?", (k,))
-                        return None
+                con = sqlite3.connect(str(db_path), timeout=2.0)
+                try:
+                    with con:
+                        row = con.execute(
+                            "SELECT payload, ts FROM lyrics_cache WHERE k = ?",
+                            (k,),
+                        ).fetchone()
+                        if not row:
+                            return None
+                        payload_str, ts_val = str(row[0]), int(row[1] or 0)
+                        if now - ts_val >= _DISK_CACHE_TTL:
+                            con.execute("DELETE FROM lyrics_cache WHERE k = ?", (k,))
+                            return None
+                finally:
+                    con.close()
                 data = json.loads(payload_str)
                 return Lyrics.from_dict(data) if isinstance(data, dict) else None
             except Exception:  # noqa: BLE001
@@ -411,17 +422,21 @@ class LyricsService(QtCore.QObject):
             try:
                 now = int(time.time())
                 payload = json.dumps(lyr.to_dict(), ensure_ascii=False)
-                with sqlite3.connect(str(db_path), timeout=2.0) as con:
-                    con.execute(
-                        "INSERT OR REPLACE INTO lyrics_cache (k, payload, ts) VALUES (?, ?, ?)",
-                        (k, payload, now),
-                    )
-                    con.execute("DELETE FROM lyrics_cache WHERE ts <= ?", (now - _DISK_CACHE_TTL,))
-                    con.execute(
-                        "DELETE FROM lyrics_cache WHERE k IN ("
-                        "SELECT k FROM lyrics_cache ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
-                        (_DISK_CACHE_MAX,),
-                    )
+                con = sqlite3.connect(str(db_path), timeout=2.0)
+                try:
+                    with con:
+                        con.execute(
+                            "INSERT OR REPLACE INTO lyrics_cache (k, payload, ts) VALUES (?, ?, ?)",
+                            (k, payload, now),
+                        )
+                        con.execute("DELETE FROM lyrics_cache WHERE ts <= ?", (now - _DISK_CACHE_TTL,))
+                        con.execute(
+                            "DELETE FROM lyrics_cache WHERE k IN ("
+                            "SELECT k FROM lyrics_cache ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                            (_DISK_CACHE_MAX,),
+                        )
+                finally:
+                    con.close()
             except Exception:  # noqa: BLE001
                 pass
 
