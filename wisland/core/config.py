@@ -461,7 +461,7 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
             isl["spotlight_style"] = "constellation"
 
     spot_r = isl.get("spotlight_radius", 155)
-    if not isinstance(spot_r, (int, float)) or isinstance(spot_r, bool) or not (80 <= int(spot_r) <= 260):
+    if not isinstance(spot_r, (int, float)) or isinstance(spot_r, bool) or not (80 <= spot_r <= 260):
         _err(f"聚光半径需在 80~260 像素之间: {spot_r}")
         if not strict:
             isl["spotlight_radius"] = 155

@@ -185,6 +185,61 @@ def test_spotlight_nested_card_skip_and_transition_sync():
         isl.close()
 
 
+def test_spotlight_constellation_keeps_its_phase_between_frames(monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from wisland.ui.pages.base import Page
+    from wisland.ui.theme import Theme
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    pg = Page()
+    pg.key, pg.title, pg.panel_width, pg.panel_height = "home", "主页", 419, 140
+    isl = island_mod.Island([pg])
+    try:
+        isl.expanded = True
+        w, h = isl.target_size()
+        isl.sw.snap(w)
+        isl.sh.snap(h)
+        isl.content.show()
+        isl.content_a.snap(1.0)
+        isl.compact_a.snap(0.0)
+        isl.neck_s.snap(1.0)
+        isl._update_geometry(force=True)
+        isl._spot_pos = isl.body.center()
+        isl._spot_target = isl.body.center()
+        isl._spot_a.snap(1.0)
+        isl.timer.stop()
+        now = isl._last + 2.0
+        monkeypatch.setattr(
+            island_mod, "time", SimpleNamespace(perf_counter=lambda: now, monotonic=lambda: now)
+        )
+        skin = Theme("classic")
+
+        def paint_stars():
+            img = QtGui.QImage(isl.size(), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(QtCore.Qt.GlobalColor.transparent)
+            p = QtGui.QPainter(img)
+            isl._paint_constellation(p, isl.body, skin)
+            p.end()
+            return img
+
+        isl._spot_last_move = now - 2.0
+        assert not isl._needs_frames()
+        idle_image = paint_stars()
+        now += 3.0
+        assert paint_stars() == idle_image
+        isl._tick()
+        assert paint_stars() == idle_image
+
+        isl._spot_last_move = now
+        now += 0.03
+        isl._tick()
+        assert paint_stars() != idle_image
+    finally:
+        isl.close()
+
+
 def test_spotlight_settings_config_and_general_page():
     from PySide6 import QtWidgets
     from wisland.core.config import ConfigDraft, cfg, validate_config

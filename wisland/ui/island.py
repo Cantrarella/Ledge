@@ -185,6 +185,7 @@ class Island(QtWidgets.QWidget):
         self._spot_pos = QtCore.QPointF()
         self._spot_target = QtCore.QPointF()
         self._spot_last_move: float = 0.0
+        self._spot_phase = 0.0
         self._floor_on: dict = {}
         self._side_clamp_h: float = float(ch)
         self._collapsing_from_panel: bool = False
@@ -226,7 +227,6 @@ class Island(QtWidgets.QWidget):
         self.veil = _Veil(self)
         self.unread_dock = UnreadDock(self)
         self.unread_dock.layout_changed.connect(self._place_unread_dock)
-        self._opacity: QtWidgets.QGraphicsOpacityEffect | None = None
         self._collapse_snap: QtGui.QImage | None = None
         self._collapse_snap_t0: float = 0.0
         self._collapse_snap_size: tuple[float, float] = (0.0, 0.0)
@@ -241,7 +241,6 @@ class Island(QtWidgets.QWidget):
         self.timer.setInterval(16)
         self.timer.timeout.connect(self._tick)
         self.poll = QtCore.QTimer(self, interval=25, timeout=self._poll_hover)
-        self.lp_timer = QtCore.QTimer(self, singleShot=True, interval=420, timeout=self._long_press)
         self._click_timer = QtCore.QTimer(self, singleShot=True, timeout=self._single_click)
         self._dbl_filter = _BlankDoubleClick(self)
         app_inst = QtWidgets.QApplication.instance()
@@ -937,11 +936,6 @@ class Island(QtWidgets.QWidget):
             self._life_banner.show()
             self._life_banner.raise_()
 
-    def _set_content_opacity(self, a: float):
-        """不再使用 QGraphicsOpacityEffect：在透明分层窗口里，带效果的子控件会单独重绘，
-        偶尔出现"有内容、没有玻璃底"的帧。内容改为：形状长到约 70% 后直接显示（被形状裁剪），收起时立即隐藏。"""
-        return
-
     # ================================================================ 拖动
     def begin_drag(self, gpos: QtCore.QPoint | None = None):
         if self.mode == "drag" or self.passthrough():
@@ -960,7 +954,6 @@ class Island(QtWidgets.QWidget):
             self.expanded = False
             self._collapse_snap = None
             self.content_a.snap(0)
-            self._set_content_opacity(0)
             self.content.hide()
             self.veil.hide()
             self.release_focus()
@@ -1138,6 +1131,9 @@ class Island(QtWidgets.QWidget):
                   self.content_a, self.compact_a, self.poke, self._spot_a):
             s.step(dt)
         if self.expanded and (self._spot_a.x > 0.005 or self._spot_a.target > 0.0):
+            # 岛面和卡片共用同一帧相位，静止时局部重绘也保留星群位置。
+            if time.monotonic() - self._spot_last_move < 1.0:
+                self._spot_phase += dt
             if self._spot_pos.isNull():
                 self._spot_pos = QtCore.QPointF(self._spot_target)
             else:
@@ -1241,7 +1237,6 @@ class Island(QtWidgets.QWidget):
         # 收起时：内容淡出完成后隐藏
         if not self.expanded and self._content_shown() and self.content_a.x < 0.05:
             self.content.hide()
-            self._set_content_opacity(0)
         if not self.veil.isHidden():
             a = clamp(1.0 - self.content_a.x, 0.0, 1.0)
             if a <= 0.01 or not self._content_shown():
@@ -1754,7 +1749,7 @@ class Island(QtWidgets.QWidget):
         r_lim = rad * 1.05
         cx, cy = bb.center().x(), bb.center().y()
         sx, sy = self._spot_pos.x(), self._spot_pos.y()
-        t_now = time.perf_counter() - self._t0
+        t_now = self._spot_phase
 
         active_pts: list[tuple[float, float, float, float]] = []
         for bx, by, ph, sp in SPOT_NODES:
@@ -2049,8 +2044,6 @@ class Island(QtWidgets.QWidget):
         if abs(self.compact.play_hover - hv) > 0.01:
             self.compact.play_hover += (hv - self.compact.play_hover) * 0.5
             self._kick()
-        if self.expanded and self.compact.mode() != "activity":
-            pass
         r_life, on_life_dismiss = self._on_life_banner(local_cur) if (inside and not self.passthrough()) else (False, False)
         _, on_dismiss = self._on_notify_banner(local_cur) if (inside and not self.passthrough()) else (False, False)
         nhv = 1.0 if (on_dismiss or on_life_dismiss) else 0.0
@@ -2127,7 +2120,6 @@ class Island(QtWidgets.QWidget):
     def mouseMoveEvent(self, e):
         # 按住并移动即开始拖动（不需要长按）；固定时不允许拖动
         if self._press is not None and (e.position() - self._press).manhattanLength() > 4:
-            self.lp_timer.stop()
             self._press = None
             self._press_ctx = None
             self.begin_drag(QtGui.QCursor.pos())
@@ -2181,7 +2173,6 @@ class Island(QtWidgets.QWidget):
         return True, False
 
     def mouseReleaseEvent(self, e):
-        self.lp_timer.stop()
         press_pos = self._press
         press_ctx = self._press_ctx
         self._press = None
@@ -2244,9 +2235,6 @@ class Island(QtWidgets.QWidget):
             self.locks.discard("pin")
             self.release_focus()
             self.collapse()
-
-    def _long_press(self):
-        pass
 
     # ---------------- 穿透模式 ----------------
     def passthrough(self) -> bool:
@@ -2316,14 +2304,6 @@ class Island(QtWidgets.QWidget):
 
     def set_pinned(self, on: bool):
         self.set_expand_mode("always" if on else "hover")
-        return
-
-    def _set_pinned_old(self, on: bool):
-        """图钉：保持展开（不会因鼠标移开而收起），仍可拖动。"""
-        cfg.set("island.pinned", bool(on))
-        if on and not self.expanded:
-            self.expand()
-        self.pin_changed.emit(bool(on))
 
     def wheelEvent(self, e):
         dy = e.angleDelta().y() or e.angleDelta().x()
@@ -2588,7 +2568,6 @@ class Island(QtWidgets.QWidget):
             pass
         self.timer.stop()
         self.poll.stop()
-        self.lp_timer.stop()
         self._click_timer.stop()
         self._life_timer.stop()
         self.unread_dock._timer.stop()

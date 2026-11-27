@@ -51,6 +51,19 @@ class TestConfigAndSettings(unittest.TestCase):
         self.assertEqual(disk_data["island"]["edge"], "bottom")
         self.assertEqual(disk_data["weather"]["city"], "北京")
 
+    def test_spotlight_radius_rejects_nonfinite_and_out_of_range_values(self):
+        for number in ("NaN", "1e309", "-1e309", "260.9"):
+            with self.subTest(number=number):
+                raw = '{"island": {"spotlight_radius": ' + number + '}}'
+                self.cfg_path.write_text(raw, encoding="utf-8")
+                c = Config(path=self.cfg_path)
+                self.assertEqual(c.get("island.spotlight_radius"), 155)
+                self.assertEqual(self.cfg_path.read_text(encoding="utf-8"), raw)
+
+                ok, errors, _ = validate_config(json.loads(raw), strict=True)
+                self.assertFalse(ok)
+                self.assertTrue(any("聚光半径" in error for error in errors))
+
     def test_02_cancel_does_not_write(self):
         """测试取消设置窗口修改时，不写入磁盘也不改动内存配置。"""
         c = Config(path=self.cfg_path)

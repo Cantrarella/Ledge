@@ -343,3 +343,12 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 测试：全量 pytest 196/196 通过。
 修改文件：wisland/core/branding.py、build/version_info.txt、wisland/core/config.py、wisland/ui/theme.py、wisland/ui/island.py、wisland/ui/widgets.py、wisland/ui/pages/tools.py、wisland/ui/settings/general.py、tests/test_island_modules.py、tests/test_release_readiness.py、PROJECT_STATE.md
 ```
+
+### v1.0.13 发布后聚光修复与打包瘦身（2026-11-27）
+
+- 两处聚光修复已完成，基于发布提交 `30f37d7`。
+- 聚光半径先检查原始数值范围，再转整数。加载异常配置时回退到 155 px。
+- 岛面和卡片共用由动画帧推进的星群相位。鼠标停止后，局部重绘保留星群位置，鼠标再次移动时从原相位继续。
+- 清理 `wisland/ui/island.py` 废弃空方法与未启用定时器，并在 `Ledge.spec` 中进一步剔除未链接的 `sherpa-onnx-c/cxx-api.dll`、未使用的 `numpy.random` / `numpy.fft` / `yaml` / `charset_normalizer` / `click` / `setuptools` 及 `.dist-info` / `comtypes/test` 冗余文件。
+- 本地全量回归测试 198/198 通过（含 4 个参数子用例）。
+- 实体多屏、高 DPI 和桌面重绘仍待实机复核。

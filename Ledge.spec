@@ -18,16 +18,13 @@ datas = [
 binaries = []
 hiddenimports = []
 
-datas += collect_data_files("comtypes")
 datas += collect_data_files("winrt", includes=["**/*.pywinrt"])
 hiddenimports += collect_submodules("winrt")
-hiddenimports += collect_submodules("winrt.windows.ui.notifications")
-hiddenimports += collect_submodules("winrt.windows.applicationmodel")
 hiddenimports += collect_submodules("winrt.windows.devices.bluetooth.advertisement")
 tmp_ret = collect_all("sherpa_onnx")
 datas += tmp_ret[0]
 binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+hiddenimports += [m for m in tmp_ret[2] if not m.endswith((".cli", ".__main__", "._info"))]
 
 pathex = [str(ROOT)]
 if SITE_PKGS is not None and SITE_PKGS.exists():
@@ -48,6 +45,20 @@ a = Analysis(
         "tkinter",
         "unittest",
         "pydoc",
+        "doctest",
+        "pdb",
+        "pytest",
+        "_pytest",
+        "setuptools",
+        "yaml",
+        "charset_normalizer",
+        "click",
+        "numpy.random",
+        "numpy.fft",
+        "numpy.f2py",
+        "numpy.testing",
+        "sherpa_onnx.cli",
+        "sherpa_onnx.__main__",
         "PySide6.QtNetwork",
         "PySide6.QtOpenGL",
         "PySide6.QtOpenGLWidgets",
@@ -56,7 +67,7 @@ a = Analysis(
     optimize=0,
 )
 
-# 瘦身过滤：移除未使用的软件 OpenGL、多余翻译、开发期 .lib/.h，以及重复打包的超大 DLL
+# 瘦身过滤：移除未使用的软件 OpenGL、多余翻译、开发期 .lib/.h、未用子库及重复打包的超大 DLL
 def _keep_toc_item(item, is_binary: bool) -> bool:
     dest = str(item[0]).replace("\\", "/")
     low = dest.lower()
@@ -72,16 +83,24 @@ def _keep_toc_item(item, is_binary: bool) -> bool:
         return False
     if "pyside6/plugins/imageformats/" in low and low.endswith(("qtiff.dll", "qicns.dll", "qtga.dll", "qwbmp.dll")):
         return False
-    if "pyside6/translations/" in low and not (
-        low.endswith("_zh_cn.qm") or low.endswith("_en.qm")
+    if "pyside6/translations/" in low and (
+        "qt_help_" in low or not (low.endswith("_zh_cn.qm") or low.endswith("_en.qm"))
     ):
         return False
-    if low.startswith("sherpa_onnx/") and low.endswith((".lib", ".h", ".cmake", ".pdb")):
+    if low.startswith("sherpa_onnx/") and low.endswith(
+        (".lib", ".h", ".cmake", ".pdb", ".py", "sherpa-onnx-c-api.dll", "sherpa-onnx-cxx-api.dll")
+    ):
+        return False
+    if low.startswith(("numpy/random/", "numpy/fft/")) or "_multiarray_tests" in low:
+        return False
+    if ".dist-info/" in low or low.startswith(("comtypes/test/", "setuptools/")):
+        return False
+    if low.endswith("soundcard/pulseaudio.py.h"):
         return False
     # 去重：保留 numpy.libs / sherpa_onnx/lib 内的原位置，移除根目录重复拷贝
     if "/" not in dest and (
         low.startswith("libscipy_openblas64_")
-        or low in ("onnxruntime.dll", "sherpa-onnx-c-api.dll")
+        or low in ("onnxruntime.dll", "sherpa-onnx-c-api.dll", "sherpa-onnx-cxx-api.dll")
     ):
         return False
     return True
