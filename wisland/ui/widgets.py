@@ -401,7 +401,7 @@ class Label(QtWidgets.QWidget, Themed):
 
 
 class Card(QtWidgets.QFrame, Themed):
-    """轻卡片：极淡的白色圆角底（无描边、无分割线）。"""
+    """轻卡片：极淡的白色圆角底（平时无描边，展开态聚光灯扫过时透射星群并浮现探照流光边）。"""
     def __init__(self, parent=None, radius: float = 18, alpha: float = 1.0):
         super().__init__(parent)
         self.radius = radius
@@ -410,9 +410,15 @@ class Card(QtWidgets.QFrame, Themed):
 
     def paintEvent(self, e):
         p = painter(self)
+        t = resolve_theme(self)
+        r = QtCore.QRectF(self.rect())
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(resolve_theme(self).card(self.alpha))
-        p.drawRoundedRect(QtCore.QRectF(self.rect()), self.radius, self.radius)
+        p.setBrush(t.card(self.alpha))
+        p.drawRoundedRect(r, self.radius, self.radius)
+        win = self.window()
+        paint_spot = getattr(win, "paint_card_spotlight", None)
+        if callable(paint_spot):
+            paint_spot(p, self, r, self.radius, t)
 
 
 class WheelScrollArea(QtWidgets.QScrollArea):

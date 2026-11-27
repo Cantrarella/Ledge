@@ -332,3 +332,14 @@ e9aa703 feat(notify,ui): add themed unread quick dock, foreground auto-clear and
 修改文件：PROJECT_STATE.md、wisland/live/service.py、wisland/ui/pages/subtitle.py、wisland/ui/compact.py、wisland/services/lyrics.py、tests/test_notifications.py
 下一阶段：1. 视需要打包发布 v1.0.4（或先提交优化改动到 main）；2. 展开态音乐卡是否同步 KRC 逐字扫色
 ```
+
+```text
+阶段：v1.0.13 发布 — 展开态星群拓扑聚光灯与五套皮肤光学适配（2026-11-27）
+状态：完成
+功能与优化：
+1. 展开态鼠标跟随聚光灯：仅在展开态且内容层显现后激活，包含三层光学结构（① 岛面漫射底光、② 原有实体卡片内表面柔光与 1.3px 探照流光边 + 高不透明皮肤星群透射补偿、③ 岛体外轮廓 1.7px 流光描边），以及 1:1 像素晶格星群拓扑（32 颗悬浮节点、95px 三角网格连线、115px 光标牵引线，跨页面高度不缩水）。
+2. 五套皮肤定制配光：深色毛玻璃（冷白微蓝）、经典纯黑（压低底光防发灰 + 0.88 卡片星群透射）、胭脂撞色（#FF7CA2 霓虹柔粉）、浅色毛玻璃与晴空渐变（深海宝石蓝星点 + 冰晶蓝光场 + 单调连续钴蓝探照边框，消除浅底白点隐形与双色断层）。
+3. 常规设置项与审查加固：在「外观与岛体 -> 常规」新增「展开态聚光灯」开关（island.spotlight_enabled）、「聚光效果类型」选择器（island.spotlight_style：星群拓扑 / 纯净柔光）及「聚光半径大小」（island.spotlight_radius：80~260 px，默认 155 px）；修复展开初段 Veil 面纱同步渐显、工具页剪贴板嵌套 Card 双层同心框抑制及窗口原点平移坐标同步；鼠标静止 1s 后自动停帧归零 CPU 占用。
+测试：全量 pytest 196/196 通过。
+修改文件：wisland/core/branding.py、build/version_info.txt、wisland/core/config.py、wisland/ui/theme.py、wisland/ui/island.py、wisland/ui/widgets.py、wisland/ui/pages/tools.py、wisland/ui/settings/general.py、tests/test_island_modules.py、tests/test_release_readiness.py、PROJECT_STATE.md
+```

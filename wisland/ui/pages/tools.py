@@ -304,6 +304,10 @@ class _ShelfFileRow(Hoverable):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
         p.drawRoundedRect(r, 10, 10)
+        win = self.window()
+        paint_spot = getattr(win, "paint_card_spotlight", None)
+        if callable(paint_spot):
+            paint_spot(p, self, r, 10.0, theme)
 
         icon_col = theme.on_color() if self.exists else theme.up()
         draw_document(p, r.center().x(), r.top() + 22.0, 28.0, icon_col)

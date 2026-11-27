@@ -48,6 +48,16 @@ FILLET = 13.0                    # 贴边两侧内凹圆角
 BREAK = 64.0                     # 液桥拉断距离
 JOIN = 30.0                      # 靠近到这个距离时液桥伸出
 EDGE_MARGIN = 6
+SPOT_RADIUS = 155.0              # 展开态聚光灯与星群显影半径
+SPOT_NODES: tuple[tuple[float, float, float, float], ...] = tuple(
+    (
+        float(24 + (i * 97) % 512),
+        float(22 + (i * 61) % 240),
+        float(i * 1.37),
+        float(0.8 + (i % 5) * 0.25),
+    )
+    for i in range(32)
+)
 
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
@@ -171,6 +181,10 @@ class Island(QtWidgets.QWidget):
         self.poke = Spring(0, 380, 0.55, 0.004)
         self._poke_pt = QtCore.QPointF()
         self._poke_sm = QtCore.QPointF()          # 平滑后的按压位置（凹陷跟着鼠标滑动）
+        self._spot_a = Spring(0.0, 340, 0.90, 0.005)
+        self._spot_pos = QtCore.QPointF()
+        self._spot_target = QtCore.QPointF()
+        self._spot_last_move: float = 0.0
         self._floor_on: dict = {}
         self._side_clamp_h: float = float(ch)
         self._collapsing_from_panel: bool = False
@@ -565,6 +579,10 @@ class Island(QtWidgets.QWidget):
         self.expanded = True
         self._collapsing_from_panel = False
         self._collapse_snap = None
+        cur_local = QtCore.QPointF(QtGui.QCursor.pos() - self._win_origin)
+        self._spot_pos = QtCore.QPointF(cur_local)
+        self._spot_target = QtCore.QPointF(cur_local)
+        self._spot_a.snap(0.0)
         self.compact_a.to(0, 900, 1.0)
         self.poke.snap(0.0)                       # 展开时清掉按压形变
         w, h = self.target_size()
@@ -624,6 +642,7 @@ class Island(QtWidgets.QWidget):
         self._capture_collapse_snap()
         self.expanded = False
         self._collapsing_from_panel = True
+        self._spot_a.snap(0.0)
         self.content_a.snap(0)
         self.content.hide()                   # 立即停用面板点击热区，快照在主画布轮廓内短暂淡出
         self.veil.hide()
@@ -1054,8 +1073,13 @@ class Island(QtWidgets.QWidget):
     def _needs_frames(self) -> bool:
         if self.mode != "anchored" or self.drips or self._bd_prev is not None or self._collapse_snap is not None:
             return True
-        for s in (self.sw, self.sh, self.content_a, self.compact_a, self.neck_s):
+        for s in (self.sw, self.sh, self.content_a, self.compact_a, self.neck_s, self._spot_a):
             if not s.rest:
+                return True
+        if self.expanded and self._spot_a.x > 0.01:
+            if (self._spot_pos - self._spot_target).manhattanLength() > 0.4:
+                return True
+            if (time.monotonic() - self._spot_last_move) < 1.0:
                 return True
         if not self.expanded and not self._fs_hidden:
             return True                  # 收起态：常态动画（圆角呼吸 + 边缘流光）持续运行
@@ -1111,8 +1135,13 @@ class Island(QtWidgets.QWidget):
                 self._reveal_pending_page()
 
         for s in (self.sw, self.sh, self.fx, self.fy, self.along, self.gap, self.neck_s,
-                  self.content_a, self.compact_a, self.poke):
+                  self.content_a, self.compact_a, self.poke, self._spot_a):
             s.step(dt)
+        if self.expanded and (self._spot_a.x > 0.005 or self._spot_a.target > 0.0):
+            if self._spot_pos.isNull():
+                self._spot_pos = QtCore.QPointF(self._spot_target)
+            else:
+                self._spot_pos += (self._spot_target - self._spot_pos) * (1.0 - math.exp(-dt / 0.055))
         if self.mode == "snap":
             if self.gap.x <= 0.0:
                 if not self._snap_hit_edge:
@@ -1343,6 +1372,10 @@ class Island(QtWidgets.QWidget):
                     self.compact._notify_dismiss_rect = self.compact._notify_dismiss_rect.translated(-delta)
                 if self._press is not None:
                     self._press = self._press - delta
+                if not self._spot_pos.isNull():
+                    self._spot_pos = self._spot_pos - delta
+                if not self._spot_target.isNull():
+                    self._spot_target = self._spot_target - delta
         off = QtCore.QPointF(-wx, -wy)
         lbody = body.translated(off)
 
@@ -1632,12 +1665,16 @@ class Island(QtWidgets.QWidget):
             p.strokePath(sp, QtGui.QPen(QtGui.QColor(0, 0, 0, a), wdt))
         self._paint_glass(p, path)
         bb = self.body
+        if self.expanded and self._spot_a.x > 0.005:
+            self._paint_spotlight_base(p, path, bb)
         # 4) 轮廓：外侧极淡暗线 + 内侧高光边
         p.strokePath(path, QtGui.QPen(theme.outline(), 1.6))
         rg = QtGui.QLinearGradient(0, bb.top(), 0, bb.bottom())
         rg.setColorAt(0, theme.rim_top())
         rg.setColorAt(1, theme.rim_bottom())
         p.strokePath(path, QtGui.QPen(QtGui.QBrush(rg), 1.0))
+        if self.expanded and self._spot_a.x > 0.005:
+            self._paint_spotlight_rim(p, path)
         self._paint_rest(p, path, bb)
 
     def _paint_glass(self, p: QtGui.QPainter, path: QtGui.QPainterPath, crossfade: bool = True):
@@ -1675,6 +1712,184 @@ class Island(QtWidgets.QWidget):
         g.setColorAt(0.5, QtGui.QColor(255, 255, 255, 0))
         g.setColorAt(1, QtGui.QColor(255, 255, 255, 10))
         p.fillPath(path, g)
+
+    def spotlight_enabled(self) -> bool:
+        return bool(cfg.get("island.spotlight_enabled", True))
+
+    def spotlight_style(self) -> str:
+        s = str(cfg.get("island.spotlight_style", "constellation") or "constellation")
+        return s if s in ("constellation", "soft") else "constellation"
+
+    def spotlight_radius(self) -> float:
+        raw = cfg.get("island.spotlight_radius", SPOT_RADIUS)
+        try:
+            return clamp(float(SPOT_RADIUS if raw is None else raw), 80.0, 260.0)
+        except (TypeError, ValueError):
+            return SPOT_RADIUS
+
+    def _effective_spot_alpha(self) -> float:
+        """展开过渡期与内容渐显同步（避免在小胶囊拉伸阶段或 Veil 盖板切换瞬间出现星群闪断）。"""
+        vis_a = clamp(float(self.content_a.x), 0.0, 1.0) if self._content_shown() else 1.0
+        return float(self._spot_a.x) * vis_a
+
+    def _paint_constellation(
+        self,
+        p: QtGui.QPainter,
+        bb: QtCore.QRectF,
+        t_obj=None,
+        alpha_scale: float = 1.0,
+    ):
+        """在聚光区域内绘制 1:1 无缩放像素晶格星群（悬浮节点 + 95px 三角拓扑网 + 115px 光标牵引线）。"""
+        if self.spotlight_style() != "constellation":
+            return
+        spot_a = self._effective_spot_alpha() * float(alpha_scale)
+        if spot_a <= 0.005 or bb.isEmpty():
+            return
+        t_cur = t_obj or theme
+        pal = t_cur.pal
+        rgb = pal.get("spot_tech", (130, 195, 255))
+        prgb = pal.get("spot_pulse", (255, 255, 255))
+        base_a = float(pal.get("spot_alpha", 0.42)) * spot_a
+        rad = self.spotlight_radius()
+        r_lim = rad * 1.05
+        cx, cy = bb.center().x(), bb.center().y()
+        sx, sy = self._spot_pos.x(), self._spot_pos.y()
+        t_now = time.perf_counter() - self._t0
+
+        active_pts: list[tuple[float, float, float, float]] = []
+        for bx, by, ph, sp in SPOT_NODES:
+            nx = cx + (bx - 280.0) + math.cos(t_now * sp + ph) * 6.0
+            ny = cy + (by - 139.0) + math.sin(t_now * sp + ph) * 6.0
+            dist = math.hypot(nx - sx, ny - sy)
+            if dist < r_lim:
+                fa = (1.0 - dist / r_lim) ** 1.4
+                active_pts.append((nx, ny, dist, fa))
+
+        n_act = len(active_pts)
+        for i in range(n_act):
+            ax, ay, adist, fa = active_pts[i]
+            if adist < 115.0:
+                ta = clamp((1.0 - adist / 115.0) * base_a * 0.85, 0.0, 1.0)
+                if ta > 0.004:
+                    c_tether = QtGui.QColor(prgb[0], prgb[1], prgb[2])
+                    c_tether.setAlphaF(ta)
+                    p.setPen(QtGui.QPen(c_tether, 0.9))
+                    p.drawLine(QtCore.QPointF(sx, sy), QtCore.QPointF(ax, ay))
+
+            for j in range(i + 1, n_act):
+                bx_pt, by_pt, _bdist, fb = active_pts[j]
+                d2 = math.hypot(ax - bx_pt, ay - by_pt)
+                if d2 < 95.0:
+                    link_a = clamp((1.0 - d2 / 95.0) * min(fa, fb) * base_a * 1.3, 0.0, 1.0)
+                    if link_a > 0.004:
+                        c_link = QtGui.QColor(rgb[0], rgb[1], rgb[2])
+                        c_link.setAlphaF(link_a)
+                        p.setPen(QtGui.QPen(c_link, 1.0))
+                        p.drawLine(QtCore.QPointF(ax, ay), QtCore.QPointF(bx_pt, by_pt))
+
+            dot_a = clamp(fa * base_a * 1.8, 0.0, 1.0)
+            if dot_a > 0.004:
+                dot_r = 2.0 + fa * 1.2
+                c_dot = QtGui.QColor(prgb[0], prgb[1], prgb[2])
+                c_dot.setAlphaF(dot_a)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c_dot)
+                p.drawEllipse(QtCore.QPointF(ax, ay), dot_r, dot_r)
+
+    def _paint_spotlight_base(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
+        """展开态聚光灯底层：① 岛面漫射底光 + ④ 星群拓扑连线。"""
+        spot_a = self._effective_spot_alpha()
+        if not self.expanded or not self.spotlight_enabled() or spot_a <= 0.005 or bb.isEmpty():
+            return
+        rad = self.spotlight_radius()
+        stops = theme.pal.get("spot_surface")
+        if stops:
+            sg = QtGui.QRadialGradient(self._spot_pos, rad * 1.28)
+            for pos, rgba_t in ((0.0, stops[0]), (0.5, stops[1]), (1.0, stops[2])):
+                c = QtGui.QColor(rgba_t[0], rgba_t[1], rgba_t[2], round(rgba_t[3] * spot_a))
+                sg.setColorAt(pos, c)
+            p.fillPath(path, sg)
+        if self.spotlight_style() == "constellation":
+            p.save()
+            p.setClipPath(path)
+            self._paint_constellation(p, bb, theme, alpha_scale=1.0)
+            p.restore()
+
+    def _paint_spotlight_rim(self, p: QtGui.QPainter, path: QtGui.QPainterPath):
+        """展开态聚光灯顶层：③ 岛体外轮廓流光描边。"""
+        spot_a = self._effective_spot_alpha()
+        if not self.expanded or not self.spotlight_enabled() or spot_a <= 0.005:
+            return
+        stops = theme.pal.get("spot_rim")
+        if not stops:
+            return
+        rg = QtGui.QRadialGradient(self._spot_pos, self.spotlight_radius())
+        for pos, rgba_t in ((0.0, stops[0]), (0.55, stops[1]), (1.0, stops[2])):
+            c = QtGui.QColor(rgba_t[0], rgba_t[1], rgba_t[2], round(rgba_t[3] * spot_a))
+            rg.setColorAt(pos, c)
+        p.strokePath(path, QtGui.QPen(QtGui.QBrush(rg), 1.7))
+
+    def paint_card_spotlight(
+        self,
+        p: QtGui.QPainter,
+        card_widget: QtWidgets.QWidget,
+        r: QtCore.QRectF,
+        radius: float,
+        t_obj=None,
+    ):
+        """在原有实体卡片上绘制 ② 卡片内柔光、高不透明皮肤星群透射补偿及 1.3px 探照流光边。"""
+        spot_a = self._effective_spot_alpha()
+        if not self.expanded or not self.spotlight_enabled() or spot_a <= 0.005 or r.isEmpty():
+            return
+        from .widgets import Card
+        if isinstance(card_widget, Card):
+            anc = card_widget.parentWidget()
+            while anc is not None and anc is not self:
+                if isinstance(anc, Card):
+                    return
+                anc = anc.parentWidget()
+        t_cur = t_obj or theme
+        pal = t_cur.pal
+        rad = self.spotlight_radius()
+        off = QtCore.QPointF(card_widget.mapTo(self, QtCore.QPoint(0, 0)))
+        local_spot = self._spot_pos - off
+
+        dx = max(r.left() - local_spot.x(), 0.0, local_spot.x() - r.right())
+        dy = max(r.top() - local_spot.y(), 0.0, local_spot.y() - r.bottom())
+        if math.hypot(dx, dy) > rad * 1.08:
+            return
+
+        card_reveal_r = rad * 0.90
+        card_path = QtGui.QPainterPath()
+        card_path.addRoundedRect(r, radius, radius)
+
+        p.save()
+        p.setClipPath(card_path)
+        fill_stops = pal.get("spot_card_fill")
+        if fill_stops:
+            cg = QtGui.QRadialGradient(local_spot, card_reveal_r)
+            c0 = QtGui.QColor(fill_stops[0][0], fill_stops[0][1], fill_stops[0][2], round(fill_stops[0][3] * spot_a))
+            c1 = QtGui.QColor(fill_stops[1][0], fill_stops[1][1], fill_stops[1][2], round(fill_stops[1][3] * spot_a))
+            cg.setColorAt(0.0, c0)
+            cg.setColorAt(1.0, c1)
+            p.fillPath(card_path, cg)
+
+        supp = float(pal.get("spot_card_supp", 0.0))
+        if self.spotlight_style() == "constellation" and supp > 0.01 and not self.body.isEmpty():
+            card_alpha = float(getattr(card_widget, "alpha", 1.0))
+            p.translate(-off)
+            self._paint_constellation(p, self.body, t_cur, alpha_scale=supp * clamp(card_alpha, 0.35, 1.0))
+        p.restore()
+
+        border_stops = pal.get("spot_card_border")
+        if border_stops:
+            bg = QtGui.QRadialGradient(local_spot, card_reveal_r)
+            for pos, rgba_t in ((0.0, border_stops[0]), (0.5, border_stops[1]), (1.0, border_stops[2])):
+                c = QtGui.QColor(rgba_t[0], rgba_t[1], rgba_t[2], round(rgba_t[3] * spot_a))
+                bg.setColorAt(pos, c)
+            bp = QtGui.QPainterPath()
+            bp.addRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+            p.strokePath(bp, QtGui.QPen(QtGui.QBrush(bg), 1.3))
 
     def _paint_rest(self, p: QtGui.QPainter, path: QtGui.QPainterPath, bb: QtCore.QRectF):
         # 5) 常态动画：沿边缘缓慢游走的流光（纯黑实体皮肤跳过）
@@ -1799,6 +2014,36 @@ class Island(QtWidgets.QWidget):
                 self.poll.setInterval(want_poll)
         elif self.poll.interval() != 25:
             self.poll.setInterval(25)
+        if (
+            self.expanded
+            and self._content_shown()
+            and self.mode == "anchored"
+            and not self._fs_hidden
+            and not self.passthrough()
+            and self.spotlight_enabled()
+        ):
+            b = self.body
+            dx_s = max(b.left() - local_cur.x(), 0.0, local_cur.x() - b.right())
+            dy_s = max(b.top() - local_cur.y(), 0.0, local_cur.y() - b.bottom())
+            near_exp = inside or (not b.isEmpty() and math.hypot(dx_s, dy_s) <= 24.0)
+            if near_exp:
+                if self._spot_a.x <= 0.01 and self._spot_a.target <= 0.01:
+                    self._spot_pos = QtCore.QPointF(local_cur)
+                    self._spot_target = QtCore.QPointF(local_cur)
+                if (local_cur - self._spot_target).manhattanLength() > 1.0:
+                    self._spot_target = QtCore.QPointF(local_cur)
+                    self._spot_last_move = now
+                    self._kick()
+                if self._spot_a.target < 1.0:
+                    self._spot_a.to(1.0, 320, 0.90)
+                    self._spot_last_move = now
+                    self._kick()
+            elif self._spot_a.target > 0.0:
+                self._spot_a.to(0.0, 260, 0.92)
+                self._kick()
+        elif self._spot_a.target > 0.0 or self._spot_a.x > 0.005:
+            self._spot_a.to(0.0, 260, 0.92)
+            self._kick()
         on_btn = inside and self._on_play_button(local_cur)
         hv = 1.0 if on_btn and not self.passthrough() else 0.0
         if abs(self.compact.play_hover - hv) > 0.01:
@@ -2275,8 +2520,11 @@ class Island(QtWidgets.QWidget):
             self.collapse(force=True)
         self.set_expand_mode(self.expand_mode())
         self.passthrough_changed.emit(self.passthrough())
+        if not self.spotlight_enabled():
+            self._spot_a.snap(0.0)
         self.apply_capture_mode()
         self.register_hotkeys()
+        self.update()
         self._kick()
 
     def _on_foreground_activated(self):

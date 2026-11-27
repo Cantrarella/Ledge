@@ -72,6 +72,9 @@ DEFAULTS: dict = {
         "clock_custom_color": "#FFBF5E",          # 自定义时间颜色（Hex）
         "clock_gradient": ["#5AE0FF", "#FF6BA8"], # 时间渐变停靠色（2~3 个 Hex）
         "passthrough": False,       # 可穿透：鼠标穿过灵动岛，只响应右键（不影响展开 / 收起）
+        "spotlight_enabled": True,  # 展开态聚光灯开关
+        "spotlight_style": "constellation",       # 展开态聚光类型：constellation / soft
+        "spotlight_radius": 155,    # 展开态聚光半径（80~260 px）
     },
     "hotkeys": {
         "toggle": "Ctrl+Alt+I",
@@ -180,6 +183,7 @@ VALID_EXPAND_MODES = ("hover", "always", "never")
 VALID_COMPACT_VIEWS = ("clock", "pet", "music")
 VALID_CLOCK_STYLES = ("minimal", "segment", "neon", "serif", "wide", "condensed", "rounded")
 VALID_CLOCK_COLORS = ("white", "amber", "cyan", "pink", "lime", "cover", "custom", "gradient")
+VALID_SPOTLIGHT_STYLES = ("constellation", "soft")
 VALID_AUDIO_SOURCES = ("loopback", "mic")
 VALID_QUOTA_PROVIDERS = ("deepseek", "workbuddy", "gemini", "grok_bot", "codex")
 REGISTERED_PAGE_KEYS = ("home", "mail", "quota", "battery", "weather", "trans", "tools", "life")
@@ -442,6 +446,27 @@ def validate_config(raw: dict, strict: bool = True) -> tuple[bool, list[str], di
             isl["clock_gradient"] = ["#5AE0FF", "#FF6BA8"]
     else:
         isl["clock_gradient"] = [x.strip().upper() for x in grad]
+
+    # spotlight_enabled / spotlight_style / spotlight_radius
+    spot_en = isl.get("spotlight_enabled", True)
+    if not isinstance(spot_en, bool):
+        _err(f"展开态聚光灯开关需为布尔值: {spot_en}")
+        if not strict:
+            isl["spotlight_enabled"] = bool(spot_en)
+
+    spot_st = isl.get("spotlight_style", "constellation")
+    if spot_st not in VALID_SPOTLIGHT_STYLES:
+        _err(f"无效的聚光效果类型: {spot_st}")
+        if not strict:
+            isl["spotlight_style"] = "constellation"
+
+    spot_r = isl.get("spotlight_radius", 155)
+    if not isinstance(spot_r, (int, float)) or isinstance(spot_r, bool) or not (80 <= int(spot_r) <= 260):
+        _err(f"聚光半径需在 80~260 像素之间: {spot_r}")
+        if not strict:
+            isl["spotlight_radius"] = 155
+    else:
+        isl["spotlight_radius"] = int(spot_r)
 
     # hotkeys
     hks = merged.get("hotkeys")
